@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Status output for power widget.
+# JSON: { "text": "icon", "tooltip": "...", "class": "..." }
+
+echo '{"text": "󰐥", "tooltip": "Power menu"}'

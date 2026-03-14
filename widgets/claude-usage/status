@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Fetch Claude subscription usage and output waybar-compatible JSON."""
+
+import json
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+SUBSCRIPTION_CACHE = Path.home() / ".claude" / "subscription_cache.json"
+USAGE_CACHE = Path.home() / ".claude" / "usage_cache.json"
+CACHE_TTL = 600  # 10 minutes
+
+
+def load_token():
+    """Read OAuth access token from Claude Code credentials."""
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    with open(creds_path) as f:
+        creds = json.load(f)
+    return creds["claudeAiOauth"]["accessToken"]
+
+
+def fetch_usage_api(token):
+    """Call the Anthropic OAuth usage endpoint."""
+    req = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/usage",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": "oauth-2025-04-20",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def load_usage_cache():
+    """Load cached usage data and freshness flag."""
+    try:
+        with open(USAGE_CACHE) as f:
+            cache = json.load(f)
+        fresh = time.time() - cache.get("_cached_at", 0) < CACHE_TTL
+        return cache, fresh
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None, False
+
+
+def save_usage_cache(data):
+    """Save usage data to cache with timestamp."""
+    data["_cached_at"] = time.time()
+    with open(USAGE_CACHE, "w") as f:
+        json.dump(data, f)
+
+
+def fetch_usage(token):
+    """Fetch usage data from API and save to cache."""
+    data = fetch_usage_api(token)
+    save_usage_cache(data)
+    return data
+
+
+def load_cached_charge_date():
+    """Read next_charge_date from cache if it exists and is in the future."""
+    try:
+        with open(SUBSCRIPTION_CACHE) as f:
+            cache = json.load(f)
+        charge_date = cache.get("next_charge_date")
+        if charge_date and datetime.strptime(charge_date, "%Y-%m-%d").date() >= date.today():
+            return charge_date
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        pass
+    return None
+
+
+def format_reset_relative(iso_str):
+    """Format reset time as a relative duration string."""
+    reset = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    delta = reset - now
+    total_minutes = int(delta.total_seconds() / 60)
+    if total_minutes < 0:
+        return "now"
+    total_hours, minutes = divmod(total_minutes, 60)
+    if total_hours >= 24:
+        days, hours = divmod(total_hours, 24)
+        return f"{days}d {hours}h"
+    if total_hours > 0:
+        return f"{total_hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def format_reset_absolute(iso_str):
+    """Format reset time as a local day and time (e.g., 'Fri 10:59 AM')."""
+    reset = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    local = reset.astimezone()
+    return local.strftime("%a %-I:%M %p")
+
+
+def format_date_relative(date_str):
+    """Format a date string (YYYY-MM-DD) as relative duration."""
+    target = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    delta = target - now
+    total_hours = int(delta.total_seconds() / 3600)
+    if total_hours < 0:
+        return "now"
+    if total_hours >= 24:
+        days, hours = divmod(total_hours, 24)
+        return f"{days}d {hours}h"
+    minutes = int((delta.total_seconds() % 3600) / 60)
+    return f"{total_hours}h {minutes}m"
+
+
+def format_date_absolute(date_str):
+    """Format a date string (YYYY-MM-DD) as readable date (e.g., 'Apr 3')."""
+    target = datetime.strptime(date_str, "%Y-%m-%d")
+    return target.strftime("%b %-d")
+
+
+def classify(five_hour, seven_day):
+    """Return CSS class based on the higher utilization."""
+    peak = max(five_hour, seven_day)
+    if peak > 95:
+        return "high"
+    if peak >= 80:
+        return "medium"
+    return "low"
+
+
+def format_output(data):
+    """Format usage data as waybar JSON."""
+    five = data["five_hour"]
+    seven = data["seven_day"]
+    sonnet = data.get("seven_day_sonnet")
+    five_pct = round(five["utilization"])
+    seven_pct = round(seven["utilization"])
+    css_class = classify(five["utilization"], seven["utilization"])
+
+    tooltip_lines = []
+    for label, pct, window in [("5-hour", five_pct, five), ("7-day", seven_pct, seven)]:
+        if window.get("resets_at"):
+            tooltip_lines.append(
+                f"{label + ':':<14}{pct}%  resets {format_reset_absolute(window['resets_at'])} ({format_reset_relative(window['resets_at'])})"
+            )
+        else:
+            tooltip_lines.append(f"{label + ':':<14}{pct}%")
+
+    if sonnet and sonnet.get("utilization") is not None:
+        sonnet_pct = round(sonnet["utilization"])
+        if sonnet.get("resets_at"):
+            tooltip_lines.append(
+                f"{'7-day sonnet:':<14}{sonnet_pct}%  resets {format_reset_absolute(sonnet['resets_at'])} ({format_reset_relative(sonnet['resets_at'])})"
+            )
+        else:
+            tooltip_lines.append(f"{'7-day sonnet:':<14}{sonnet_pct}%")
+
+    charge_date = load_cached_charge_date()
+    if charge_date:
+        tooltip_lines.append(
+            f"{'next charge:':<14}{format_date_absolute(charge_date)} ({format_date_relative(charge_date)})"
+        )
+
+    if five.get("resets_at"):
+        five_reset = format_reset_relative(five["resets_at"]).replace(" ", ":")
+        text = f"5h - {five_pct}% ({five_reset}) · 7d - {seven_pct}%"
+    else:
+        text = f"5h - {five_pct}% · 7d - {seven_pct}%"
+
+    return {
+        "text": text,
+        "tooltip": "\n".join(tooltip_lines),
+        "class": css_class,
+    }
+
+
+def refresh_cache():
+    """Background-only: fetch fresh data and update cache, then exit."""
+    try:
+        token = load_token()
+        fetch_usage(token)
+    except Exception:
+        pass
+
+
+def main():
+    if "--refresh-cache" in sys.argv:
+        refresh_cache()
+        return
+
+    force = "--refresh" in sys.argv
+    is_json = "--json" in sys.argv
+    cached, fresh = load_usage_cache()
+
+    # Fresh cache — render immediately, no API call
+    if fresh and not force:
+        if is_json:
+            out = {k: v for k, v in cached.items() if not k.startswith("_")}
+            charge_date = load_cached_charge_date()
+            if charge_date:
+                out["next_charge_date"] = charge_date
+            print(json.dumps(out))
+        else:
+            print(json.dumps(format_output(cached)))
+        return
+
+    # Stale or no cache — print what we have and refresh in background (waybar)
+    # or fetch synchronously (--json mode)
+    if not is_json:
+        if cached:
+            print(json.dumps(format_output(cached)))
+        else:
+            print(json.dumps({"text": "fetching…", "tooltip": "", "class": "error"}))
+        # Refresh cache in background so waybar gets output immediately
+        try:
+            subprocess.Popen(
+                [sys.executable, __file__, "--refresh-cache"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        return
+
+    try:
+        token = load_token()
+        data = fetch_usage(token)
+        if is_json:
+            out = {k: v for k, v in data.items() if not k.startswith("_")}
+            charge_date = load_cached_charge_date()
+            if charge_date:
+                out["next_charge_date"] = charge_date
+            print(json.dumps(out))
+    except Exception:
+        if is_json:
+            print(json.dumps({"error": "failed to fetch usage"}))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Generic toggle for GTK4 widget popups. Uses flock to prevent duplicates.
+# Usage: widget-toggle <widget-name>
+
+WIDGET="${1:?Usage: widget-toggle <widget-name>}"
+WIDGET_PATH="$HOME/.local/bin/$WIDGET"
+LOCKFILE="/tmp/.${WIDGET}-toggle.lock"
+MATCH="widgets/${WIDGET}/main.py"
+
+is_running() { pgrep -f "$MATCH" >/dev/null 2>&1; }
+stop() { pkill -f "$MATCH"; }
+
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+  is_running && stop
+  exit 0
+fi
+
+if is_running; then
+  stop
+  flock -u 9
+else
+  flock -u 9
+  "$WIDGET_PATH"
+  exec 9>"$LOCKFILE"
+  flock -n 9 && sleep 0.5
+fi

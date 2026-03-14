@@ -1,0 +1,135 @@
+.usage-container {
+  background-color: @@BASE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 8px;
+  padding: 16px 24px;
+  min-width: 320px;
+}
+
+.usage-title {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 14px;
+  font-weight: bold;
+  color: @@BLUE@@;
+}
+
+.refresh-button {
+  background: transparent;
+  border: none;
+  color: @@OVERLAY1@@;
+  font-size: 14px;
+  padding: 0 4px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.refresh-button:hover {
+  color: @@BLUE@@;
+}
+
+.usage-window-label {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  color: @@TEXT@@;
+}
+
+.usage-pct {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.usage-reset {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  color: @@SUBTEXT0@@;
+}
+
+.usage-error {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  color: @@SURFACE2@@;
+}
+
+.usage-separator {
+  background-color: @@SURFACE0@@;
+  min-height: 1px;
+  margin: 4px 0;
+}
+
+.usage-charge-label {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  color: @@SUBTEXT0@@;
+}
+
+.session-label {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  color: @@SUBTEXT0@@;
+}
+
+.session-entry {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  background-color: @@SURFACE0@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE2@@;
+  border-radius: 4px;
+  padding: 4px 8px;
+  min-width: 280px;
+}
+
+.session-entry:focus {
+  border-color: @@BLUE@@;
+}
+
+.session-button {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  background-color: @@BLUE@@;
+  color: @@BASE@@;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+}
+
+.session-button:hover {
+  background-color: @@SAPPHIRE@@;
+}
+
+.session-status {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+}
+
+.session-status-ok { color: @@GREEN@@; }
+.session-status-err { color: @@RED@@; }
+
+progressbar trough {
+  background-color: @@SURFACE0@@;
+  border-radius: 4px;
+  min-height: 8px;
+}
+
+progressbar progress {
+  border-radius: 4px;
+  min-height: 8px;
+}
+
+progressbar.low progress {
+  background-color: @@GREEN@@;
+}
+
+progressbar.medium progress {
+  background-color: @@YELLOW@@;
+}
+
+progressbar.high progress {
+  background-color: @@RED@@;
+}
+
+.pct-low { color: @@GREEN@@; }
+.pct-medium { color: @@YELLOW@@; }
+.pct-high { color: @@RED@@; }

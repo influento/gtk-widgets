@@ -1,0 +1,65 @@
+.display-container {
+  background-color: @@BASE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 8px;
+  padding: 16px 24px;
+}
+
+.display-title {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 14px;
+  font-weight: bold;
+  color: @@BLUE@@;
+}
+
+.section-label {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  font-weight: bold;
+  color: @@SUBTEXT0@@;
+  margin-top: 4px;
+}
+
+.section-value {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 20px;
+  font-weight: bold;
+  color: @@TEXT@@;
+}
+
+separator {
+  background-color: @@SURFACE1@@;
+  min-height: 1px;
+  margin: 4px 0;
+}
+
+scale {
+  min-width: 280px;
+}
+
+scale trough {
+  background-color: @@SURFACE0@@;
+  border-radius: 4px;
+  min-height: 8px;
+}
+
+scale highlight {
+  background-color: @@SAPPHIRE@@;
+  border-radius: 4px;
+  min-height: 8px;
+}
+
+scale slider {
+  background-color: @@SAPPHIRE@@;
+  border-radius: 50%;
+  min-width: 20px;
+  min-height: 20px;
+  margin: -6px;
+}
+
+scale indicator {
+  color: @@SUBTEXT0@@;
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+}

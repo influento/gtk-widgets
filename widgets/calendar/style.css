@@ -1,0 +1,57 @@
+.calendar-container {
+  background-color: @@BASE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 8px;
+}
+
+calendar {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 14px;
+  color: @@TEXT@@;
+  background: none;
+  border: none;
+  padding: 8px;
+}
+
+calendar > header {
+  background-color: @@MANTLE@@;
+  border-radius: 8px;
+  padding: 4px;
+}
+
+calendar > header > button {
+  color: @@BLUE@@;
+  min-height: 24px;
+  min-width: 24px;
+}
+
+calendar > header > button:hover {
+  background-color: @@SURFACE1@@;
+  border-radius: 4px;
+}
+
+calendar.view {
+  background: none;
+}
+
+calendar > grid > label.day-name {
+  color: @@MAUVE@@;
+  font-weight: bold;
+}
+
+calendar > grid > label.day-number {
+  color: @@TEXT@@;
+  border-radius: 50%;
+  padding: 4px;
+}
+
+calendar > grid > label.day-number:selected {
+  background-color: @@BLUE@@;
+  color: @@BASE@@;
+  font-weight: bold;
+}
+
+calendar > grid > label.day-number.other-month {
+  color: @@SURFACE2@@;
+}

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Status output for calendar widget.
+# JSON: { "text": "icon + date/time", "tooltip": "..." }
+
+icon=$'\uf073'
+datetime="$(date '+%a %b %d  %H:%M')"
+printf '{"text": "%s  %s"}\n' "$icon" "$datetime"
