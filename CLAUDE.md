@@ -46,42 +46,6 @@ values. Override the theme file path via `GTK_WIDGETS_THEME` env var.
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
 | `translate`    | Translation via Claude Sonnet (prototype of ezpick action system) |
 
-### Installation
-
-`install.sh` symlinks everything into `~/.local/bin/`:
-
-- `widget-toggle` — shared toggle script
-- `<name>` → `widgets/<name>/main.py` — each popup
-- `<name>-status` → `widgets/<name>/status` — each status script (if present)
-
-## Waybar Integration
-
-Each widget with a `status` script is used as a waybar custom module.
-The popup is toggled via `widget-toggle <name>` on click.
-
-| Widget         | Status command        | Interval | On-click                        |
-| -------------- | --------------------- | -------- | ------------------------------- |
-| `calendar`     | `calendar-status`     | 60       | `widget-toggle calendar`        |
-| `bluetooth`    | `bluetooth-status`    | 5        | `widget-toggle bluetooth`       |
-| `claude-usage` | `claude-usage-status` | 600      | `widget-toggle claude-usage`    |
-| `display`      | `display-status`      | once     | `widget-toggle display`         |
-| `power`        | `power-status`        | once     | `widget-toggle power`           |
-
-Status scripts output JSON with `text` (required), `tooltip` and `class` (optional).
-
-Waybar module example:
-
-```json
-"custom/calendar": {
-  "exec": "calendar-status",
-  "interval": 60,
-  "tooltip": false,
-  "on-click": "bash -c \"$HOME/.local/bin/widget-toggle calendar\""
-}
-```
-
-`translate` has no status script — it is triggered by a keybinding, not a waybar module.
-
 ## Theming System
 
 ### Token syntax
