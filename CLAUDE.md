@@ -45,7 +45,7 @@ values. Override the theme file path via `GTK_WIDGETS_THEME` env var.
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect          |
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
 | `translate`    | Translation via Claude Sonnet (prototype of ezpick action system) |
-| `usb`          | USB device manager: list, mount/unmount, format, write ISO        |
+| `usb`          | USB device manager: list, format, write ISO with progress         |
 
 ## Theming System
 

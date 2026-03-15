@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""USB device manager popup — list, mount/unmount, format, write ISO."""
+"""USB device manager popup — list, format, write ISO."""
 
 import json, os, re, shlex, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
