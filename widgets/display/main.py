@@ -137,7 +137,7 @@ class DisplayPopup(WidgetPopup):
         title.add_css_class("display-title")
         container.append(title)
 
-        # --- Scale ---
+        # --- Scale (swaymsg is fast, keep sync) ---
         self._build_slider(
             container, "SCALE", get_current_scale(), lambda v: f"{int(v * 100)}%",
             1.0, 2.0, 0.1,
@@ -147,24 +147,18 @@ class DisplayPopup(WidgetPopup):
             key="scale", delay=500, apply_fn=apply_scale,
         )
 
-        # --- Brightness (backlight or DDC/CI) ---
-        brightness_backend = detect_brightness_backend()
-        if brightness_backend:
-            delay = 100 if brightness_backend == "backlight" else 500
-            container.append(Gtk.Separator())
-            self._build_slider(
-                container, "BRIGHTNESS",
-                get_brightness(brightness_backend) / 100,
-                lambda v: f"{int(v * 100)}%",
-                0.0, 1.0, 0.05,
-                marks=[(0.0, "0%"), (0.5, "50%"), (1.0, "100%")],
-                ticks=[i * 0.1 for i in range(11)],
-                snap=lambda v: round(v * 20) / 20,
-                key="brightness", delay=delay,
-                apply_fn=lambda v: apply_brightness(brightness_backend, v * 100),
-            )
+        # --- Brightness (detect and load async — DDC is slow) ---
+        self._brightness_sep = Gtk.Separator()
+        self._brightness_sep.set_visible(False)
+        container.append(self._brightness_sep)
 
-        # --- Night Light ---
+        self._brightness_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._brightness_box.set_visible(False)
+        container.append(self._brightness_box)
+
+        GLib.idle_add(self._load_brightness_async)
+
+        # --- Night Light (file read is fast, keep sync) ---
         container.append(Gtk.Separator())
         self._build_slider(
             container, "NIGHT LIGHT", get_temperature() / 1000,
@@ -178,6 +172,26 @@ class DisplayPopup(WidgetPopup):
         )
 
         return container
+
+    def _load_brightness_async(self):
+        """Detect brightness backend and build slider off the main init path."""
+        brightness_backend = detect_brightness_backend()
+        if brightness_backend:
+            delay = 100 if brightness_backend == "backlight" else 500
+            self._build_slider(
+                self._brightness_box, "BRIGHTNESS",
+                get_brightness(brightness_backend) / 100,
+                lambda v: f"{int(v * 100)}%",
+                0.0, 1.0, 0.05,
+                marks=[(0.0, "0%"), (0.5, "50%"), (1.0, "100%")],
+                ticks=[i * 0.1 for i in range(11)],
+                snap=lambda v: round(v * 20) / 20,
+                key="brightness", delay=delay,
+                apply_fn=lambda v: apply_brightness(brightness_backend, v * 100),
+            )
+            self._brightness_sep.set_visible(True)
+            self._brightness_box.set_visible(True)
+        return GLib.SOURCE_REMOVE
 
     def _build_slider(self, container, label_text, current, fmt_fn,
                       lower, upper, step, marks, ticks, snap,

@@ -7,23 +7,21 @@ set -euo pipefail
 WIDGET="${1:?Usage: widget-toggle <widget-name>}"
 WIDGET_PATH="$HOME/.local/bin/$WIDGET"
 LOCKFILE="/tmp/.${WIDGET}-toggle.lock"
-MATCH="widgets/${WIDGET}/main.py"
-
-is_running() { pgrep -f "$MATCH" >/dev/null 2>&1; }
-stop() { pkill -f "$MATCH"; }
+PIDFILE="/tmp/.${WIDGET}-toggle.pid"
 
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
-  is_running && stop
+  # Lock is held — widget is running, kill it
+  if [[ -f "$PIDFILE" ]]; then
+    pid="$(cat "$PIDFILE")"
+    kill "$pid" 2>/dev/null || true
+  fi
   exit 0
 fi
 
-if is_running; then
-  stop
-  flock -u 9
-else
-  flock -u 9
-  "$WIDGET_PATH"
-  exec 9>"$LOCKFILE"
-  flock -n 9 && sleep 0.5
-fi
+# Lock acquired — launch widget (preload layer-shell so widgets skip re-exec)
+export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}/usr/lib/libgtk4-layer-shell.so"
+"$WIDGET_PATH" &
+echo $! > "$PIDFILE"
+wait $! 2>/dev/null || true
+rm -f "$PIDFILE"
