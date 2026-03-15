@@ -22,10 +22,22 @@ def _busy_path(dev_name):
     return os.path.join(_BUSY_DIR, dev_name)
 
 
-def _save_busy(dev_name, text):
+def _read_sectors(dev_name):
+    """Read cumulative sectors written from sysfs."""
+    try:
+        with open(f"/sys/block/{dev_name}/stat") as f:
+            return int(f.read().split()[6])
+    except (FileNotFoundError, IndexError, ValueError):
+        return 0
+
+
+def _save_busy(dev_name, text, total=0):
     os.makedirs(_BUSY_DIR, exist_ok=True)
+    data = {"text": text, "total": total}
+    if total:
+        data["start_sectors"] = _read_sectors(dev_name)
     with open(_busy_path(dev_name), "w") as f:
-        f.write(text)
+        json.dump(data, f)
 
 
 def _clear_busy(dev_name):
@@ -35,12 +47,40 @@ def _clear_busy(dev_name):
         pass
 
 
+def _is_device_busy(dev_name):
+    try:
+        result = subprocess.run(["pgrep", "-fa", f"/dev/{dev_name}"],
+                                capture_output=True, text=True)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def _load_busy(dev_name):
+    """Return (text, total, start_sectors) or (None, 0, 0)."""
     try:
         with open(_busy_path(dev_name)) as f:
-            return f.read().strip()
-    except FileNotFoundError:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None, 0, 0
+    if not _is_device_busy(dev_name):
+        _clear_busy(dev_name)
+        return None, 0, 0
+    return data.get("text"), data.get("total", 0), data.get("start_sectors", 0)
+
+
+def _get_progress_text(dev_name, total, start_sectors):
+    """Calculate progress from sysfs sectors written."""
+    if not total or not start_sectors:
         return None
+    current = _read_sectors(dev_name)
+    written_bytes = (current - start_sectors) * 512
+    if written_bytes < 0:
+        return None
+    written_mb = written_bytes // (1024 * 1024)
+    total_mb = total // (1024 * 1024)
+    pct = min(written_bytes * 100 // total, 100)
+    return f"{written_mb}/{total_mb} MB  {pct}%"
 
 
 # --- Device helpers ---
@@ -57,13 +97,6 @@ def lsblk():
         return []
     return [d for d in data.get("blockdevices", [])
             if d.get("tran") == "usb" and d.get("rm")]
-
-
-def get_partitions(dev):
-    children = dev.get("children", [])
-    if children:
-        return [p for p in children if p.get("type") == "part"]
-    return [dev]
 
 
 def _unmount_all(dev_name):
@@ -89,25 +122,6 @@ def _unmount_all(dev_name):
 
 
 # --- Operations ---
-
-def mount_part(part_name):
-    dev = f"/dev/{part_name}"
-    mountpoint = f"/run/media/{os.environ.get('USER', 'user')}/{part_name}"
-    os.makedirs(mountpoint, exist_ok=True)
-    result = subprocess.run(["pkexec", "mount", dev, mountpoint],
-                            capture_output=True, text=True)
-    if result.returncode == 0:
-        return True, f"Mounted at {mountpoint}"
-    return False, result.stderr.strip() or "Mount failed"
-
-
-def unmount_part(part_name):
-    result = subprocess.run(["pkexec", "umount", f"/dev/{part_name}"],
-                            capture_output=True, text=True)
-    if result.returncode == 0:
-        return True, "Unmounted"
-    return False, result.stderr.strip() or "Unmount failed"
-
 
 def format_device(dev_name, fstype, label=None):
     dev = f"/dev/{dev_name}"
@@ -145,15 +159,6 @@ def write_iso(iso_path, dev_name):
     return False, result.stderr.strip() or "Write failed"
 
 
-def eject_device(dev_name):
-    _unmount_all(dev_name)
-    result = subprocess.run(["pkexec", "bash", "-c", f"eject /dev/{dev_name}"],
-                            capture_output=True, text=True)
-    if result.returncode == 0:
-        return True, "Ejected safely"
-    return False, result.stderr.strip() or "Eject failed"
-
-
 def refresh_waybar():
     subprocess.Popen(["pkill", "-RTMIN+12", "waybar"],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -165,14 +170,17 @@ class UsbPopup(WidgetPopup):
     def __init__(self):
         super().__init__(application_id="dev.dotfiles.usb")
         self._monitor_id = 0
+        self._poll_id = 0
         self._busy = {}
-        self._status = None
+        self._busy_meta = {}   # dev_name -> (total, start_sectors)
+        self._busy_labels = {} # dev_name -> Gtk.Label
 
     def build_ui(self):
         self._container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._container.add_css_class("usb-container")
         self._build_ui()
         self._start_monitor()
+        self._start_poll()
         return self._container
 
     def _clear_container(self):
@@ -181,6 +189,7 @@ class UsbPopup(WidgetPopup):
 
     def _build_ui(self):
         self._clear_container()
+        self._busy_labels = {}
 
         devices = lsblk()
 
@@ -188,9 +197,10 @@ class UsbPopup(WidgetPopup):
         for dev in devices:
             name = dev["name"]
             if name not in self._busy:
-                text = _load_busy(name)
+                text, total, start = _load_busy(name)
                 if text:
                     self._busy[name] = text
+                    self._busy_meta[name] = (total, start)
 
         title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         title = Gtk.Label(label="USB Devices")
@@ -210,16 +220,10 @@ class UsbPopup(WidgetPopup):
             empty = Gtk.Label(label="No USB devices detected")
             empty.add_css_class("usb-empty")
             self._container.append(empty)
-            self._status = None
             return
 
         for dev in devices:
             self._add_device(dev)
-
-        self._status = Gtk.Label()
-        self._status.add_css_class("usb-status")
-        self._status.set_halign(Gtk.Align.START)
-        self._container.append(self._status)
 
     def _add_device(self, dev):
         dev_name = dev["name"]
@@ -244,86 +248,67 @@ class UsbPopup(WidgetPopup):
         name_label.set_ellipsize(3)
         info_box.append(name_label)
 
-        detail_text = self._busy[dev_name] if busy else f"/dev/{dev_name}  {size}"
-        detail = Gtk.Label(label=detail_text)
+        detail = Gtk.Label(label=f"/dev/{dev_name}  {size}")
         detail.add_css_class("usb-device-detail")
-        if busy:
-            detail.add_css_class("usb-device-busy")
         detail.set_halign(Gtk.Align.START)
         info_box.append(detail)
+
+        if busy:
+            busy_label = Gtk.Label(label=self._busy[dev_name])
+            busy_label.add_css_class("usb-device-busy")
+            busy_label.set_halign(Gtk.Align.START)
+            busy_label.set_ellipsize(3)
+            info_box.append(busy_label)
+
+            progress_label = Gtk.Label(label="0%")
+            progress_label.add_css_class("usb-device-progress")
+            progress_label.set_halign(Gtk.Align.START)
+            info_box.append(progress_label)
+            self._busy_labels[dev_name] = progress_label
+
+        # Partition info
+        children = dev.get("children", [])
+        parts = [p for p in children if p.get("type") == "part"] if children else []
+        if parts:
+            for p in parts:
+                fstype = p.get("fstype") or ""
+                plabel = p.get("label") or ""
+                psize = p.get("size", "")
+                parts_text = "  ".join(x for x in [plabel, fstype, psize] if x)
+                if parts_text:
+                    pl = Gtk.Label(label=parts_text)
+                    pl.add_css_class("usb-partition-info")
+                    pl.set_halign(Gtk.Align.START)
+                    info_box.append(pl)
+
         header.append(info_box)
         self._container.append(header)
-
-        for part in get_partitions(dev):
-            self._add_partition_row(part, busy)
 
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         btn_row.add_css_class("usb-action-row")
 
-        for label, css, cb in [
-            ("Format", "usb-action-btn", lambda _, d=dev: self._show_format(d)),
-            ("Write ISO", "usb-action-btn", lambda _, d=dev: self._pick_iso(d)),
-            ("Eject", "usb-eject-btn", lambda _, d=dev: self._do_eject(d)),
-        ]:
-            btn = Gtk.Button(label=label)
-            btn.add_css_class("usb-action-btn")
-            if css != "usb-action-btn":
-                btn.add_css_class(css)
-            btn.set_sensitive(not busy)
-            btn.connect("clicked", cb)
-            btn_row.append(btn)
+        format_btn = Gtk.Button(label="Format")
+        format_btn.add_css_class("usb-action-btn")
+        format_btn.set_sensitive(not busy)
+        format_btn.connect("clicked", lambda _, d=dev: self._show_format(d))
+        btn_row.append(format_btn)
+
+        iso_btn = Gtk.Button(label="Write ISO")
+        iso_btn.add_css_class("usb-action-btn")
+        iso_btn.set_sensitive(not busy)
+        iso_btn.connect("clicked", lambda _, d=dev: self._pick_iso(d))
+        btn_row.append(iso_btn)
 
         self._container.append(btn_row)
 
-    def _add_partition_row(self, part, busy):
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.add_css_class("usb-partition-row")
-
-        fstype = part.get("fstype") or "unknown"
-        label = part.get("label") or ""
-        mountpoint = part.get("mountpoint") or ""
-        mounted = bool(mountpoint)
-        part_name = part["name"]
-        size = part.get("size", "?")
-
-        label_text = f"{label}  " if label else ""
-        info_text = f"{label_text}{fstype}  {size}"
-        if mounted:
-            info_text += f"  {mountpoint}"
-
-        info = Gtk.Label(label=info_text)
-        info.add_css_class("usb-partition-info")
-        info.set_hexpand(True)
-        info.set_halign(Gtk.Align.START)
-        info.set_ellipsize(3)
-        row.append(info)
-
-        if mounted:
-            dot = Gtk.Label(label="")
-            dot.add_css_class("usb-mounted-dot")
-            row.append(dot)
-            btn = Gtk.Button(label="Unmount")
-            btn.add_css_class("usb-small-btn")
-            btn.set_sensitive(not busy)
-            btn.connect("clicked", lambda _, p=part_name: self._run_task(
-                lambda: unmount_part(p)))
-            row.append(btn)
-        else:
-            btn = Gtk.Button(label="Mount")
-            btn.add_css_class("usb-small-btn")
-            btn.set_sensitive(not busy)
-            btn.connect("clicked", lambda _, p=part_name: self._run_task(
-                lambda: mount_part(p)))
-            row.append(btn)
-
-        self._container.append(row)
-
     # --- Task runner ---
 
-    def _run_task(self, task_fn, dev_name=None, busy_text=None):
+    def _run_task(self, task_fn, dev_name=None, busy_text=None, total=0):
         if dev_name and busy_text:
             self._busy[dev_name] = busy_text
-            _save_busy(dev_name, busy_text)
+            _save_busy(dev_name, busy_text, total)
+            if total:
+                self._busy_meta[dev_name] = (total, _read_sectors(dev_name))
             self._build_ui()
 
         def worker():
@@ -331,29 +316,16 @@ class UsbPopup(WidgetPopup):
             def done():
                 if dev_name:
                     self._busy.pop(dev_name, None)
+                    self._busy_meta.pop(dev_name, None)
                     _clear_busy(dev_name)
                 refresh_waybar()
                 self._build_ui()
-                self._set_status(msg, "usb-status-ok" if ok else "usb-status-err")
                 return GLib.SOURCE_REMOVE
             GLib.idle_add(done)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _set_status(self, text, css_class=None):
-        if not self._status:
-            return
-        self._status.set_text(text)
-        self._status.remove_css_class("usb-status-ok")
-        self._status.remove_css_class("usb-status-err")
-        if css_class:
-            self._status.add_css_class(css_class)
-
     # --- Actions ---
-
-    def _do_eject(self, dev):
-        self._run_task(lambda: eject_device(dev["name"]),
-                       dev["name"], "Ejecting...")
 
     def _pick_iso(self, dev):
         win = self.get_active_window()
@@ -384,8 +356,10 @@ class UsbPopup(WidgetPopup):
         if win:
             win.set_visible(True)
         iso_name = os.path.basename(iso_path)
-        self._run_task(lambda: write_iso(iso_path, dev["name"]),
-                       dev["name"], f"Writing {iso_name}...")
+        dev_name = dev["name"]
+        total = os.path.getsize(iso_path)
+        self._run_task(lambda: write_iso(iso_path, dev_name),
+                       dev_name, f"Writing {iso_name}...", total)
 
     # --- Format ---
 
@@ -449,11 +423,6 @@ class UsbPopup(WidgetPopup):
 
         self._container.append(btn_row)
 
-        self._status = Gtk.Label()
-        self._status.add_css_class("usb-status")
-        self._status.set_halign(Gtk.Align.START)
-        self._container.append(self._status)
-
     def _on_fs_toggled(self, btn, fs):
         if btn.get_active():
             self._selected_fs = fs
@@ -499,6 +468,31 @@ class UsbPopup(WidgetPopup):
         self._build_ui()
         return GLib.SOURCE_REMOVE
 
+    def _start_poll(self):
+        if not self._poll_id:
+            self._poll_id = GLib.timeout_add(1000, self._poll_busy)
+
+    def _poll_busy(self):
+        changed = False
+        for dev_name in list(self._busy):
+            meta = self._busy_meta.get(dev_name)
+            if meta:
+                total, start = meta
+                progress = _get_progress_text(dev_name, total, start)
+                if progress:
+                    label = self._busy_labels.get(dev_name)
+                    if label:
+                        label.set_text(progress)
+            # Check if task finished
+            if not _is_device_busy(dev_name):
+                self._busy.pop(dev_name, None)
+                self._busy_meta.pop(dev_name, None)
+                _clear_busy(dev_name)
+                changed = True
+        if changed:
+            self._build_ui()
+        return GLib.SOURCE_CONTINUE
+
     def _on_key(self, controller, keyval, keycode, state):
         if keyval in (Gdk.KEY_Escape, Gdk.KEY_q):
             self.quit()
@@ -506,6 +500,9 @@ class UsbPopup(WidgetPopup):
         return False
 
     def do_shutdown(self):
+        if self._poll_id:
+            GLib.source_remove(self._poll_id)
+            self._poll_id = 0
         if hasattr(self, "_udev_proc") and self._udev_proc.poll() is None:
             self._udev_proc.terminate()
         Gtk.Application.do_shutdown(self)
