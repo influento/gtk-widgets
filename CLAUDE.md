@@ -45,6 +45,7 @@ values. Override the theme file path via `GTK_WIDGETS_THEME` env var.
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect          |
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
 | `translate`    | Translation via Claude Sonnet (prototype of ezpick action system) |
+| `usb`          | USB device manager: list, mount/unmount, format, write ISO        |
 
 ## Theming System
 
@@ -127,9 +128,13 @@ gtk-widgets/
 │   │   ├── main.py
 │   │   ├── style.css
 │   │   └── status         # JSON: power icon
-│   └── translate/
+│   ├── translate/
+│   │   ├── main.py
+│   │   └── style.css
+│   └── usb/
 │       ├── main.py
-│       └── style.css
+│       ├── style.css
+│       └── status         # JSON: USB icon, event-driven via udevadm
 └── themes/
     └── catppuccin-mocha.json
 ```

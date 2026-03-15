@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Waybar status script for USB module.
+# Outputs JSON with USB device count.
+# Waybar config: { "exec": "usb-status", "return-type": "json", "interval": 3 }
+
+count=$(lsblk -J -o NAME,RM,TRAN 2>/dev/null \
+  | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+devs = [d for d in data.get('blockdevices', [])
+        if d.get('tran') == 'usb' and d.get('rm')]
+print(len(devs))
+" 2>/dev/null || echo 0)
+
+if [[ "$count" -eq 0 ]]; then
+  echo '{"text": "", "class": "empty"}'
+elif [[ "$count" -eq 1 ]]; then
+  echo '{"text": "󰗮", "class": "connected", "tooltip": "1 USB device"}'
+else
+  echo "{\"text\": \"󰗮 ${count}\", \"class\": \"connected\", \"tooltip\": \"${count} USB devices\"}"
+fi

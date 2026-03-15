@@ -1,0 +1,248 @@
+.usb-container {
+  background-color: @@BASE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 8px;
+  padding: 16px 24px;
+  min-width: 360px;
+}
+
+.usb-title {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 14px;
+  font-weight: bold;
+  color: @@BLUE@@;
+}
+
+.usb-refresh-btn {
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  color: @@SUBTEXT0@@;
+  padding: 0 4px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.usb-refresh-btn:hover { color: @@BLUE@@; }
+
+.usb-empty {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  color: @@SURFACE2@@;
+  padding: 16px 0;
+}
+
+/* Device header */
+.usb-device-header {
+  background-color: @@SURFACE0@@;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.usb-device-icon {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 16px;
+  color: @@BLUE@@;
+}
+
+.usb-device-name {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  color: @@TEXT@@;
+}
+
+.usb-device-detail {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  color: @@SUBTEXT0@@;
+}
+
+/* Partition rows */
+.usb-partition-row {
+  padding: 4px 12px 4px 36px;
+}
+
+.usb-partition-info {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  color: @@SUBTEXT0@@;
+}
+
+.usb-mounted-dot {
+  font-size: 8px;
+  color: @@GREEN@@;
+}
+
+.usb-small-btn {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  background: @@SURFACE1@@;
+  color: @@TEXT@@;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  min-height: 0;
+  box-shadow: none;
+}
+
+.usb-small-btn:hover {
+  background: @@SURFACE2@@;
+}
+
+/* Action buttons */
+.usb-action-row {
+  padding: 4px 0;
+}
+
+.usb-action-btn {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  background: @@SURFACE1@@;
+  color: @@TEXT@@;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  min-height: 0;
+  box-shadow: none;
+}
+
+.usb-action-btn:hover {
+  background: @@SURFACE2@@;
+}
+
+.usb-eject-btn {
+  color: @@PEACH@@;
+}
+
+.usb-eject-btn:hover {
+  background: @@SURFACE2@@;
+  color: @@PEACH@@;
+}
+
+/* Format / ISO confirm views */
+.usb-warning {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  color: @@RED@@;
+  padding: 4px 0;
+}
+
+.usb-field-label {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  font-weight: bold;
+  color: @@OVERLAY1@@;
+  margin-top: 8px;
+}
+
+.usb-fs-btn {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  background: @@SURFACE0@@;
+  color: @@SUBTEXT0@@;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  min-height: 0;
+  box-shadow: none;
+}
+
+.usb-fs-btn:hover {
+  background: @@SURFACE1@@;
+}
+
+.usb-fs-active {
+  background: @@BLUE@@;
+  color: @@BASE@@;
+}
+
+.usb-fs-active:hover {
+  background: @@SAPPHIRE@@;
+}
+
+.usb-entry {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  background: @@SURFACE0@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 4px;
+  padding: 4px 8px;
+  caret-color: @@TEXT@@;
+}
+
+.usb-entry:focus {
+  border-color: @@BLUE@@;
+}
+
+.usb-danger-btn {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  background: @@RED@@;
+  color: @@BASE@@;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  min-height: 0;
+  box-shadow: none;
+}
+
+.usb-danger-btn:hover {
+  background: @@MAROON@@;
+}
+
+/* ISO details */
+.usb-iso-details {
+  background: @@SURFACE0@@;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 4px 0;
+}
+
+.usb-iso-name {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  color: @@TEXT@@;
+}
+
+.usb-iso-target {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  color: @@SUBTEXT0@@;
+}
+
+/* Progress */
+.usb-progress {
+  min-height: 8px;
+  border-radius: 4px;
+  margin: 8px 0;
+}
+
+.usb-progress trough {
+  background-color: @@SURFACE0@@;
+  border-radius: 4px;
+  min-height: 8px;
+}
+
+.usb-progress progress {
+  background-color: @@BLUE@@;
+  border-radius: 4px;
+  min-height: 8px;
+}
+
+.usb-progress-text {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  color: @@SUBTEXT0@@;
+}
+
+/* Status */
+.usb-status {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  color: @@SUBTEXT0@@;
+}
+
+.usb-status-ok { color: @@GREEN@@; }
+.usb-status-err { color: @@RED@@; }
