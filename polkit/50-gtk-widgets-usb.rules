@@ -1,0 +1,11 @@
+// Allow wheel group to manage USB devices without password prompt.
+// Covers: mount, umount, eject, mkfs, dd, wipefs, sfdisk
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        subject.isInGroup("wheel")) {
+        var cmd = action.lookup("command_line") || "";
+        if (cmd.match(/\b(mount|umount|eject|mkfs\.|dd |wipefs|sfdisk)\b/)) {
+            return polkit.Result.YES;
+        }
+    }
+});

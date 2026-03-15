@@ -47,4 +47,14 @@ for widget_dir in "$REPO_DIR"/widgets/*/; do
   fi
 done
 
+# Polkit rules (requires sudo)
+polkit_src="$REPO_DIR/polkit/50-gtk-widgets-usb.rules"
+polkit_dst="/etc/polkit-1/rules.d/50-gtk-widgets-usb.rules"
+if [[ -f "$polkit_src" ]]; then
+  if [[ ! -f "$polkit_dst" ]] || ! diff -q "$polkit_src" "$polkit_dst" &>/dev/null; then
+    sudo cp "$polkit_src" "$polkit_dst"
+    echo "  polkit: 50-gtk-widgets-usb.rules"
+  fi
+fi
+
 echo "done"
