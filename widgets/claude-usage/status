@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -231,9 +232,16 @@ def main():
             if charge_date:
                 out["next_charge_date"] = charge_date
             print(json.dumps(out))
-    except Exception:
+    except Exception as e:
         if is_json:
-            print(json.dumps({"error": "failed to fetch usage"}))
+            msg = str(e)
+            if isinstance(e, urllib.error.HTTPError):
+                msg = f"HTTP {e.code} {e.reason}"
+            elif isinstance(e, urllib.error.URLError):
+                msg = f"network error: {e.reason}"
+            elif isinstance(e, (FileNotFoundError, KeyError)):
+                msg = f"credentials: {e}"
+            print(json.dumps({"error": msg}))
 
 
 if __name__ == "__main__":
