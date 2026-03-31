@@ -7,13 +7,40 @@
   min-width: 400px;
 }
 
-.translate-title {
-  font-family: "JetBrainsMono Nerd Font", monospace;
-  font-size: 14px;
-  font-weight: bold;
-  color: @@BLUE@@;
+/* Action switcher */
+.ezpick-action-row {
+  margin-bottom: 4px;
 }
 
+.ezpick-action-btn {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  background: @@SURFACE0@@;
+  color: @@SUBTEXT0@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 4px;
+  padding: 4px 12px;
+  min-height: 0;
+}
+
+.ezpick-action-btn:hover {
+  background: @@SURFACE1@@;
+  color: @@TEXT@@;
+}
+
+.ezpick-action-active {
+  background: @@BLUE@@;
+  color: @@BASE@@;
+  border-color: @@BLUE@@;
+}
+
+.ezpick-action-active:hover {
+  background: @@SAPPHIRE@@;
+  color: @@BASE@@;
+  border-color: @@SAPPHIRE@@;
+}
+
+/* Language dropdown */
 .translate-lang-box {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
@@ -33,12 +60,14 @@
   background: @@SURFACE1@@;
 }
 
+/* Section labels */
 .translate-section-label {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@SUBTEXT0@@;
 }
 
+/* Source text (read-only) */
 .translate-source {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
@@ -48,6 +77,33 @@
   padding: 8px 12px;
 }
 
+/* Editable text input */
+.ezpick-input {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  color: @@TEXT@@;
+  background-color: @@SURFACE0@@;
+  border-radius: 4px;
+  min-height: 48px;
+}
+
+/* Submit button */
+.ezpick-submit-btn {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  background: @@GREEN@@;
+  color: @@BASE@@;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+  min-height: 0;
+}
+
+.ezpick-submit-btn:hover {
+  background: @@TEAL@@;
+}
+
+/* Result text */
 .translate-result {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 13px;
@@ -57,6 +113,7 @@
   padding: 8px 12px;
 }
 
+/* Status text */
 .translate-status {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
@@ -69,12 +126,14 @@
   color: @@RED@@;
 }
 
+/* Separator */
 .translate-separator {
   background-color: @@SURFACE0@@;
   min-height: 1px;
   margin: 4px 0;
 }
 
+/* Copy button */
 .translate-copy-btn {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
