@@ -1,4 +1,4 @@
-.translate-container {
+.ezpick-container {
   background-color: @@BASE@@;
   color: @@TEXT@@;
   border: 1px solid @@SURFACE1@@;
@@ -7,20 +7,47 @@
   min-width: 400px;
 }
 
-.translate-title {
-  font-family: "JetBrainsMono Nerd Font", monospace;
-  font-size: 14px;
-  font-weight: bold;
-  color: @@BLUE@@;
+/* Action switcher row */
+.ezpick-actions {
 }
 
-.translate-lang-box {
+.ezpick-action {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  background: @@SURFACE0@@;
+  color: @@SUBTEXT1@@;
+  border: 1px solid @@SURFACE2@@;
+  border-radius: 4px;
+  padding: 4px 12px;
+}
+
+.ezpick-action:hover {
+  background: @@SURFACE1@@;
+  color: @@TEXT@@;
+}
+
+.ezpick-action-active {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  background: @@BLUE@@;
+  color: @@BASE@@;
+  border: 1px solid @@BLUE@@;
+  border-radius: 4px;
+  padding: 4px 12px;
+}
+
+.ezpick-action-active:hover {
+  background: @@SAPPHIRE@@;
+  border-color: @@SAPPHIRE@@;
+}
+
+.ezpick-lang-box {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   min-height: 0;
 }
 
-.translate-lang-box > button {
+.ezpick-lang-box > button {
   background: @@SURFACE0@@;
   color: @@TEXT@@;
   border: 1px solid @@SURFACE2@@;
@@ -29,17 +56,17 @@
   min-height: 0;
 }
 
-.translate-lang-box > button:hover {
+.ezpick-lang-box > button:hover {
   background: @@SURFACE1@@;
 }
 
-.translate-section-label {
+.ezpick-section-label {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@SUBTEXT0@@;
 }
 
-.translate-source {
+.ezpick-source {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   color: @@SUBTEXT1@@;
@@ -48,7 +75,7 @@
   padding: 8px 12px;
 }
 
-.translate-result {
+.ezpick-result {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 13px;
   color: @@TEXT@@;
@@ -57,25 +84,25 @@
   padding: 8px 12px;
 }
 
-.translate-status {
+.ezpick-status {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   color: @@OVERLAY1@@;
 }
 
-.translate-error {
+.ezpick-error {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   color: @@RED@@;
 }
 
-.translate-separator {
+.ezpick-separator {
   background-color: @@SURFACE0@@;
   min-height: 1px;
   margin: 4px 0;
 }
 
-.translate-copy-btn {
+.ezpick-copy-btn {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@BLUE@@;
@@ -85,11 +112,11 @@
   padding: 4px 12px;
 }
 
-.translate-copy-btn:hover {
+.ezpick-copy-btn:hover {
   background: @@SAPPHIRE@@;
 }
 
-.translate-copy-btn:disabled {
+.ezpick-copy-btn:disabled {
   background: @@SURFACE2@@;
   color: @@OVERLAY0@@;
 }
