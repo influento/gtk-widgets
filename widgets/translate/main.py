@@ -109,12 +109,16 @@ class TranslatePopup(WidgetPopup):
 
         container.append(title_row)
 
-        # Source text
+        # Source text area — stack with display (label) and input (textview) modes
         source_label = Gtk.Label(label="source")
         source_label.add_css_class("translate-section-label")
         source_label.set_halign(Gtk.Align.START)
         container.append(source_label)
 
+        self._source_stack = Gtk.Stack()
+        self._source_stack.set_transition_type(Gtk.StackTransitionType.NONE)
+
+        # Display mode: read-only label
         self._source_text = Gtk.Label()
         self._source_text.add_css_class("translate-source")
         self._source_text.set_wrap(True)
@@ -122,7 +126,27 @@ class TranslatePopup(WidgetPopup):
         self._source_text.set_halign(Gtk.Align.FILL)
         self._source_text.set_xalign(0)
         self._source_text.set_selectable(True)
-        container.append(self._source_text)
+        self._source_stack.add_named(self._source_text, "display")
+
+        # Input mode: editable TextView in a ScrolledWindow
+        self._source_input = Gtk.TextView()
+        self._source_input.add_css_class("ezpick-input")
+        self._source_input.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self._source_input.set_accepts_tab(False)
+
+        input_scroll = Gtk.ScrolledWindow()
+        input_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        input_scroll.set_min_content_height(60)
+        input_scroll.set_max_content_height(100)
+        input_scroll.set_child(self._source_input)
+
+        self._source_stack.add_named(input_scroll, "input")
+        container.append(self._source_stack)
+
+        # Key handler on TextView: Ctrl+Return runs translation
+        input_key_ctrl = Gtk.EventControllerKey()
+        input_key_ctrl.connect("key-pressed", self._on_input_key)
+        self._source_input.add_controller(input_key_ctrl)
 
         separator = Gtk.Separator()
         separator.add_css_class("translate-separator")
@@ -160,17 +184,24 @@ class TranslatePopup(WidgetPopup):
 
         container.append(action_row)
 
-        # Grab selected text and start translating
+        # Choose mode based on whether text was selected
         selected = get_selected_text()
         if selected:
+            self._source_stack.set_visible_child_name("display")
             self._source_text.set_text(selected)
             self._run_translation(selected)
         else:
-            self._source_text.set_text("(no text selected)")
-            self._status.set_text("select text before pressing the shortcut")
-            self._status.add_css_class("translate-error")
+            self._source_stack.set_visible_child_name("input")
+            self._status.set_text("type or paste text, then press Ctrl+Enter")
+            GLib.idle_add(self._source_input.grab_focus)
 
         return container
+
+    def _get_current_text(self):
+        if self._source_stack.get_visible_child_name() == "input":
+            buf = self._source_input.get_buffer()
+            return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
+        return self._source_text.get_text().strip()
 
     def _run_translation(self, text):
         """Run translation in background thread."""
@@ -204,9 +235,19 @@ class TranslatePopup(WidgetPopup):
 
     def _on_lang_changed(self, dropdown, _param):
         """Re-translate when language changes."""
-        source = self._source_text.get_text()
-        if source and source != "(no text selected)":
-            self._run_translation(source)
+        text = self._get_current_text()
+        if text:
+            self._run_translation(text)
+
+    def _on_input_key(self, controller, keyval, keycode, state):
+        """Handle Ctrl+Return in the input TextView to trigger translation."""
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if ctrl and keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            text = self._get_current_text()
+            if text:
+                self._run_translation(text)
+            return True
+        return False
 
     def _on_copy(self, _button):
         if self._translation:
@@ -217,7 +258,13 @@ class TranslatePopup(WidgetPopup):
             self._status.set_text("copied!")
 
     def _on_key(self, controller, keyval, keycode, state):
-        if keyval in (Gdk.KEY_Escape, Gdk.KEY_q):
+        if keyval == Gdk.KEY_Escape:
+            self.quit()
+            return True
+        # Don't close on 'q' when the user is typing in the input TextView
+        if keyval == Gdk.KEY_q:
+            if self._source_stack.get_visible_child_name() == "input":
+                return False
             self.quit()
             return True
         return False
