@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Translation popup — GTK4 widget using Claude Sonnet via claude CLI."""
+"""ezpick — multi-action text tool using Claude Sonnet via claude CLI."""
 
 import os, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
@@ -30,6 +30,8 @@ LANGUAGES = [
     ("uk", "Ukrainian"),
 ]
 
+ACTIONS = ["Translate", "Fix English", "Dictionary"]
+
 
 def get_selected_text():
     """Get the currently selected text via primary selection."""
@@ -43,8 +45,25 @@ def get_selected_text():
         return ""
 
 
-def translate(text, target_lang):
-    """Translate text using claude CLI."""
+def call_claude(prompt, text):
+    """Run a prompt through claude CLI with input text."""
+    result = subprocess.run(
+        [
+            "claude", "-p",
+            "--model", "sonnet",
+            "--no-session-persistence",
+            prompt,
+        ],
+        input=text,
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "claude CLI failed")
+    return result.stdout.strip()
+
+
+def run_translate(text, target_lang):
+    """Translate text."""
     if target_lang == "auto":
         lang_instruction = (
             "Auto-detect the source language. "
@@ -61,60 +80,84 @@ def translate(text, target_lang):
         "Output ONLY the translation, nothing else. "
         "No explanations, no quotes, no prefixes."
     )
+    return call_claude(prompt, text)
 
-    result = subprocess.run(
-        [
-            "claude", "-p",
-            "--model", "sonnet",
-            "--no-session-persistence",
-            prompt,
-        ],
-        input=text,
-        capture_output=True, text=True, timeout=30,
+
+def run_fix_english(text):
+    """Fix English grammar and style."""
+    prompt = (
+        "You are a grammar and style corrector. "
+        "First, output the corrected version of the text. "
+        "Then output a blank line, followed by a line '---', then a blank line. "
+        "Then list each change you made, one per line, starting with '• '. "
+        "Each explanation should be concise (one line). "
+        "If the text is already correct, output it unchanged and write '• No changes needed.' "
+        "Do not add any other commentary."
     )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "claude CLI failed")
-    return result.stdout.strip()
+    return call_claude(prompt, text)
 
 
-class TranslatePopup(WidgetPopup):
+def run_dictionary(text):
+    """Look up a word or short phrase."""
+    prompt = (
+        "You are a dictionary. For the given word or phrase, provide:\n"
+        "DEFINITION:\nA clear, concise definition.\n\n"
+        "ETYMOLOGY:\nBrief origin of the word.\n\n"
+        "EXAMPLES:\n• 2-3 usage examples as bullet points.\n\n"
+        "Use exactly these section headers. Be concise. "
+        "If the input is not a recognizable word or phrase, say so briefly."
+    )
+    return call_claude(prompt, text)
+
+
+class EzpickPopup(WidgetPopup):
     def __init__(self):
-        super().__init__(application_id="dev.dotfiles.translate")
-        self._translation = ""
+        super().__init__(application_id="dev.dotfiles.ezpick")
+        self._result_content = ""
+        self._active_action = 0  # Translate by default
+        self._action_buttons = []
+        self._has_input_field = False
 
     def build_ui(self):
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         container.add_css_class("translate-container")
 
-        # Title row with language selector
-        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        title = Gtk.Label(label="Translate")
-        title.add_css_class("translate-title")
-        title.set_hexpand(True)
-        title.set_halign(Gtk.Align.START)
-        title_row.append(title)
+        # Action switcher row
+        action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        action_row.add_css_class("ezpick-action-row")
+        for i, name in enumerate(ACTIONS):
+            btn = Gtk.Button(label=name)
+            btn.add_css_class("ezpick-action-btn")
+            if i == 0:
+                btn.add_css_class("ezpick-action-active")
+            btn.connect("clicked", self._on_action_clicked, i)
+            action_row.append(btn)
+            self._action_buttons.append(btn)
+        container.append(action_row)
 
+        # Language selector (only visible for Translate action)
+        self._lang_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         lang_label = Gtk.Label(label="to:")
         lang_label.add_css_class("translate-section-label")
         lang_label.set_valign(Gtk.Align.CENTER)
-        title_row.append(lang_label)
+        self._lang_row.append(lang_label)
 
         self._lang_dropdown = Gtk.DropDown.new_from_strings(
             [name for _, name in LANGUAGES]
         )
-        self._lang_dropdown.set_selected(0)  # Auto
+        self._lang_dropdown.set_selected(0)
         self._lang_dropdown.add_css_class("translate-lang-box")
         self._lang_dropdown.connect("notify::selected", self._on_lang_changed)
-        title_row.append(self._lang_dropdown)
+        self._lang_row.append(self._lang_dropdown)
+        container.append(self._lang_row)
 
-        container.append(title_row)
+        # Source section label
+        self._source_label = Gtk.Label(label="source")
+        self._source_label.add_css_class("translate-section-label")
+        self._source_label.set_halign(Gtk.Align.START)
+        container.append(self._source_label)
 
-        # Source text
-        source_label = Gtk.Label(label="source")
-        source_label.add_css_class("translate-section-label")
-        source_label.set_halign(Gtk.Align.START)
-        container.append(source_label)
-
+        # Source text (static label, shown when text was selected)
         self._source_text = Gtk.Label()
         self._source_text.add_css_class("translate-source")
         self._source_text.set_wrap(True)
@@ -124,16 +167,38 @@ class TranslatePopup(WidgetPopup):
         self._source_text.set_selectable(True)
         container.append(self._source_text)
 
+        # Input text view (editable, shown when no text was selected)
+        input_scroll = Gtk.ScrolledWindow()
+        input_scroll.set_max_content_height(150)
+        input_scroll.set_propagate_natural_height(True)
+        self._input_view = Gtk.TextView()
+        self._input_view.add_css_class("ezpick-input")
+        self._input_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self._input_view.set_left_margin(12)
+        self._input_view.set_right_margin(12)
+        self._input_view.set_top_margin(8)
+        self._input_view.set_bottom_margin(8)
+        input_scroll.set_child(self._input_view)
+        self._input_scroll = input_scroll
+        container.append(input_scroll)
+
+        # Submit button for manual input mode
+        self._submit_btn = Gtk.Button(label="Go")
+        self._submit_btn.add_css_class("ezpick-submit-btn")
+        self._submit_btn.connect("clicked", self._on_submit)
+        container.append(self._submit_btn)
+
         separator = Gtk.Separator()
         separator.add_css_class("translate-separator")
         container.append(separator)
 
-        # Translation result
-        result_label = Gtk.Label(label="translation")
-        result_label.add_css_class("translate-section-label")
-        result_label.set_halign(Gtk.Align.START)
-        container.append(result_label)
+        # Result section label
+        self._result_label = Gtk.Label(label="result")
+        self._result_label.add_css_class("translate-section-label")
+        self._result_label.set_halign(Gtk.Align.START)
+        container.append(self._result_label)
 
+        # Result text
         self._result_text = Gtk.Label()
         self._result_text.add_css_class("translate-result")
         self._result_text.set_wrap(True)
@@ -144,85 +209,146 @@ class TranslatePopup(WidgetPopup):
         container.append(self._result_text)
 
         # Status / copy row
-        action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        bottom_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
         self._status = Gtk.Label()
         self._status.add_css_class("translate-status")
         self._status.set_hexpand(True)
         self._status.set_halign(Gtk.Align.START)
-        action_row.append(self._status)
+        bottom_row.append(self._status)
 
         self._copy_btn = Gtk.Button(label="copy")
         self._copy_btn.add_css_class("translate-copy-btn")
         self._copy_btn.set_sensitive(False)
         self._copy_btn.connect("clicked", self._on_copy)
-        action_row.append(self._copy_btn)
+        bottom_row.append(self._copy_btn)
 
-        container.append(action_row)
+        container.append(bottom_row)
 
-        # Grab selected text and start translating
+        # Determine input mode
         selected = get_selected_text()
         if selected:
             self._source_text.set_text(selected)
-            self._run_translation(selected)
+            self._source_text.set_visible(True)
+            self._input_scroll.set_visible(False)
+            self._submit_btn.set_visible(False)
+            self._has_input_field = False
+            self._run_action(selected)
         else:
-            self._source_text.set_text("(no text selected)")
-            self._status.set_text("select text before pressing the shortcut")
-            self._status.add_css_class("translate-error")
+            self._source_text.set_visible(False)
+            self._input_scroll.set_visible(True)
+            self._submit_btn.set_visible(True)
+            self._has_input_field = True
+            self._status.set_text("type or paste text, then press Go")
+
+        self._update_result_label()
 
         return container
 
-    def _run_translation(self, text):
-        """Run translation in background thread."""
-        self._status.set_text("translating...")
+    def _get_input_text(self):
+        """Get current input text from whichever source is active."""
+        if self._has_input_field:
+            buf = self._input_view.get_buffer()
+            return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
+        return self._source_text.get_text().strip()
+
+    def _on_action_clicked(self, _btn, action_idx):
+        """Switch active action and re-run."""
+        if action_idx == self._active_action:
+            return
+        self._active_action = action_idx
+        for i, btn in enumerate(self._action_buttons):
+            if i == action_idx:
+                btn.add_css_class("ezpick-action-active")
+            else:
+                btn.remove_css_class("ezpick-action-active")
+
+        # Show/hide language selector
+        self._lang_row.set_visible(action_idx == 0)
+        self._update_result_label()
+
+        text = self._get_input_text()
+        if text:
+            self._run_action(text)
+
+    def _update_result_label(self):
+        """Update the result section label based on active action."""
+        labels = ["translation", "corrected text", "definition"]
+        self._result_label.set_text(labels[self._active_action])
+
+    def _on_lang_changed(self, dropdown, _param):
+        """Re-translate when language changes."""
+        if self._active_action != 0:
+            return
+        text = self._get_input_text()
+        if text:
+            self._run_action(text)
+
+    def _on_submit(self, _button):
+        """Handle Go button click for manual input mode."""
+        text = self._get_input_text()
+        if text:
+            self._run_action(text)
+
+    def _run_action(self, text):
+        """Run the active action in a background thread."""
+        action_names = ["translating...", "fixing...", "looking up..."]
+        self._status.set_text(action_names[self._active_action])
         self._status.remove_css_class("translate-error")
         self._copy_btn.set_sensitive(False)
         self._result_text.set_text("")
 
-        idx = self._lang_dropdown.get_selected()
-        target = LANGUAGES[idx][0]
+        action_idx = self._active_action
+        target_lang = LANGUAGES[self._lang_dropdown.get_selected()][0]
 
-        def do_translate():
+        def do_work():
             try:
-                result = translate(text, target)
-                GLib.idle_add(self._on_translate_done, result)
+                if action_idx == 0:
+                    result = run_translate(text, target_lang)
+                elif action_idx == 1:
+                    result = run_fix_english(text)
+                else:
+                    result = run_dictionary(text)
+                GLib.idle_add(self._on_action_done, result)
             except Exception as e:
-                GLib.idle_add(self._on_translate_error, str(e))
+                GLib.idle_add(self._on_action_error, str(e))
 
-        thread = threading.Thread(target=do_translate, daemon=True)
+        thread = threading.Thread(target=do_work, daemon=True)
         thread.start()
 
-    def _on_translate_done(self, result):
-        self._translation = result
+    def _on_action_done(self, result):
+        self._result_content = result
         self._result_text.set_text(result)
         self._status.set_text("")
         self._copy_btn.set_sensitive(True)
 
-    def _on_translate_error(self, error):
+    def _on_action_error(self, error):
         self._status.set_text(f"error: {error}")
         self._status.add_css_class("translate-error")
 
-    def _on_lang_changed(self, dropdown, _param):
-        """Re-translate when language changes."""
-        source = self._source_text.get_text()
-        if source and source != "(no text selected)":
-            self._run_translation(source)
-
     def _on_copy(self, _button):
-        if self._translation:
+        if self._result_content:
             subprocess.run(
-                ["wl-copy", "--", self._translation],
+                ["wl-copy", "--", self._result_content],
                 check=False,
             )
             self._status.set_text("copied!")
 
     def _on_key(self, controller, keyval, keycode, state):
+        # Don't close on 'q' if the text input field is focused
+        if keyval == Gdk.KEY_q and self._has_input_field:
+            return False
         if keyval in (Gdk.KEY_Escape, Gdk.KEY_q):
             self.quit()
             return True
+        # Ctrl+Enter to submit
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if state & Gdk.ModifierType.CONTROL_MASK:
+                self._on_submit(None)
+                return True
         return False
 
 
 if __name__ == "__main__":
-    TranslatePopup.CSS = CSS
-    TranslatePopup().run()
+    EzpickPopup.CSS = CSS
+    EzpickPopup().run()
