@@ -46,6 +46,7 @@ values. Override the theme file path via `GTK_WIDGETS_THEME` env var.
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
 | `translate`    | Translation via Claude Sonnet (prototype of ezpick action system) |
 | `usb`          | USB device manager: list, format, write ISO with progress         |
+| `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
 
 ## Theming System
 
@@ -131,10 +132,15 @@ gtk-widgets/
 │   ├── translate/
 │   │   ├── main.py
 │   │   └── style.css
-│   └── usb/
+│   ├── usb/
+│   │   ├── main.py
+│   │   ├── style.css
+│   │   └── status         # JSON: USB icon, event-driven via udevadm
+│   └── timer/
 │       ├── main.py
+│       ├── state.py       # Shared state model (popup + status script)
 │       ├── style.css
-│       └── status         # JSON: USB icon, event-driven via udevadm
+│       └── status         # JSON: hh:mm:ss, fires alarm at zero
 └── themes/
     └── catppuccin-mocha.json
 ```

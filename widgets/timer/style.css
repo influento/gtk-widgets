@@ -1,0 +1,170 @@
+.timer-container {
+  background-color: @@BASE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 8px;
+  padding: 18px 20px;
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  min-width: 320px;
+}
+
+/* Strip default GTK button chrome inside the timer */
+.timer-container button {
+  background-image: none;
+  box-shadow: none;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+}
+
+.mode-switcher {
+  background-color: @@MANTLE@@;
+  border-radius: 6px;
+  padding: 3px;
+}
+
+.mode-button {
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  border-radius: 4px;
+  color: @@SUBTEXT0@@;
+  font-size: 12px;
+  padding: 6px 12px;
+  min-height: 0;
+}
+
+.mode-button:hover {
+  background-color: @@SURFACE0@@;
+  color: @@TEXT@@;
+}
+
+.mode-button.active {
+  background-color: @@SURFACE1@@;
+  color: @@TEXT@@;
+}
+
+.timer-display {
+  font-size: 36px;
+  font-weight: bold;
+  color: @@BLUE@@;
+  padding: 8px 0;
+}
+
+/* Spin buttons: theme the spinbutton itself, its inner text entry, and the +/- buttons */
+spinbutton.time-spin {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 14px;
+  background-color: @@MANTLE@@;
+  background-image: none;
+  color: @@TEXT@@;
+  border-radius: 4px;
+  border: 1px solid @@SURFACE1@@;
+  box-shadow: none;
+  padding: 0;
+  min-width: 48px;
+}
+
+spinbutton.time-spin > text {
+  background-color: transparent;
+  background-image: none;
+  color: @@TEXT@@;
+  caret-color: @@BLUE@@;
+  border: none;
+  box-shadow: none;
+  padding: 4px 6px;
+  min-height: 0;
+  min-width: 28px;
+}
+
+spinbutton.time-spin > text > selection {
+  background-color: @@BLUE@@;
+  color: @@BASE@@;
+}
+
+spinbutton.time-spin > button {
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  color: @@SUBTEXT0@@;
+  min-height: 16px;
+  min-width: 20px;
+  padding: 0 4px;
+}
+
+spinbutton.time-spin > button:hover {
+  background-color: @@SURFACE0@@;
+  color: @@BLUE@@;
+}
+
+spinbutton.time-spin > button:active {
+  background-color: @@SURFACE1@@;
+}
+
+.spin-suffix {
+  color: @@SUBTEXT0@@;
+  font-size: 12px;
+  padding-right: 4px;
+}
+
+.preset-button {
+  background-color: @@MANTLE@@;
+  background-image: none;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 4px;
+  color: @@SUBTEXT1@@;
+  font-size: 11px;
+  padding: 4px 10px;
+  min-height: 0;
+}
+
+.preset-button:hover {
+  background-color: @@SURFACE0@@;
+  color: @@BLUE@@;
+}
+
+.preset-button:active {
+  background-color: @@SURFACE1@@;
+}
+
+.action-button {
+  background-color: @@SURFACE0@@;
+  background-image: none;
+  border: none;
+  border-radius: 6px;
+  color: @@TEXT@@;
+  font-size: 13px;
+  padding: 8px 14px;
+}
+
+.action-button:hover {
+  background-color: @@SURFACE1@@;
+}
+
+.action-button:active {
+  background-color: @@SURFACE2@@;
+}
+
+.action-button:disabled {
+  background-color: @@MANTLE@@;
+  color: @@OVERLAY0@@;
+}
+
+.action-button.primary {
+  background-color: @@BLUE@@;
+  color: @@BASE@@;
+  font-weight: bold;
+}
+
+.action-button.primary:hover {
+  background-color: @@SAPPHIRE@@;
+}
+
+.action-button.primary:active {
+  background-color: @@LAVENDER@@;
+}
+
+.action-button.primary:disabled {
+  background-color: @@SURFACE0@@;
+  color: @@OVERLAY0@@;
+}
