@@ -3,11 +3,22 @@ set -euo pipefail
 
 # Generic toggle for GTK4 widget popups. Uses flock to prevent duplicates.
 # Usage: widget-toggle <widget-name>
+#
+# Detaches from the caller (e.g. waybar) so the caller isn't blocked while the
+# popup is open — important for status modules that poll on a short interval.
 
 WIDGET="${1:?Usage: widget-toggle <widget-name>}"
 WIDGET_PATH="$HOME/.local/bin/$WIDGET"
 LOCKFILE="/tmp/.${WIDGET}-toggle.lock"
 PIDFILE="/tmp/.${WIDGET}-toggle.pid"
+
+# Re-exec ourselves detached on first invocation so the calling process
+# (waybar on-click, sway exec, etc.) returns immediately.
+if [[ "${WIDGET_TOGGLE_DETACHED:-}" != "1" ]]; then
+  WIDGET_TOGGLE_DETACHED=1 setsid -f "$0" "$WIDGET" \
+    </dev/null >/dev/null 2>&1
+  exit 0
+fi
 
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
