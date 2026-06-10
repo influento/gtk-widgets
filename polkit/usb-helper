@@ -1,0 +1,157 @@
+#!/usr/bin/python3 -I
+"""Privileged USB helper for gtk-widgets.
+
+Intended to be run ONLY via pkexec, authorised by the bundled polkit rule
+(50-gtk-widgets-usb.rules), which permits exactly this root-owned binary.
+
+It performs format / write-iso / unmount on REMOVABLE USB whole-disk devices.
+Security model:
+  - Trust is re-derived from the kernel (sysfs `removable` + udev transport),
+    NOT from the caller's arguments, so it cannot be tricked into writing to an
+    internal disk such as /dev/nvme0n1 or /dev/sda.
+  - Every external command is built as discrete argv — no shell is ever invoked,
+    so there is no string-injection surface.
+  - write-iso reads the image from stdin (supplied by the unprivileged caller),
+    so root never opens an arbitrary path (avoids leaking root-only files).
+  - `--check` runs all validation and prints the command it WOULD run, then
+    exits without touching anything — used for non-destructive verification.
+"""
+
+import os
+import re
+import stat
+import subprocess
+import sys
+
+ALLOWED_FS = ("exfat", "vfat", "ext4", "ntfs")
+# USB mass-storage whole disks are sd[a-z]+ (a trailing digit = a partition).
+NAME_RE = re.compile(r"^sd[a-z]+$")
+LABEL_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+MKFS = {
+    "vfat": ["mkfs.vfat", "-F", "32"],
+    "ext4": ["mkfs.ext4", "-F"],
+    "ntfs": ["mkfs.ntfs", "-f"],
+    "exfat": ["mkfs.exfat"],
+}
+
+
+def die(msg, code=2):
+    print(f"usb-helper: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def validate_usb_disk(dev):
+    """Return the bare device name iff dev is a removable USB whole disk."""
+    if not dev.startswith("/dev/"):
+        die(f"{dev!r}: device must be a /dev path")
+    name = dev[len("/dev/"):]
+    if not NAME_RE.match(name):
+        die(f"{dev!r}: not a whole-disk device name (partitions/paths rejected)")
+    try:
+        st = os.lstat(dev)  # lstat: never follow a symlink into another device
+    except FileNotFoundError:
+        die(f"{dev}: no such device")
+    if not stat.S_ISBLK(st.st_mode):
+        die(f"{dev}: not a block device")
+    try:
+        with open(f"/sys/block/{name}/removable") as f:
+            removable = f.read().strip()
+    except OSError:
+        die(f"{dev}: cannot read removable flag")
+    if removable != "1":
+        die(f"{dev}: refusing — device is not removable")
+    tran = subprocess.run(["lsblk", "-ndo", "TRAN", dev],
+                          capture_output=True, text=True).stdout.strip()
+    if tran != "usb":
+        die(f"{dev}: refusing — transport is {tran or 'unknown'}, not usb")
+    return name
+
+
+def mounted_partitions(name):
+    out = subprocess.run(["lsblk", "-nro", "NAME,MOUNTPOINT", f"/dev/{name}"],
+                         capture_output=True, text=True).stdout
+    mounted = []
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[1].strip():
+            mounted.append(f"/dev/{parts[0]}")
+    return mounted
+
+
+def unmount(name):
+    for part in mounted_partitions(name):
+        subprocess.run(["umount", part], capture_output=True)
+
+
+def cmd_unmount(dev, check):
+    name = validate_usb_disk(dev)
+    if check:
+        print("WOULD UNMOUNT:", mounted_partitions(name) or "(none)")
+        return 0
+    unmount(name)
+    return 0
+
+
+def cmd_format(dev, fstype, label, check):
+    if fstype not in ALLOWED_FS:
+        die(f"unknown filesystem: {fstype}")
+    mkfs = list(MKFS[fstype])
+    if label is not None:
+        if not LABEL_RE.match(label):
+            die("invalid label (letters, digits, '-', '_'; max 32)")
+        if fstype == "vfat":
+            mkfs += ["-n", label[:11].upper()]
+        else:
+            mkfs += ["-L", label]
+    name = validate_usb_disk(dev)
+    disk, part = f"/dev/{name}", f"/dev/{name}1"
+    steps = [["wipefs", "-af", disk], ["sfdisk", disk], mkfs + [part]]
+    if check:
+        for s in steps:
+            print("WOULD RUN:", " ".join(s))
+        return 0
+    unmount(name)
+    if subprocess.run(steps[0], capture_output=True).returncode != 0:
+        die("wipefs failed")
+    if subprocess.run(steps[1], input=b"type=83\n", capture_output=True).returncode != 0:
+        die("partitioning failed")
+    subprocess.run(["udevadm", "settle"], capture_output=True)
+    r = subprocess.run(steps[2], capture_output=True)
+    if r.returncode != 0:
+        die("mkfs failed: " + r.stderr.decode(errors="replace").strip())
+    return 0
+
+
+def cmd_write_iso(dev, check):
+    name = validate_usb_disk(dev)
+    disk = f"/dev/{name}"
+    argv = ["dd", f"of={disk}", "bs=4M", "conv=fdatasync", "status=none"]
+    if check:
+        print("WOULD RUN:", " ".join(argv), "(image read from stdin)")
+        return 0
+    unmount(name)
+    if subprocess.run(argv).returncode != 0:  # image arrives on our stdin
+        die("dd failed")
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+    check = False
+    if args and args[0] == "--check":
+        check, args = True, args[1:]
+    if not args:
+        die("usage: usb-helper [--check] {unmount|format|write-iso} <device> [args]")
+    sub, rest = args[0], args[1:]
+    if sub == "unmount" and len(rest) == 1:
+        sys.exit(cmd_unmount(rest[0], check))
+    if sub == "format" and len(rest) in (2, 3):
+        sys.exit(cmd_format(rest[0], rest[1], rest[2] if len(rest) == 3 else None, check))
+    if sub == "write-iso" and len(rest) == 1:
+        sys.exit(cmd_write_iso(rest[0], check))
+    die("invalid arguments")
+
+
+if __name__ == "__main__":
+    main()

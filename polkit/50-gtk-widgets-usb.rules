@@ -1,11 +1,14 @@
-// Allow wheel group to manage USB devices without password prompt.
-// Covers: mount, umount, eject, mkfs, dd, wipefs, sfdisk
+// Authorise ONLY the gtk-widgets USB helper to run without a password, and only
+// for an active local session in the wheel group.
+//
+// This matches the exact root-owned program path (action.lookup("program")) —
+// NOT a substring of the command line — so it cannot be bypassed by passing a
+// crafted command to pkexec. The helper validates its own arguments and target
+// device, so this grants no general-purpose privilege.
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
-        subject.isInGroup("wheel")) {
-        var cmd = action.lookup("command_line") || "";
-        if (cmd.match(/\b(mount|umount|eject|mkfs\.|dd |wipefs|sfdisk)\b/)) {
-            return polkit.Result.YES;
-        }
+        action.lookup("program") == "/usr/lib/gtk-widgets/usb-helper" &&
+        subject.active && subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
     }
 });

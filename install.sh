@@ -47,7 +47,17 @@ for widget_dir in "$REPO_DIR"/widgets/*/; do
   fi
 done
 
-# Polkit rules (requires sudo)
+# Privileged USB helper + polkit rule (requires sudo). The helper is the only
+# program the rule authorises, so install it root-owned at a fixed path.
+helper_src="$REPO_DIR/polkit/usb-helper"
+helper_dst="/usr/lib/gtk-widgets/usb-helper"
+if [[ -f "$helper_src" ]]; then
+  if [[ ! -f "$helper_dst" ]] || ! diff -q "$helper_src" "$helper_dst" &>/dev/null; then
+    sudo install -D -m 0755 -o root -g root "$helper_src" "$helper_dst"
+    echo "  helper: $helper_dst"
+  fi
+fi
+
 polkit_src="$REPO_DIR/polkit/50-gtk-widgets-usb.rules"
 polkit_dst="/etc/polkit-1/rules.d/50-gtk-widgets-usb.rules"
 if [[ -f "$polkit_src" ]]; then

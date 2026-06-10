@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """USB device manager popup — list, format, write ISO."""
 
-import json, os, re, shlex, subprocess, sys, threading
+import json, os, re, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
@@ -13,6 +13,7 @@ CSS = load_css(os.path.join(_DIR, "style.css"))
 
 FS_TYPES = ["exfat", "vfat", "ext4", "ntfs"]
 _LABEL_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+HELPER = "/usr/lib/gtk-widgets/usb-helper"
 _BUSY_DIR = os.path.join(
     os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "gtk-widgets-usb")
 
@@ -106,61 +107,35 @@ def lsblk():
             if d.get("tran") == "usb" and d.get("rm")]
 
 
-def _unmount_all(dev_name):
-    dev = f"/dev/{dev_name}"
-    cmds = []
-    try:
-        result = subprocess.run(
-            ["lsblk", "-J", "-o", "NAME,MOUNTPOINT", dev],
-            capture_output=True, text=True,
-        )
-        data = json.loads(result.stdout)
-        for d in data.get("blockdevices", []):
-            if d.get("mountpoint"):
-                cmds.append(f"umount /dev/{d['name']} 2>/dev/null")
-            for c in d.get("children", []):
-                if c.get("mountpoint"):
-                    cmds.append(f"umount /dev/{c['name']} 2>/dev/null")
-    except Exception:
-        pass
-    if cmds:
-        subprocess.run(["pkexec", "bash", "-c", "; ".join(cmds)],
-                       capture_output=True)
-
-
-# --- Operations ---
+# --- Operations (privileged steps run via the root-owned usb-helper, never a
+#     shell; the helper re-validates the target is a removable USB disk) ---
 
 def format_device(dev_name, fstype, label=None):
-    dev = f"/dev/{dev_name}"
-    part = f"{dev}1"
-    _unmount_all(dev_name)
-
-    mkfs = {"vfat": "mkfs.vfat -F 32", "ext4": "mkfs.ext4 -F",
-            "ntfs": "mkfs.ntfs -f", "exfat": "mkfs.exfat"}.get(fstype)
-    if not mkfs:
+    if fstype not in FS_TYPES:
         return False, f"Unknown filesystem: {fstype}"
-
+    if label and not _LABEL_RE.match(label):
+        return False, "Label may only contain letters, numbers, - and _"
+    cmd = ["pkexec", HELPER, "format", f"/dev/{dev_name}", fstype]
     if label:
-        if not _LABEL_RE.match(label):
-            return False, "Label may only contain letters, numbers, - and _"
-        lbl = label[:11].upper() if fstype == "vfat" else label
-        flag = "-n" if fstype == "vfat" else "-L"
-        mkfs += f" {flag} {lbl}"
-
-    script = f"wipefs -af {dev} && echo 'type=83' | sfdisk {dev} && {mkfs} {part}"
-    result = subprocess.run(["pkexec", "bash", "-c", script],
-                            capture_output=True, text=True)
+        cmd.append(label)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         return True, "Format complete"
     return False, result.stderr.strip() or "Format failed"
 
 
 def write_iso(iso_path, dev_name):
-    dev = f"/dev/{dev_name}"
-    _unmount_all(dev_name)
-    script = f"dd if={shlex.quote(iso_path)} of={dev} bs=4M conv=fdatasync status=none"
-    result = subprocess.run(["pkexec", "bash", "-c", script],
-                            capture_output=True, text=True)
+    # Open the image as the unprivileged user and stream it to the helper's
+    # stdin, so root never opens an arbitrary path.
+    try:
+        iso = open(iso_path, "rb")
+    except OSError as e:
+        return False, f"Cannot read ISO: {e}"
+    with iso:
+        result = subprocess.run(
+            ["pkexec", HELPER, "write-iso", f"/dev/{dev_name}"],
+            stdin=iso, capture_output=True, text=True,
+        )
     if result.returncode == 0:
         return True, "ISO written successfully"
     return False, result.stderr.strip() or "Write failed"
