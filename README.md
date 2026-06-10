@@ -12,6 +12,8 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect   |
 | `power`        | Power menu: lock, sleep, reboot, shut down                 |
 | `translate`    | Translation via Claude Sonnet                              |
+| `usb`          | USB device manager: list, format, write ISO                |
+| `timer`        | Timer + stopwatch with alarm on expiry                     |
 
 ## Installation
 
@@ -40,6 +42,8 @@ The popup is toggled via `widget-toggle <name>` on click.
 | `claude-usage` | `claude-usage-status` | 600      | `widget-toggle claude-usage` |
 | `display`      | `display-status`      | once     | `widget-toggle display`      |
 | `power`        | `power-status`        | once     | `widget-toggle power`        |
+| `usb`          | `usb-status`          | 3        | `widget-toggle usb`          |
+| `timer`        | `timer-status`        | 1        | `widget-toggle timer`        |
 
 Status scripts output JSON with `text` (required), `tooltip` and `class` (optional).
 
@@ -55,3 +59,6 @@ Waybar module example:
 ```
 
 `translate` has no status script — it is triggered by a keybinding, not a waybar module.
+
+> **Privacy:** `translate` sends the current text selection to Anthropic (via the `claude` CLI)
+> each time it runs. Avoid triggering it on sensitive text.

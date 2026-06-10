@@ -13,7 +13,8 @@ CSS = load_css(os.path.join(_DIR, "style.css"))
 
 FS_TYPES = ["exfat", "vfat", "ext4", "ntfs"]
 _LABEL_RE = re.compile(r'^[A-Za-z0-9_-]+$')
-_BUSY_DIR = "/tmp/.gtk-widgets-usb"
+_BUSY_DIR = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "gtk-widgets-usb")
 
 
 # --- State persistence ---
@@ -48,8 +49,14 @@ def _clear_busy(dev_name):
 
 
 def _is_device_busy(dev_name):
+    # Match /dev/<name> (or a partition like /dev/<name>1) only when it appears
+    # as a real device argument — preceded by start/space/'=' and followed by an
+    # optional partition number then space/end. The old `pgrep -f /dev/sdb` did a
+    # bare substring match, so it also matched siblings like /dev/sdba and
+    # unrelated paths such as `vim ~/dev/sdb.txt`, falsely marking it busy.
+    pattern = rf"(^|[[:space:]=])/dev/{dev_name}([0-9]+)?([[:space:]]|$)"
     try:
-        result = subprocess.run(["pgrep", "-fa", f"/dev/{dev_name}"],
+        result = subprocess.run(["pgrep", "-f", pattern],
                                 capture_output=True, text=True)
         return result.returncode == 0
     except Exception:

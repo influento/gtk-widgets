@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
 from lib.widget_base import Gtk, WidgetPopup, load_css
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 CSS = load_css(os.path.join(_DIR, "style.css"))
@@ -69,19 +69,6 @@ def classify(pct):
     if pct >= 80:
         return "medium"
     return "low"
-
-
-def has_valid_cache():
-    """Check if cached charge date exists and is in the future."""
-    try:
-        with open(CACHE_PATH) as f:
-            cache = json.load(f)
-        charge_date = cache.get("next_charge_date")
-        if charge_date and datetime.strptime(charge_date, "%Y-%m-%d").date() >= date.today():
-            return True
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
-        pass
-    return False
 
 
 def fetch_subscription(session_key, org_uuid):

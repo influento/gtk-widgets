@@ -9,8 +9,14 @@ set -euo pipefail
 
 WIDGET="${1:?Usage: widget-toggle <widget-name>}"
 WIDGET_PATH="$HOME/.local/bin/$WIDGET"
-LOCKFILE="/tmp/.${WIDGET}-toggle.lock"
-PIDFILE="/tmp/.${WIDGET}-toggle.pid"
+
+# Per-user runtime dir (mode 0700, cleared on logout) instead of a predictable
+# world-writable /tmp path, so other local users can't pre-create or tamper with
+# our lock/pid files.
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+[[ -d "$RUNTIME_DIR" ]] || RUNTIME_DIR="/tmp"
+LOCKFILE="$RUNTIME_DIR/gtk-widgets-${WIDGET}-toggle.lock"
+PIDFILE="$RUNTIME_DIR/gtk-widgets-${WIDGET}-toggle.pid"
 
 # Re-exec ourselves detached on first invocation so the calling process
 # (waybar on-click, sway exec, etc.) returns immediately.
@@ -22,10 +28,16 @@ fi
 
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
-  # Lock is held — widget is running, kill it
+  # Lock is held — widget is running, kill it. Validate the PID is numeric and
+  # actually our widget before signalling, so a stale/reused PID (or a planted
+  # pidfile) can't make us kill an unrelated process.
   if [[ -f "$PIDFILE" ]]; then
-    pid="$(cat "$PIDFILE")"
-    kill "$pid" 2>/dev/null || true
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] \
+      && [[ -r "/proc/$pid/cmdline" ]] \
+      && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -qF -- "$WIDGET_PATH"; then
+      kill "$pid" 2>/dev/null || true
+    fi
   fi
   exit 0
 fi
