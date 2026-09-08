@@ -4,10 +4,13 @@
 import json, os, subprocess, sys
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
+sys.path.insert(0, _DIR)
 
 from lib.widget_base import Gtk, WidgetPopup, load_css
 
 from gi.repository import GLib
+
+import brightness  # noqa: E402
 
 CSS = load_css(os.path.join(_DIR, "style.css"))
 
@@ -38,69 +41,6 @@ def apply_scale(scale):
         f.write(f"output * scale {scale:.1f}\n")
     subprocess.Popen(["pkill", "-RTMIN+11", "waybar"],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
-def detect_brightness_backend():
-    """Return 'backlight', 'ddc', or None."""
-    try:
-        result = subprocess.run(
-            ["brightnessctl", "-c", "backlight", "info"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            return "backlight"
-    except FileNotFoundError:
-        pass
-    try:
-        result = subprocess.run(
-            ["ddcutil", "getvcp", "10"], capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            return "ddc"
-    except FileNotFoundError:
-        pass
-    return None
-
-
-def get_brightness(backend):
-    if backend == "backlight":
-        try:
-            cur = int(subprocess.run(
-                ["brightnessctl", "-c", "backlight", "get"],
-                capture_output=True, text=True,
-            ).stdout.strip())
-            mx = int(subprocess.run(
-                ["brightnessctl", "-c", "backlight", "max"],
-                capture_output=True, text=True,
-            ).stdout.strip())
-            return round(cur * 100 / mx)
-        except Exception:
-            return 100
-    else:
-        try:
-            result = subprocess.run(
-                ["ddcutil", "getvcp", "10"], capture_output=True, text=True,
-            )
-            for part in result.stdout.split(","):
-                if "current value" in part:
-                    return int(part.split("=")[1].strip())
-        except Exception:
-            pass
-        return 100
-
-
-def apply_brightness(backend, pct):
-    pct = int(pct)
-    if backend == "backlight":
-        subprocess.run(
-            ["brightnessctl", "-c", "backlight", "set", f"{pct}%"],
-            capture_output=True,
-        )
-    else:
-        subprocess.run(
-            ["ddcutil", "setvcp", "10", str(pct)],
-            capture_output=True,
-        )
 
 
 def get_temperature():
@@ -175,19 +115,19 @@ class DisplayPopup(WidgetPopup):
 
     def _load_brightness_async(self):
         """Detect brightness backend and build slider off the main init path."""
-        brightness_backend = detect_brightness_backend()
+        brightness_backend = brightness.detect_backend()
         if brightness_backend:
             delay = 100 if brightness_backend == "backlight" else 500
             self._build_slider(
                 self._brightness_box, "BRIGHTNESS",
-                get_brightness(brightness_backend) / 100,
+                brightness.get(brightness_backend) / 100,
                 lambda v: f"{int(v * 100)}%",
                 0.0, 1.0, 0.05,
                 marks=[(0.0, "0%"), (0.5, "50%"), (1.0, "100%")],
                 ticks=[i * 0.1 for i in range(11)],
                 snap=lambda v: round(v * 20) / 20,
                 key="brightness", delay=delay,
-                apply_fn=lambda v: apply_brightness(brightness_backend, v * 100),
+                apply_fn=lambda v: brightness.set_pct(brightness_backend, v * 100),
             )
             self._brightness_sep.set_visible(True)
             self._brightness_box.set_visible(True)

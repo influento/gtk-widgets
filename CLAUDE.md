@@ -34,13 +34,14 @@ values. Override the theme file path via `GTK_WIDGETS_THEME` env var.
 - `widget-toggle <name>` handles launch/dismiss via `flock` (prevents duplicates)
 - Close via Escape/q key or clicking outside the widget
 - Widgets with a `status` script output JSON (`text`, `tooltip`, `class`) for status bars
+- Extra executable `<widget>/<name>.py` files are symlinked as `<widget>-<name>` CLI entry points (e.g. `display-brightness`, bound to XF86MonBrightness keys in dotfiles)
 
 ### Current widgets
 
 | Widget         | Description                                                       |
 | -------------- | ----------------------------------------------------------------- |
 | `calendar`     | GTK4 calendar                                                     |
-| `display`      | Display settings: scale, brightness (laptop), night light temp    |
+| `display`      | Display settings: scale, brightness, night light temp; `display-brightness` CLI for keybinds |
 | `claude-usage` | Claude usage: 5h session, weekly all-models, weekly per-model     |
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect          |
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
@@ -123,6 +124,7 @@ gtk-widgets/
 │   │   └── status         # JSON: usage percentages, reset times
 │   ├── display/
 │   │   ├── main.py
+│   │   ├── brightness.py  # Backend (backlight/DDC) + CLI: display-brightness up|down|set|get
 │   │   ├── style.css
 │   │   └── status         # JSON: display icon
 │   ├── power/

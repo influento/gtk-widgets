@@ -45,6 +45,14 @@ for widget_dir in "$REPO_DIR"/widgets/*/; do
     ln -sf "$status" "$BIN_DIR/${name}-status"
     echo "  ${name}-status"
   fi
+
+  # Extra CLI entry points (e.g. display/brightness.py -> display-brightness)
+  for extra in "$widget_dir"/*.py; do
+    [[ -x "$extra" && "$(basename "$extra")" != "main.py" ]] || continue
+    cli="${name}-$(basename "$extra" .py)"
+    ln -sf "$extra" "$BIN_DIR/$cli"
+    echo "  $cli"
+  done
 done
 
 # Privileged USB helper + polkit rule (requires sudo). The helper is the only
