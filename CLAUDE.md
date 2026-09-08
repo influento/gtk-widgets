@@ -41,7 +41,7 @@ values. Override the theme file path via `GTK_WIDGETS_THEME` env var.
 | -------------- | ----------------------------------------------------------------- |
 | `calendar`     | GTK4 calendar                                                     |
 | `display`      | Display settings: scale, brightness (laptop), night light temp    |
-| `claude-usage` | Claude subscription usage with progress bars                      |
+| `claude-usage` | Claude usage: 5h session, weekly all-models, weekly per-model     |
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect          |
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
 | `translate`    | Translation via Claude Sonnet (prototype of ezpick action system) |

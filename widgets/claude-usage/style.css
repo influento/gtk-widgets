@@ -34,6 +34,12 @@
   color: @@TEXT@@;
 }
 
+.usage-period {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  color: @@OVERLAY1@@;
+}
+
 .usage-pct {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;

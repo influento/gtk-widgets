@@ -142,11 +142,12 @@ class ClaudeUsagePopup(WidgetPopup):
             data = fetch_data(force=force)
             if "error" in data:
                 raise RuntimeError(data["error"])
-            self._build_window_row(self._container, "5-hour", data["five_hour"])
-            self._build_window_row(self._container, "7-day", data["seven_day"])
-            sonnet = data.get("seven_day_sonnet")
-            if sonnet and sonnet.get("utilization") is not None and sonnet.get("resets_at"):
-                self._build_window_row(self._container, "7-day sonnet", sonnet)
+            windows = data.get("windows") or []
+            if not windows:
+                raise RuntimeError("no usage windows in response")
+            for window in windows:
+                self._build_window_row(self._container, window)
+            self._build_spend_row(self._container, data.get("spend"))
             self._build_charge_section(self._container, data)
         except Exception as e:
             error_label = Gtk.Label(label=f"Failed to fetch usage data: {e}")
@@ -155,18 +156,24 @@ class ClaudeUsagePopup(WidgetPopup):
             error_label.set_max_width_chars(40)
             self._container.append(error_label)
 
-    def _build_window_row(self, container, name, window_data):
+    def _build_window_row(self, container, window):
         """Build a labeled progress bar row for one usage window."""
-        pct = window_data["utilization"]
+        pct = window["percent"]
         level = classify(pct)
+        period = "5h" if window["kind"] == "session" else "7d"
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
-        name_label = Gtk.Label(label=name)
+        name_label = Gtk.Label(label=window["label"])
         name_label.add_css_class("usage-window-label")
-        name_label.set_hexpand(True)
         name_label.set_halign(Gtk.Align.START)
         header.append(name_label)
+
+        period_label = Gtk.Label(label=period)
+        period_label.add_css_class("usage-period")
+        period_label.set_hexpand(True)
+        period_label.set_halign(Gtk.Align.START)
+        header.append(period_label)
 
         pct_label = Gtk.Label(label=f"{round(pct)}%")
         pct_label.add_css_class("usage-pct")
@@ -180,10 +187,29 @@ class ClaudeUsagePopup(WidgetPopup):
         bar.add_css_class(level)
         container.append(bar)
 
-        reset_label = Gtk.Label(label=format_reset(window_data["resets_at"]))
-        reset_label.add_css_class("usage-reset")
-        reset_label.set_halign(Gtk.Align.START)
-        container.append(reset_label)
+        if window.get("resets_at"):
+            reset_label = Gtk.Label(label=format_reset(window["resets_at"]))
+            reset_label.add_css_class("usage-reset")
+            reset_label.set_halign(Gtk.Align.START)
+            container.append(reset_label)
+
+    def _build_spend_row(self, container, spend):
+        """Show extra-usage spend when the account has it enabled."""
+        if not spend or not spend.get("enabled"):
+            return
+        used = spend.get("used") or {}
+        exponent = used.get("exponent", 2)
+        amount = used.get("amount_minor", 0) / (10 ** exponent)
+        currency = used.get("currency", "USD")
+        text = f"extra usage: {amount:.2f} {currency}"
+        limit = spend.get("limit")
+        if isinstance(limit, dict) and limit.get("amount_minor") is not None:
+            cap = limit["amount_minor"] / (10 ** limit.get("exponent", exponent))
+            text += f" / {cap:.2f} {currency}"
+        label = Gtk.Label(label=text)
+        label.add_css_class("usage-charge-label")
+        label.set_halign(Gtk.Align.START)
+        container.append(label)
 
     def _build_charge_section(self, container, data):
         """Show charge date if cached, or session key input if not."""

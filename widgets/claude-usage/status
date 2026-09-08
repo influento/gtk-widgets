@@ -119,9 +119,75 @@ def format_date_absolute(date_str):
     return target.strftime("%b %-d")
 
 
-def classify(five_hour, seven_day):
-    """Return CSS class based on the higher utilization."""
-    peak = max(five_hour, seven_day)
+LEGACY_WINDOWS = [
+    ("five_hour", "session", "5h", "Current session"),
+    ("seven_day", "weekly_all", "7d", "All models"),
+]
+
+
+def _reset_matters(iso_str):
+    """True if a reset timestamp is present and still in the future."""
+    if not iso_str:
+        return False
+    reset = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    return reset > datetime.now(timezone.utc)
+
+
+def normalize_limits(data):
+    """Return a list of usage windows in display order.
+
+    Each window: {kind, short, label, percent, resets_at, severity, is_active}.
+    Prefers the ``limits`` array (session / weekly_all / weekly_scoped),
+    falling back to the legacy five_hour / seven_day objects.
+    """
+    windows = []
+    limits = data.get("limits") or []
+    for lim in limits:
+        kind = lim.get("kind")
+        scope = lim.get("scope") or {}
+        model = (scope.get("model") or {}).get("display_name")
+        surface = (scope.get("surface") or {}).get("display_name") if isinstance(scope.get("surface"), dict) else scope.get("surface")
+        if kind == "session":
+            short, label = "5h", "Current session"
+        elif kind == "weekly_all":
+            short, label = "7d", "All models"
+        elif kind == "weekly_scoped":
+            name = model or surface or "scoped"
+            short, label = name.lower(), name
+        else:
+            name = model or surface or kind or "other"
+            short, label = name.lower(), name
+        windows.append({
+            "kind": kind,
+            "short": short,
+            "label": label,
+            "percent": float(lim.get("percent") or 0),
+            "resets_at": lim.get("resets_at"),
+            "severity": lim.get("severity") or "normal",
+            "is_active": bool(lim.get("is_active")),
+        })
+    if windows:
+        return windows
+
+    for key, kind, short, label in LEGACY_WINDOWS:
+        win = data.get(key)
+        if not win or win.get("utilization") is None:
+            continue
+        windows.append({
+            "kind": kind,
+            "short": short,
+            "label": label,
+            "percent": float(win["utilization"]),
+            "resets_at": win.get("resets_at"),
+            "severity": "normal",
+            "is_active": False,
+        })
+    return windows
+
+
+def classify(windows):
+    """Return CSS class based on the highest utilization across windows."""
+    peak = max((w["percent"] for w in windows), default=0)
     if peak > 95:
         return "high"
     if peak >= 80:
@@ -131,48 +197,45 @@ def classify(five_hour, seven_day):
 
 def format_output(data):
     """Format usage data as waybar JSON."""
-    five = data["five_hour"]
-    seven = data["seven_day"]
-    sonnet = data.get("seven_day_sonnet")
-    five_pct = round(five["utilization"])
-    seven_pct = round(seven["utilization"])
-    css_class = classify(five["utilization"], seven["utilization"])
+    windows = normalize_limits(data)
+    if not windows:
+        return {"text": "no data", "tooltip": "", "class": "error"}
+    css_class = classify(windows)
 
+    width = max(len(w["label"]) for w in windows) + 2
     tooltip_lines = []
-    for label, pct, window in [("5-hour", five_pct, five), ("7-day", seven_pct, seven)]:
-        if window.get("resets_at"):
-            tooltip_lines.append(
-                f"{label + ':':<14}{pct}%  resets {format_reset_absolute(window['resets_at'])} ({format_reset_relative(window['resets_at'])})"
-            )
-        else:
-            tooltip_lines.append(f"{label + ':':<14}{pct}%")
-
-    if sonnet and sonnet.get("utilization") is not None:
-        sonnet_pct = round(sonnet["utilization"])
-        if sonnet.get("resets_at"):
-            tooltip_lines.append(
-                f"{'7-day sonnet:':<14}{sonnet_pct}%  resets {format_reset_absolute(sonnet['resets_at'])} ({format_reset_relative(sonnet['resets_at'])})"
-            )
-        else:
-            tooltip_lines.append(f"{'7-day sonnet:':<14}{sonnet_pct}%")
+    for w in windows:
+        pct = round(w["percent"])
+        line = f"{w['label'] + ':':<{width}}{pct:>3}%"
+        if _reset_matters(w["resets_at"]):
+            line += f"  resets {format_reset_absolute(w['resets_at'])} ({format_reset_relative(w['resets_at'])})"
+        tooltip_lines.append(line)
 
     charge_date = load_cached_charge_date()
     if charge_date:
         tooltip_lines.append(
-            f"{'next charge:':<14}{format_date_absolute(charge_date)} ({format_date_relative(charge_date)})"
+            f"{'next charge:':<{width}}{format_date_absolute(charge_date)} ({format_date_relative(charge_date)})"
         )
 
-    if five.get("resets_at"):
-        five_reset = format_reset_relative(five["resets_at"]).replace(" ", ":")
-        text = f"5h - {five_pct}% ({five_reset}) · 7d - {seven_pct}%"
-    else:
-        text = f"5h - {five_pct}% · 7d - {seven_pct}%"
+    parts = []
+    for w in windows:
+        part = f"{w['short']} - {round(w['percent'])}%"
+        if w["kind"] == "session" and _reset_matters(w["resets_at"]):
+            part += f" ({format_reset_relative(w['resets_at']).replace(' ', ':')})"
+        parts.append(part)
 
     return {
-        "text": text,
+        "text": " · ".join(parts),
         "tooltip": "\n".join(tooltip_lines),
         "class": css_class,
     }
+
+
+def json_payload(data):
+    """Raw API data plus normalized windows, for the popup."""
+    out = {k: v for k, v in data.items() if not k.startswith("_")}
+    out["windows"] = normalize_limits(data)
+    return out
 
 
 def refresh_cache():
@@ -196,7 +259,7 @@ def main():
     # Fresh cache — render immediately, no API call
     if fresh and not force:
         if is_json:
-            out = {k: v for k, v in cached.items() if not k.startswith("_")}
+            out = json_payload(cached)
             charge_date = load_cached_charge_date()
             if charge_date:
                 out["next_charge_date"] = charge_date
@@ -227,7 +290,7 @@ def main():
         token = load_token()
         data = fetch_usage(token)
         if is_json:
-            out = {k: v for k, v in data.items() if not k.startswith("_")}
+            out = json_payload(data)
             charge_date = load_cached_charge_date()
             if charge_date:
                 out["next_charge_date"] = charge_date
