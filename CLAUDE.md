@@ -179,3 +179,11 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 - **Explain** — explain selected text/concept
 - **Summarize** — condense text or URL content
 - URL detection: if input starts with `http`, auto-fetch page content before passing to Claude
+
+### Backlog
+
+- **display: DDC writes off the main thread** — `set_pct` still runs `ddcutil setvcp`
+  on the GTK main thread, so dragging the slider on an external DDC monitor stalls the
+  popup a few hundred ms per step (the sysfs backlight path is instant). Fix: worker
+  thread with a latest-value-wins queue so drags coalesce; verify with the fake DDC
+  backend that the main loop no longer stalls and the final value matches the last drag.
