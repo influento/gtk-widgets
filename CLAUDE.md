@@ -22,18 +22,23 @@ setup, transparent backdrop, Esc/q dismiss, and CSS loading with theme token rep
 
 ### Theming
 
-Theme colors are defined in `themes/catppuccin-mocha.json`. At runtime, `load_css()`
-reads the theme file and replaces `@@TOKEN@@` placeholders in CSS with actual color
-values. Override the theme file path via `GTK_WIDGETS_THEME` env var.
+Theme colors are defined in `themes/<name>.json`. At runtime, `render_css()` reads the
+theme file and replaces `@@TOKEN@@` placeholders in CSS with actual color values. The
+theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
+`themes/current.json` symlink created by `install.sh --theme <name>`, then the bundled
+`themes/catppuccin-mocha.json`.
 
 ### How widgets work
 
 - Each widget is a self-contained GTK4 + Python app using `gtk4-layer-shell`
 - Layer-shell creates a fullscreen transparent overlay that catches clicks (backdrop dismiss)
-- Widgets are themed via CSS with Catppuccin Mocha colors
+- Widgets are themed via CSS with theme tokens; the base class loads the `style.css`
+  beside the widget's `main.py` automatically (no per-widget CSS loading code)
+- The container returned by `build_ui()` gets the `.popup` class from the base class,
+  which supplies the border, radius, background, text color and font
 - `widget-toggle <name>` handles launch/dismiss via `flock` (prevents duplicates)
 - Close via Escape/q key or clicking outside the widget
-- Widgets with a `status` script output JSON (`text`, `tooltip`, `class`) for status bars
+- Widgets with a `status` script (bash or Python) output JSON (`text`, `tooltip`, `class`) for status bars
 - Extra executable `<widget>/<name>.py` files are symlinked as `<widget>-<name>` CLI entry points (e.g. `display-brightness`, bound to XF86MonBrightness keys in dotfiles)
 
 ### Current widgets
@@ -45,8 +50,8 @@ values. Override the theme file path via `GTK_WIDGETS_THEME` env var.
 | `claude-usage` | Claude usage: 5h session, weekly all-models, weekly per-model     |
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect          |
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
-| `translate`    | Translation via Claude Sonnet (prototype of ezpick action system) |
-| `usb`          | USB device manager: list, format, write ISO with progress         |
+| `translate`    | ezpick text tool (`dev.dotfiles.ezpick`): translate, fix English, dictionary via `claude` CLI |
+| `usb`          | USB device manager: list, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
 
 ## Theming System
@@ -75,15 +80,17 @@ Defined in `themes/catppuccin-mocha.json`:
 
 1. Copy `themes/catppuccin-mocha.json` to `themes/<name>.json`
 2. Update all color values
-3. Set `GTK_WIDGETS_THEME` env var to point to the new file
+3. Run `./install.sh --theme <name>` (points `themes/current.json` at it), or set
+   `GTK_WIDGETS_THEME=<file>` for a per-process override
 
 ## Widget Design Rules
 
-- Every widget container MUST have `border: 1px solid @@SURFACE1@@` and `border-radius: 8px`
-  — the border must be on the outermost container so it's flush with the widget edge
+- The outermost container (returned by `build_ui()`) gets the `.popup` class from the base
+  class: `border: 1px solid @@SURFACE1@@`, `border-radius: 8px`, `@@BASE@@` background,
+  `@@TEXT@@` color and the `"JetBrainsMono Nerd Font", monospace` font. Do not repeat
+  these in a widget's `style.css`; children inherit the font
 - Disable built-in borders and backgrounds on GTK widgets inside the container
-- Window background is always `transparent` (layer-shell overlay)
-- Font: `"JetBrainsMono Nerd Font", monospace`
+- Window background is always `transparent` (set by the base class; layer-shell overlay)
 - Use `widget-toggle <name>` for toggling, never create per-widget toggle scripts
 - Each widget has a unique `application_id` (e.g., `dev.dotfiles.<name>`)
 
@@ -105,10 +112,14 @@ Defined in `themes/catppuccin-mocha.json`:
 ```
 gtk-widgets/
 ├── CLAUDE.md
-├── install.sh             # Symlinks widgets + scripts into ~/.local/bin
+├── README.md
+├── install.sh             # Symlinks widgets + scripts into ~/.local/bin; installs usb-helper + polkit rule (sudo)
 ├── widget-toggle          # Generic toggle for GTK4 popups (flock-based)
 ├── lib/
 │   └── widget_base.py     # Shared GTK4 popup base class + theme loader
+├── polkit/
+│   ├── usb-helper         # Root helper for USB format/write, installed to /usr/lib/gtk-widgets/
+│   └── 50-gtk-widgets-usb.rules  # Polkit rule that authorises only that helper
 ├── widgets/
 │   ├── bluetooth/
 │   │   ├── main.py
@@ -120,6 +131,7 @@ gtk-widgets/
 │   │   └── status         # JSON: date/time with icon
 │   ├── claude-usage/
 │   │   ├── main.py
+│   │   ├── usage.py       # Shared formatting (reset/charge dates, severity) for popup + status
 │   │   ├── style.css
 │   │   └── status         # JSON: usage percentages, reset times
 │   ├── display/
@@ -140,28 +152,30 @@ gtk-widgets/
 │   │   └── status         # JSON: USB icon, event-driven via udevadm
 │   └── timer/
 │       ├── main.py
-│       ├── state.py       # Shared state model (popup + status script)
+│       ├── state.py       # Shared state model (popup + status script), alarm fires once
 │       ├── style.css
 │       └── status         # JSON: hh:mm:ss, fires alarm at zero
 └── themes/
-    └── catppuccin-mocha.json
+    ├── catppuccin-mocha.json
+    └── current.json       # Symlink to the active theme (created by install.sh)
 ```
 
 ## Planned Evolution
 
 ### ezpick — Multi-Action Text Tool
 
-The `translate-popup` will evolve into a multi-action tool triggered by Super+T:
+`widgets/translate` (application id `dev.dotfiles.ezpick`) is the multi-action text tool
+triggered by Super+T. Implemented actions: **Translate** (auto-detect EN↔RU, language
+dropdown override), **Fix English** (corrected text plus a list of changes) and
+**Dictionary** (definition, etymology, examples).
 
-**Actions:**
+**Input modes (single shortcut, implemented):**
 
-- **Translate** — auto-detect direction (EN↔RU default), language dropdown override
-- **Fix English** — correct grammar/style with inline explanations
+- **Text selected** → opens with text pre-filled and runs Translate immediately
+- **Nothing selected** → opens empty with a text input; Go or Ctrl+Enter submits
+
+**Still planned:**
+
 - **Explain** — explain selected text/concept
 - **Summarize** — condense text or URL content
-
-**Input modes (single shortcut):**
-
-- **Text selected** → opens with text pre-filled, defaults to Translate
-- **Nothing selected** → opens empty with text input for typing/pasting
 - URL detection: if input starts with `http`, auto-fetch page content before passing to Claude

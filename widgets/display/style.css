@@ -55,3 +55,8 @@ scale indicator {
   color: @@SUBTEXT0@@;
   font-size: 10px;
 }
+
+/* Mark labels keep the toolkit font rather than the popup's mono font */
+scale marks mark label {
+  font-family: initial;
+}

@@ -7,12 +7,12 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | Widget         | Description                                                |
 | -------------- | ---------------------------------------------------------- |
 | `calendar`     | GTK4 calendar                                              |
-| `display`      | Display settings: scale, brightness, night light           |
+| `display`      | Display settings: scale, brightness, night light; `display-brightness` CLI for keybinds |
 | `claude-usage` | Claude subscription usage with progress bars               |
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect   |
 | `power`        | Power menu: lock, sleep, reboot, shut down                 |
-| `translate`    | Translation via Claude Sonnet                              |
-| `usb`          | USB device manager: list, format, write ISO                |
+| `translate`    | ezpick text tool: translate, fix English, dictionary (via `claude` CLI) |
+| `usb`          | USB device manager: list, format, write ISO (root helper via polkit) |
 | `timer`        | Timer + stopwatch with alarm on expiry                     |
 
 ## Installation
@@ -21,14 +21,21 @@ Requires Python 3, GTK4, and [gtk4-layer-shell](https://github.com/wmww/gtk4-lay
 
 ```bash
 ./install.sh                          # default theme (catppuccin-mocha)
-./install.sh --theme catppuccin-latte # use a different theme
+./install.sh --theme <name>           # any themes/<name>.json (only catppuccin-mocha is bundled)
 ```
+
+`--theme` points `themes/current.json` at the chosen file; `GTK_WIDGETS_THEME=<file>`
+overrides it for a single process.
 
 This symlinks into `~/.local/bin/`:
 
 - `widget-toggle` — shared toggle script (launch/dismiss via flock)
 - `<name>` — each popup (e.g., `calendar`, `bluetooth`)
 - `<name>-status` — each status script, if present (e.g., `calendar-status`)
+- `<widget>-<tool>` — extra CLI entry points (e.g., `display-brightness up|down|set|get`)
+
+The USB helper and its polkit rule are copied to `/usr/lib/gtk-widgets/usb-helper` and
+`/etc/polkit-1/rules.d/` with `sudo` (only when they changed).
 
 ## Waybar Integration
 
