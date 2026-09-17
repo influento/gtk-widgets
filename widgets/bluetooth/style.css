@@ -1,14 +1,9 @@
 .bt-container {
-  background-color: @@BASE@@;
-  color: @@TEXT@@;
-  border: 1px solid @@SURFACE1@@;
-  border-radius: 8px;
   padding: 16px 24px;
   min-width: 340px;
 }
 
 .bt-title {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 14px;
   font-weight: bold;
   color: @@BLUE@@;
@@ -29,7 +24,6 @@
 .bt-power-btn:hover { color: @@SAPPHIRE@@; }
 
 .bt-section {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   font-weight: bold;
   color: @@OVERLAY1@@;
@@ -43,25 +37,21 @@
 }
 
 .bt-device-icon {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 14px;
   color: @@BLUE@@;
 }
 
 .bt-device-name {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   color: @@TEXT@@;
 }
 
 .bt-device-mac {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@SUBTEXT0@@;
 }
 
 .bt-action-btn {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@SURFACE1@@;
   color: @@TEXT@@;
@@ -77,7 +67,6 @@
 }
 
 .bt-scan-btn {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@BLUE@@;
   color: @@BASE@@;
@@ -103,7 +92,6 @@
 }
 
 .bt-status {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@SUBTEXT0@@;
 }
@@ -112,26 +100,22 @@
 .bt-status-err { color: @@RED@@; }
 
 .bt-off-msg {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   color: @@SURFACE2@@;
 }
 
 .bt-error-icon {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 24px;
   color: @@RED@@;
   margin-top: 4px;
 }
 
 .bt-error-msg {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   color: @@SUBTEXT0@@;
 }
 
 .bt-error-hint {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@OVERLAY0@@;
 }

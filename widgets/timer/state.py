@@ -4,12 +4,23 @@ State persists in $XDG_RUNTIME_DIR (session-scoped — cleared on logout).
 Both the popup and the status script read/write this file.
 """
 
+import fcntl
 import json
 import os
+import shutil
+import subprocess
 import time
+from contextlib import contextmanager
 
 _RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 STATE_PATH = os.path.join(_RUNTIME_DIR, "gtk-widgets-timer.json")
+LOCK_PATH = STATE_PATH + ".lock"
+
+SOUND_CANDIDATES = [
+    "/usr/share/sounds/freedesktop/stereo/complete.oga",
+    "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga",
+    "/usr/share/sounds/freedesktop/stereo/bell.oga",
+]
 
 DEFAULT_STATE = {
     "mode": "timer",
@@ -116,3 +127,45 @@ def set_duration(state, seconds):
     state["duration"] = float(seconds)
     state["fired"] = False
     return state
+
+
+@contextmanager
+def _locked():
+    with open(LOCK_PATH, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def fire_alarm():
+    """Notification + sound. Both are optional and best-effort."""
+    if shutil.which("notify-send"):
+        subprocess.Popen(
+            ["notify-send", "-u", "critical", "-a", "Timer", "Timer", "Time's up!"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    sound = next((p for p in SOUND_CANDIDATES if os.path.exists(p)), None)
+    if sound and shutil.which("paplay"):
+        subprocess.Popen(
+            ["paplay", sound],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+
+def check_expired(state, now=None):
+    """Pause a running timer that has reached zero and fire the alarm once.
+
+    Both the popup (250 ms tick) and the status script (waybar interval) call
+    this, so whichever notices first fires. The file lock plus the persisted
+    ``fired`` flag guarantee a single alarm even if both notice at once.
+    Returns True if this call paused the timer.
+    """
+    if state["mode"] != "timer" or not state["running"] or remaining(state, now) > 0.0:
+        return False
+    pause(state, now)
+    with _locked():
+        already_fired = load()["fired"]
+        state["fired"] = True
+        save(state)
+    if not already_fired:
+        fire_alarm()
+    return True

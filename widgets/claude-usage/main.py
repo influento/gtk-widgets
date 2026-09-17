@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Claude usage popup — GTK4 widget showing subscription utilization with progress bars."""
 
-import json, os, subprocess, sys, urllib.request
+import json, os, subprocess, sys, threading, urllib.error, urllib.request
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
+sys.path.insert(0, _DIR)
 
-from lib.widget_base import Gtk, WidgetPopup, load_css
+from lib.widget_base import Gtk, WidgetPopup
 
-from datetime import datetime, timezone
+from gi.repository import GLib
+
 from pathlib import Path
 
-CSS = load_css(os.path.join(_DIR, "style.css"))
+from usage import describe_charge_date, describe_reset, severity  # noqa: E402
 
 CACHE_PATH = Path.home() / ".claude" / "subscription_cache.json"
 
@@ -22,53 +24,6 @@ def fetch_data(force=False):
         cmd.append("--refresh")
     result = subprocess.run(cmd, capture_output=True, text=True)
     return json.loads(result.stdout)
-
-
-def format_reset(iso_str):
-    """Format reset as absolute day/time + relative duration."""
-    reset = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-    local = reset.astimezone()
-    absolute = local.strftime("%a %-I:%M %p")
-    now = datetime.now(timezone.utc)
-    delta = reset - now
-    total_minutes = int(delta.total_seconds() / 60)
-    if total_minutes < 0:
-        return "resets now"
-    total_hours, minutes = divmod(total_minutes, 60)
-    if total_hours >= 24:
-        days, hours = divmod(total_hours, 24)
-        relative = f"{days}d {hours}h"
-    elif total_hours > 0:
-        relative = f"{total_hours}h {minutes}m"
-    else:
-        relative = f"{minutes}m"
-    return f"resets {absolute} ({relative})"
-
-
-def format_charge_date(date_str):
-    """Format charge date as absolute + relative."""
-    target = datetime.strptime(date_str, "%Y-%m-%d")
-    absolute = target.strftime("%b %-d")
-    target_utc = target.replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
-    delta = target_utc - now
-    total_hours = int(delta.total_seconds() / 3600)
-    if total_hours < 0:
-        return f"{absolute} (now)"
-    if total_hours >= 24:
-        days, hours = divmod(total_hours, 24)
-        return f"{absolute} ({days}d {hours}h)"
-    minutes = int((delta.total_seconds() % 3600) / 60)
-    return f"{absolute} ({total_hours}h {minutes}m)"
-
-
-def classify(pct):
-    """Return CSS class based on utilization percentage."""
-    if pct > 95:
-        return "high"
-    if pct >= 80:
-        return "medium"
-    return "low"
 
 
 def fetch_subscription(session_key, org_uuid):
@@ -106,9 +61,28 @@ def get_org_uuid(force_refresh=False):
         return json.loads(resp.read())["organization"]["uuid"]
 
 
+def save_subscription(session_key):
+    """Fetch next_charge_date with the session key, cache it, and return it."""
+    org_uuid = get_org_uuid()
+    try:
+        sub = fetch_subscription(session_key, org_uuid)
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+        org_uuid = get_org_uuid(force_refresh=True)
+        sub = fetch_subscription(session_key, org_uuid)
+    charge_date = sub.get("next_charge_date")
+    if not charge_date:
+        raise ValueError("no next_charge_date in response")
+    with open(CACHE_PATH, "w") as f:
+        json.dump({"next_charge_date": charge_date, "org_uuid": org_uuid}, f)
+    return charge_date
+
+
 class ClaudeUsagePopup(WidgetPopup):
     def __init__(self):
         super().__init__(application_id="dev.dotfiles.claude-usage")
+        self._generation = 0  # bumps on every rebuild so stale fetches are dropped
 
     def build_ui(self):
         self._container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -117,7 +91,7 @@ class ClaudeUsagePopup(WidgetPopup):
         return self._container
 
     def _build_content(self, force=False):
-        """Build or rebuild all content in the container."""
+        """Rebuild the title row, then fetch usage data off the main thread."""
         while child := self._container.get_first_child():
             self._container.remove(child)
 
@@ -137,9 +111,28 @@ class ClaudeUsagePopup(WidgetPopup):
 
         self._container.append(title_row)
 
-        # Fetch data
+        loading = Gtk.Label(label="loading…")
+        loading.add_css_class("usage-loading")
+        loading.set_halign(Gtk.Align.START)
+        self._container.append(loading)
+
+        self._generation += 1
+        generation = self._generation
+
+        def worker():
+            try:
+                data = fetch_data(force=force)
+            except Exception as e:
+                data = {"error": str(e)}
+            GLib.idle_add(self._render_data, generation, loading, data)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _render_data(self, generation, loading, data):
+        """Main thread: replace the loading label with the fetched content."""
+        if generation != self._generation:
+            return GLib.SOURCE_REMOVE  # a newer rebuild already replaced this view
+        self._container.remove(loading)
         try:
-            data = fetch_data(force=force)
             if "error" in data:
                 raise RuntimeError(data["error"])
             windows = data.get("windows") or []
@@ -155,11 +148,12 @@ class ClaudeUsagePopup(WidgetPopup):
             error_label.set_wrap(True)
             error_label.set_max_width_chars(40)
             self._container.append(error_label)
+        return GLib.SOURCE_REMOVE
 
     def _build_window_row(self, container, window):
         """Build a labeled progress bar row for one usage window."""
         pct = window["percent"]
-        level = classify(pct)
+        level = severity(pct)
         period = "5h" if window["kind"] == "session" else "7d"
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -188,7 +182,7 @@ class ClaudeUsagePopup(WidgetPopup):
         container.append(bar)
 
         if window.get("resets_at"):
-            reset_label = Gtk.Label(label=format_reset(window["resets_at"]))
+            reset_label = Gtk.Label(label=describe_reset(window["resets_at"]))
             reset_label.add_css_class("usage-reset")
             reset_label.set_halign(Gtk.Align.START)
             container.append(reset_label)
@@ -219,7 +213,7 @@ class ClaudeUsagePopup(WidgetPopup):
 
         charge_date = data.get("next_charge_date")
         if charge_date:
-            label = Gtk.Label(label=f"next charge: {format_charge_date(charge_date)}")
+            label = Gtk.Label(label=f"next charge: {describe_charge_date(charge_date)}")
             label.add_css_class("usage-charge-label")
             label.set_halign(Gtk.Align.START)
             container.append(label)
@@ -240,10 +234,10 @@ class ClaudeUsagePopup(WidgetPopup):
         self._session_entry.connect("activate", lambda _: self._on_submit())
         input_row.append(self._session_entry)
 
-        submit_btn = Gtk.Button(label="save")
-        submit_btn.add_css_class("session-button")
-        submit_btn.connect("clicked", lambda _: self._on_submit())
-        input_row.append(submit_btn)
+        self._submit_btn = Gtk.Button(label="save")
+        self._submit_btn.add_css_class("session-button")
+        self._submit_btn.connect("clicked", lambda _: self._on_submit())
+        input_row.append(self._submit_btn)
 
         container.append(input_row)
 
@@ -252,41 +246,42 @@ class ClaudeUsagePopup(WidgetPopup):
         container.append(self._status_label)
 
     def _on_submit(self):
-        """Fetch subscription details and cache the result."""
+        """Fetch subscription details off the main thread and cache the result."""
         session_key = self._session_entry.get_text().strip()
         if not session_key:
             return
+        self._session_entry.set_sensitive(False)
+        self._submit_btn.set_sensitive(False)
+        self._set_session_status("fetching…", None)
 
-        try:
-            org_uuid = get_org_uuid()
+        def worker():
             try:
-                sub = fetch_subscription(session_key, org_uuid)
-            except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    org_uuid = get_org_uuid(force_refresh=True)
-                    sub = fetch_subscription(session_key, org_uuid)
-                else:
-                    raise
-            charge_date = sub.get("next_charge_date")
-            if not charge_date:
-                raise ValueError("no next_charge_date in response")
+                charge_date = save_subscription(session_key)
+            except Exception as e:
+                GLib.idle_add(self._on_submit_done, None, str(e))
+            else:
+                GLib.idle_add(self._on_submit_done, charge_date, None)
+        threading.Thread(target=worker, daemon=True).start()
 
-            cache = {"next_charge_date": charge_date, "org_uuid": org_uuid}
-            with open(CACHE_PATH, "w") as f:
-                json.dump(cache, f)
-
-            self._status_label.set_text(f"saved — next charge: {format_charge_date(charge_date)}")
-            self._status_label.remove_css_class("session-status-err")
-            self._status_label.add_css_class("session-status")
-            self._status_label.add_css_class("session-status-ok")
+    def _on_submit_done(self, charge_date, error):
+        self._session_entry.set_sensitive(True)
+        self._submit_btn.set_sensitive(True)
+        if error:
+            self._set_session_status(f"failed: {error}", "session-status-err")
+        else:
+            self._set_session_status(
+                f"saved — next charge: {describe_charge_date(charge_date)}", "session-status-ok")
             self._session_entry.set_text("")
-        except Exception as e:
-            self._status_label.set_text(f"failed: {e}")
-            self._status_label.remove_css_class("session-status-ok")
-            self._status_label.add_css_class("session-status")
-            self._status_label.add_css_class("session-status-err")
+        return GLib.SOURCE_REMOVE
+
+    def _set_session_status(self, text, css_class):
+        self._status_label.set_text(text)
+        self._status_label.add_css_class("session-status")
+        for cls in ("session-status-ok", "session-status-err"):
+            self._status_label.remove_css_class(cls)
+        if css_class:
+            self._status_label.add_css_class(css_class)
 
 
 if __name__ == "__main__":
-    ClaudeUsagePopup.CSS = CSS
     ClaudeUsagePopup().run()

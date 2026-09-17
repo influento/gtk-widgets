@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """Bluetooth popup — GTK4 widget for managing Bluetooth devices."""
 
-import os, subprocess, sys, threading
+import os, shutil, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
-from lib.widget_base import Gdk, Gtk, WidgetPopup, load_css
+from lib.widget_base import Gtk, WidgetPopup
 
 from gi.repository import GLib
-
-CSS = load_css(os.path.join(_DIR, "style.css"))
 
 ICON_MAP = {
     "audio-headset": "󰋋",
@@ -40,8 +38,14 @@ def bt_run(*args, timeout=5, input_text=None):
         return ""
 
 
-def has_controller():
-    return "No default controller available" not in bt_run("show")
+def adapter_status():
+    """One `bluetoothctl show`: ('missing' | 'none' | 'ok', powered)."""
+    if not shutil.which("bluetoothctl"):
+        return "missing", False
+    out = bt_run("show")
+    if "No default controller available" in out:
+        return "none", False
+    return "ok", "Powered: yes" in out
 
 
 def is_kernel_stale():
@@ -50,7 +54,7 @@ def is_kernel_stale():
 
 
 def is_powered():
-    return "Powered: yes" in bt_run("show")
+    return adapter_status()[1]
 
 
 def get_device_icon(mac):
@@ -62,16 +66,6 @@ def get_device_icon(mac):
             icon_type = line.split(":", 1)[1].strip()
             return ICON_MAP.get(icon_type, DEFAULT_ICON)
     return DEFAULT_ICON
-
-
-def get_device_name(mac):
-    """Get device name from bluetoothctl info."""
-    info = bt_run("info", mac)
-    for line in info.splitlines():
-        line = line.strip()
-        if line.startswith("Alias:"):
-            return line.split(":", 1)[1].strip()
-    return mac
 
 
 def parse_device_list(output):
@@ -113,7 +107,6 @@ class BluetoothPopup(WidgetPopup):
         super().__init__(application_id="dev.dotfiles.bluetooth")
         self._scan_process = None
         self._scan_timeout = 0
-        self._scanning = False
 
     def build_ui(self):
         self._container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -136,17 +129,21 @@ class BluetoothPopup(WidgetPopup):
         title.set_halign(Gtk.Align.START)
         title_row.append(title)
 
-        if not has_controller():
+        status, powered = adapter_status()
+        if status != "ok":
             self._container.append(title_row)
             error_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             error_box.set_halign(Gtk.Align.CENTER)
             icon = Gtk.Label(label="󰂲")
             icon.add_css_class("bt-error-icon")
             error_box.append(icon)
-            msg = Gtk.Label(label="No controller available")
+            msg = Gtk.Label(label="bluetoothctl not installed" if status == "missing"
+                            else "No controller available")
             msg.add_css_class("bt-error-msg")
             error_box.append(msg)
-            if is_kernel_stale():
+            if status == "missing":
+                hint_text = "Install bluez (provides bluetoothctl)"
+            elif is_kernel_stale():
                 hint_text = "Kernel updated — reboot to restore bluetooth"
             else:
                 hint_text = "Check adapter or restart bluetooth service"
@@ -156,7 +153,6 @@ class BluetoothPopup(WidgetPopup):
             self._container.append(error_box)
             return
 
-        powered = is_powered()
         power_btn = Gtk.Button(label="󰂯" if powered else "󰂲")
         power_btn.add_css_class("bt-power-btn")
         power_btn.add_css_class("bt-power-on" if powered else "bt-power-off")
@@ -309,7 +305,6 @@ class BluetoothPopup(WidgetPopup):
     def _on_scan(self, _btn):
         self._scan_btn.set_label("Scanning...")
         self._scan_btn.set_sensitive(False)
-        self._scanning = True
 
         def scan_task():
             try:
@@ -341,7 +336,6 @@ class BluetoothPopup(WidgetPopup):
         return GLib.SOURCE_CONTINUE
 
     def _stop_scan(self):
-        self._scanning = False
         self._kill_scan()
         if self._scan_timeout:
             GLib.source_remove(self._scan_timeout)
@@ -358,20 +352,12 @@ class BluetoothPopup(WidgetPopup):
         bt_run("scan", "off")
 
     def do_shutdown(self):
-        self._scanning = False
         self._kill_scan()
         if self._scan_timeout:
             GLib.source_remove(self._scan_timeout)
             self._scan_timeout = 0
         Gtk.Application.do_shutdown(self)
 
-    def _on_key(self, controller, keyval, keycode, state):
-        if keyval in (Gdk.KEY_Escape, Gdk.KEY_q):
-            self.quit()
-            return True
-        return False
-
 
 if __name__ == "__main__":
-    BluetoothPopup.CSS = CSS
     BluetoothPopup().run()

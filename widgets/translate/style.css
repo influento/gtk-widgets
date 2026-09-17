@@ -1,8 +1,4 @@
 .translate-container {
-  background-color: @@BASE@@;
-  color: @@TEXT@@;
-  border: 1px solid @@SURFACE1@@;
-  border-radius: 8px;
   padding: 16px 24px;
   min-width: 400px;
 }
@@ -13,7 +9,6 @@
 }
 
 .ezpick-action-btn {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@SURFACE0@@;
   color: @@SUBTEXT0@@;
@@ -42,7 +37,6 @@
 
 /* Language dropdown */
 .translate-lang-box {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   min-height: 0;
 }
@@ -62,14 +56,12 @@
 
 /* Section labels */
 .translate-section-label {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@SUBTEXT0@@;
 }
 
 /* Source text (read-only) */
 .translate-source {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   color: @@SUBTEXT1@@;
   background-color: @@SURFACE0@@;
@@ -79,7 +71,6 @@
 
 /* Editable text input */
 .ezpick-input {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   color: @@TEXT@@;
   background-color: @@SURFACE0@@;
@@ -89,7 +80,6 @@
 
 /* Submit button */
 .ezpick-submit-btn {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@GREEN@@;
   color: @@BASE@@;
@@ -105,7 +95,6 @@
 
 /* Result text */
 .translate-result {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 13px;
   color: @@TEXT@@;
   background-color: @@SURFACE0@@;
@@ -115,13 +104,11 @@
 
 /* Status text */
 .translate-status {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   color: @@OVERLAY1@@;
 }
 
 .translate-error {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   color: @@RED@@;
 }
@@ -135,7 +122,6 @@
 
 /* Copy button */
 .translate-copy-btn {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@BLUE@@;
   color: @@BASE@@;

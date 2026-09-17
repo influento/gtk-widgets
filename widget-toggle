@@ -43,7 +43,7 @@ if ! flock -n 9; then
 fi
 
 # Lock acquired — launch widget (preload layer-shell so widgets skip re-exec)
-export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}/usr/lib/libgtk4-layer-shell.so"
+export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}libgtk4-layer-shell.so.0"
 "$WIDGET_PATH" &
 echo $! > "$PIDFILE"
 wait $! 2>/dev/null || true

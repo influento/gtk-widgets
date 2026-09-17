@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """Display settings popup — scale, brightness, night light temperature."""
 
-import json, os, subprocess, sys
+import json, os, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
-from lib.widget_base import Gtk, WidgetPopup, load_css
+from lib.widget_base import Gtk, WidgetPopup
 
 from gi.repository import GLib
 
 import brightness  # noqa: E402
-
-CSS = load_css(os.path.join(_DIR, "style.css"))
 
 TEMP_FILE = os.path.expanduser("~/.config/wlsunset/temperature")
 
@@ -87,7 +85,7 @@ class DisplayPopup(WidgetPopup):
             key="scale", delay=500, apply_fn=apply_scale,
         )
 
-        # --- Brightness (detect and load async — DDC is slow) ---
+        # --- Brightness (probed on a worker thread — DDC is slow) ---
         self._brightness_sep = Gtk.Separator()
         self._brightness_sep.set_visible(False)
         container.append(self._brightness_sep)
@@ -96,7 +94,7 @@ class DisplayPopup(WidgetPopup):
         self._brightness_box.set_visible(False)
         container.append(self._brightness_box)
 
-        GLib.idle_add(self._load_brightness_async)
+        self._load_brightness_async()
 
         # --- Night Light (file read is fast, keep sync) ---
         container.append(Gtk.Separator())
@@ -114,23 +112,28 @@ class DisplayPopup(WidgetPopup):
         return container
 
     def _load_brightness_async(self):
-        """Detect brightness backend and build slider off the main init path."""
-        brightness_backend = brightness.detect_backend()
-        if brightness_backend:
-            delay = 100 if brightness_backend == "backlight" else 500
-            self._build_slider(
-                self._brightness_box, "BRIGHTNESS",
-                brightness.get(brightness_backend) / 100,
-                lambda v: f"{int(v * 100)}%",
-                0.0, 1.0, 0.05,
-                marks=[(0.0, "0%"), (0.5, "50%"), (1.0, "100%")],
-                ticks=[i * 0.1 for i in range(11)],
-                snap=lambda v: round(v * 20) / 20,
-                key="brightness", delay=delay,
-                apply_fn=lambda v: brightness.set_pct(brightness_backend, v * 100),
-            )
-            self._brightness_sep.set_visible(True)
-            self._brightness_box.set_visible(True)
+        """Probe the backend off the main thread, then build the slider on it."""
+        def worker():
+            backend, pct = brightness.probe()
+            if backend:
+                GLib.idle_add(self._build_brightness, backend, pct)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _build_brightness(self, backend, pct):
+        delay = 100 if backend == "backlight" else 500
+        self._build_slider(
+            self._brightness_box, "BRIGHTNESS",
+            pct / 100,
+            lambda v: f"{int(v * 100)}%",
+            0.0, 1.0, 0.05,
+            marks=[(0.0, "0%"), (0.5, "50%"), (1.0, "100%")],
+            ticks=[i * 0.1 for i in range(11)],
+            snap=lambda v: round(v * 20) / 20,
+            key="brightness", delay=delay,
+            apply_fn=lambda v: brightness.set_pct(backend, v * 100),
+        )
+        self._brightness_sep.set_visible(True)
+        self._brightness_box.set_visible(True)
         return GLib.SOURCE_REMOVE
 
     def _build_slider(self, container, label_text, current, fmt_fn,
@@ -177,5 +180,4 @@ class DisplayPopup(WidgetPopup):
 
 
 if __name__ == "__main__":
-    DisplayPopup.CSS = CSS
     DisplayPopup().run()

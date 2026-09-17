@@ -5,14 +5,8 @@ set -euo pipefail
 # Outputs JSON with USB device count.
 # Waybar config: { "exec": "usb-status", "return-type": "json", "interval": 3 }
 
-count=$(lsblk -J -o NAME,RM,TRAN 2>/dev/null \
-  | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-devs = [d for d in data.get('blockdevices', [])
-        if d.get('tran') == 'usb' and d.get('rm')]
-print(len(devs))
-" 2>/dev/null || echo 0)
+# Whole disks only (-d), raw columns: "<RM> <TRAN>"; removable USB disks are "1 usb".
+count=$(lsblk -dnro RM,TRAN 2>/dev/null | grep -c '^1 usb$' || true)
 
 if [[ "$count" -eq 0 ]]; then
   echo '{"text": "", "class": "empty"}'

@@ -1,14 +1,9 @@
 .usb-container {
-  background-color: @@BASE@@;
-  color: @@TEXT@@;
-  border: 1px solid @@SURFACE1@@;
-  border-radius: 8px;
   padding: 16px 24px;
   min-width: 360px;
 }
 
 .usb-title {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 14px;
   font-weight: bold;
   color: @@BLUE@@;
@@ -27,7 +22,6 @@
 .usb-refresh-btn:hover { color: @@BLUE@@; }
 
 .usb-empty {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   color: @@SURFACE2@@;
   padding: 16px 0;
@@ -41,38 +35,32 @@
 }
 
 .usb-device-icon {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 16px;
   color: @@BLUE@@;
 }
 
 .usb-device-name {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   color: @@TEXT@@;
 }
 
 .usb-device-detail {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@SUBTEXT0@@;
 }
 
 .usb-partition-info {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@OVERLAY0@@;
 }
 
 .usb-device-busy {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@PEACH@@;
   font-style: italic;
 }
 
 .usb-device-progress {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   color: @@PEACH@@;
 }
@@ -83,7 +71,6 @@
 }
 
 .usb-action-btn {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@SURFACE1@@;
   color: @@TEXT@@;
@@ -105,14 +92,12 @@
 
 /* Format view */
 .usb-warning {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   color: @@RED@@;
   padding: 4px 0;
 }
 
 .usb-field-label {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   font-weight: bold;
   color: @@OVERLAY1@@;
@@ -120,7 +105,6 @@
 }
 
 .usb-fs-btn {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@SURFACE0@@;
   color: @@SUBTEXT0@@;
@@ -145,7 +129,6 @@
 }
 
 .usb-entry {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   background: @@SURFACE0@@;
   color: @@TEXT@@;
@@ -160,7 +143,6 @@
 }
 
 .usb-danger-btn {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   background: @@RED@@;
   color: @@BASE@@;

@@ -1,10 +1,5 @@
 .timer-container {
-  background-color: @@BASE@@;
-  color: @@TEXT@@;
-  border: 1px solid @@SURFACE1@@;
-  border-radius: 8px;
   padding: 18px 20px;
-  font-family: "JetBrainsMono Nerd Font", monospace;
   min-width: 320px;
 }
 
@@ -52,7 +47,6 @@
 
 /* Spin buttons: theme the spinbutton itself, its inner text entry, and the +/- buttons */
 spinbutton.time-spin {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 14px;
   background-color: @@MANTLE@@;
   background-image: none;

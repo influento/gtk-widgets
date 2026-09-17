@@ -2,13 +2,21 @@
 """Fetch Claude subscription usage and output waybar-compatible JSON."""
 
 import json
+import os
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from usage import (  # noqa: E402
+    describe_charge_date, format_reset_absolute, format_reset_relative,
+    reset_in_future, severity,
+)
 
 SUBSCRIPTION_CACHE = Path.home() / ".claude" / "subscription_cache.json"
 USAGE_CACHE = Path.home() / ".claude" / "usage_cache.json"
@@ -74,63 +82,10 @@ def load_cached_charge_date():
     return None
 
 
-def format_reset_relative(iso_str):
-    """Format reset time as a relative duration string."""
-    reset = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-    now = datetime.now(timezone.utc)
-    delta = reset - now
-    total_minutes = int(delta.total_seconds() / 60)
-    if total_minutes < 0:
-        return "now"
-    total_hours, minutes = divmod(total_minutes, 60)
-    if total_hours >= 24:
-        days, hours = divmod(total_hours, 24)
-        return f"{days}d {hours}h"
-    if total_hours > 0:
-        return f"{total_hours}h {minutes}m"
-    return f"{minutes}m"
-
-
-def format_reset_absolute(iso_str):
-    """Format reset time as a local day and time (e.g., 'Fri 10:59 AM')."""
-    reset = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-    local = reset.astimezone()
-    return local.strftime("%a %-I:%M %p")
-
-
-def format_date_relative(date_str):
-    """Format a date string (YYYY-MM-DD) as relative duration."""
-    target = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
-    delta = target - now
-    total_hours = int(delta.total_seconds() / 3600)
-    if total_hours < 0:
-        return "now"
-    if total_hours >= 24:
-        days, hours = divmod(total_hours, 24)
-        return f"{days}d {hours}h"
-    minutes = int((delta.total_seconds() % 3600) / 60)
-    return f"{total_hours}h {minutes}m"
-
-
-def format_date_absolute(date_str):
-    """Format a date string (YYYY-MM-DD) as readable date (e.g., 'Apr 3')."""
-    target = datetime.strptime(date_str, "%Y-%m-%d")
-    return target.strftime("%b %-d")
-
-
 LEGACY_WINDOWS = [
     ("five_hour", "session", "5h", "Current session"),
     ("seven_day", "weekly_all", "7d", "All models"),
 ]
-
-
-def _reset_matters(iso_str):
-    """True if a reset timestamp is present and still in the future."""
-    if not iso_str:
-        return False
-    reset = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-    return reset > datetime.now(timezone.utc)
 
 
 def normalize_limits(data):
@@ -185,42 +140,30 @@ def normalize_limits(data):
     return windows
 
 
-def classify(windows):
-    """Return CSS class based on the highest utilization across windows."""
-    peak = max((w["percent"] for w in windows), default=0)
-    if peak > 95:
-        return "high"
-    if peak >= 80:
-        return "medium"
-    return "low"
-
-
 def format_output(data):
     """Format usage data as waybar JSON."""
     windows = normalize_limits(data)
     if not windows:
         return {"text": "no data", "tooltip": "", "class": "error"}
-    css_class = classify(windows)
+    css_class = severity(max((w["percent"] for w in windows), default=0))
 
     width = max(len(w["label"]) for w in windows) + 2
     tooltip_lines = []
     for w in windows:
         pct = round(w["percent"])
         line = f"{w['label'] + ':':<{width}}{pct:>3}%"
-        if _reset_matters(w["resets_at"]):
+        if reset_in_future(w["resets_at"]):
             line += f"  resets {format_reset_absolute(w['resets_at'])} ({format_reset_relative(w['resets_at'])})"
         tooltip_lines.append(line)
 
     charge_date = load_cached_charge_date()
     if charge_date:
-        tooltip_lines.append(
-            f"{'next charge:':<{width}}{format_date_absolute(charge_date)} ({format_date_relative(charge_date)})"
-        )
+        tooltip_lines.append(f"{'next charge:':<{width}}{describe_charge_date(charge_date)}")
 
     parts = []
     for w in windows:
         part = f"{w['short']} - {round(w['percent'])}%"
-        if w["kind"] == "session" and _reset_matters(w["resets_at"]):
+        if w["kind"] == "session" and reset_in_future(w["resets_at"]):
             part += f" ({format_reset_relative(w['resets_at']).replace(' ', ':')})"
         parts.append(part)
 
@@ -231,11 +174,14 @@ def format_output(data):
     }
 
 
-def json_payload(data):
-    """Raw API data plus normalized windows, for the popup."""
+def print_json(data):
+    """Raw API data plus normalized windows and cached charge date, for the popup."""
     out = {k: v for k, v in data.items() if not k.startswith("_")}
     out["windows"] = normalize_limits(data)
-    return out
+    charge_date = load_cached_charge_date()
+    if charge_date:
+        out["next_charge_date"] = charge_date
+    print(json.dumps(out))
 
 
 def refresh_cache():
@@ -259,11 +205,7 @@ def main():
     # Fresh cache — render immediately, no API call
     if fresh and not force:
         if is_json:
-            out = json_payload(cached)
-            charge_date = load_cached_charge_date()
-            if charge_date:
-                out["next_charge_date"] = charge_date
-            print(json.dumps(out))
+            print_json(cached)
         else:
             print(json.dumps(format_output(cached)))
         return
@@ -286,25 +228,18 @@ def main():
             pass
         return
 
+    # --json with a stale cache: fetch synchronously so the popup shows live data
     try:
-        token = load_token()
-        data = fetch_usage(token)
-        if is_json:
-            out = json_payload(data)
-            charge_date = load_cached_charge_date()
-            if charge_date:
-                out["next_charge_date"] = charge_date
-            print(json.dumps(out))
+        print_json(fetch_usage(load_token()))
     except Exception as e:
-        if is_json:
-            msg = str(e)
-            if isinstance(e, urllib.error.HTTPError):
-                msg = f"HTTP {e.code} {e.reason}"
-            elif isinstance(e, urllib.error.URLError):
-                msg = f"network error: {e.reason}"
-            elif isinstance(e, (FileNotFoundError, KeyError)):
-                msg = f"credentials: {e}"
-            print(json.dumps({"error": msg}))
+        msg = str(e)
+        if isinstance(e, urllib.error.HTTPError):
+            msg = f"HTTP {e.code} {e.reason}"
+        elif isinstance(e, urllib.error.URLError):
+            msg = f"network error: {e.reason}"
+        elif isinstance(e, (FileNotFoundError, KeyError)):
+            msg = f"credentials: {e}"
+        print(json.dumps({"error": msg}))
 
 
 if __name__ == "__main__":

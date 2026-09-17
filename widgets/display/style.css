@@ -1,20 +1,14 @@
 .display-container {
-  background-color: @@BASE@@;
-  color: @@TEXT@@;
-  border: 1px solid @@SURFACE1@@;
-  border-radius: 8px;
   padding: 16px 24px;
 }
 
 .display-title {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 14px;
   font-weight: bold;
   color: @@BLUE@@;
 }
 
 .section-label {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
   font-weight: bold;
   color: @@SUBTEXT0@@;
@@ -22,7 +16,6 @@
 }
 
 .section-value {
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 20px;
   font-weight: bold;
   color: @@TEXT@@;
@@ -60,6 +53,5 @@ scale slider {
 
 scale indicator {
   color: @@SUBTEXT0@@;
-  font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
 }

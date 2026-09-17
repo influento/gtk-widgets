@@ -21,13 +21,13 @@ if [[ ! -f "$theme_file" ]]; then
   echo "Theme not found: $theme_file" >&2
   exit 1
 fi
-ln -sf "$theme_file" "$REPO_DIR/themes/current.json"
+ln -sfn "$theme_file" "$REPO_DIR/themes/current.json"
 echo "  theme: $THEME"
 
 mkdir -p "$BIN_DIR"
 
 # widget-toggle
-ln -sf "$REPO_DIR/widget-toggle" "$BIN_DIR/widget-toggle"
+ln -sfn "$REPO_DIR/widget-toggle" "$BIN_DIR/widget-toggle"
 echo "  widget-toggle"
 
 # Widgets
@@ -36,13 +36,13 @@ for widget_dir in "$REPO_DIR"/widgets/*/; do
   main="$widget_dir/main.py"
 
   if [[ -f "$main" ]]; then
-    ln -sf "$main" "$BIN_DIR/$name"
+    ln -sfn "$main" "$BIN_DIR/$name"
     echo "  $name"
   fi
 
   status="$widget_dir/status"
   if [[ -f "$status" ]]; then
-    ln -sf "$status" "$BIN_DIR/${name}-status"
+    ln -sfn "$status" "$BIN_DIR/${name}-status"
     echo "  ${name}-status"
   fi
 
@@ -50,7 +50,7 @@ for widget_dir in "$REPO_DIR"/widgets/*/; do
   for extra in "$widget_dir"/*.py; do
     [[ -x "$extra" && "$(basename "$extra")" != "main.py" ]] || continue
     cli="${name}-$(basename "$extra" .py)"
-    ln -sf "$extra" "$BIN_DIR/$cli"
+    ln -sfn "$extra" "$BIN_DIR/$cli"
     echo "  $cli"
   done
 done

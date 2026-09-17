@@ -5,11 +5,9 @@ import os, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
-from lib.widget_base import Gdk, Gtk, WidgetPopup, load_css
+from lib.widget_base import Gdk, Gtk, WidgetPopup
 
 from gi.repository import GLib
-
-CSS = load_css(os.path.join(_DIR, "style.css"))
 
 LANGUAGES = [
     ("auto", "Auto"),
@@ -113,6 +111,7 @@ def run_dictionary(text):
 class EzpickPopup(WidgetPopup):
     def __init__(self):
         super().__init__(application_id="dev.dotfiles.ezpick")
+        self._request_id = 0  # bumps per request so a slow, superseded reply is dropped
         self._result_content = ""
         self._active_action = 0  # Translate by default
         self._action_buttons = []
@@ -300,6 +299,8 @@ class EzpickPopup(WidgetPopup):
 
         action_idx = self._active_action
         target_lang = LANGUAGES[self._lang_dropdown.get_selected()][0]
+        self._request_id += 1
+        request_id = self._request_id
 
         def do_work():
             try:
@@ -309,22 +310,28 @@ class EzpickPopup(WidgetPopup):
                     result = run_fix_english(text)
                 else:
                     result = run_dictionary(text)
-                GLib.idle_add(self._on_action_done, result)
+                GLib.idle_add(self._on_action_done, request_id, result)
             except Exception as e:
-                GLib.idle_add(self._on_action_error, str(e))
+                GLib.idle_add(self._on_action_error, request_id, str(e))
 
         thread = threading.Thread(target=do_work, daemon=True)
         thread.start()
 
-    def _on_action_done(self, result):
+    def _on_action_done(self, request_id, result):
+        if request_id != self._request_id:
+            return GLib.SOURCE_REMOVE
         self._result_content = result
         self._result_text.set_text(result)
         self._status.set_text("")
         self._copy_btn.set_sensitive(True)
+        return GLib.SOURCE_REMOVE
 
-    def _on_action_error(self, error):
+    def _on_action_error(self, request_id, error):
+        if request_id != self._request_id:
+            return GLib.SOURCE_REMOVE
         self._status.set_text(f"error: {error}")
         self._status.add_css_class("translate-error")
+        return GLib.SOURCE_REMOVE
 
     def _on_copy(self, _button):
         if self._result_content:
@@ -335,7 +342,7 @@ class EzpickPopup(WidgetPopup):
             self._status.set_text("copied!")
 
     def _on_key(self, controller, keyval, keycode, state):
-        # Don't close on 'q' if the text input field is focused
+        # In input mode 'q' is text, never a close key (Esc still closes)
         if keyval == Gdk.KEY_q and self._has_input_field:
             return False
         if keyval in (Gdk.KEY_Escape, Gdk.KEY_q):
@@ -350,5 +357,4 @@ class EzpickPopup(WidgetPopup):
 
 
 if __name__ == "__main__":
-    EzpickPopup.CSS = CSS
     EzpickPopup().run()

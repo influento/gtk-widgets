@@ -8,10 +8,8 @@ sys.path.insert(0, _DIR)
 
 from gi.repository import GLib  # noqa: E402
 
-from lib.widget_base import Gtk, WidgetPopup, load_css  # noqa: E402
+from lib.widget_base import Gtk, WidgetPopup  # noqa: E402
 import state as ts  # noqa: E402
-
-CSS = load_css(os.path.join(_DIR, "style.css"))
 
 PRESETS = [
     ("1m", 60),
@@ -27,6 +25,7 @@ class TimerPopup(WidgetPopup):
         super().__init__(application_id="dev.dotfiles.timer")
         self.state = ts.load()
         self._tick_id = None
+        self._suppress_spin = False  # True while spinners are being synced from state
 
     def build_ui(self):
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -150,8 +149,6 @@ class TimerPopup(WidgetPopup):
 
     # ----- UI refresh / ticking -----
 
-    _suppress_spin = False
-
     def _sync_spinners_from_state(self):
         self._suppress_spin = True
         try:
@@ -204,15 +201,12 @@ class TimerPopup(WidgetPopup):
     def _on_tick(self):
         if self.state["running"]:
             self.display.set_label(ts.format_hms(ts.display_seconds(self.state)))
-            # Auto-pause timer when it hits zero (popup can do this; status
-            # script also handles the case where popup is closed)
-            if self.state["mode"] == "timer" and ts.remaining(self.state) == 0.0:
-                ts.pause(self.state)
-                ts.save(self.state)
+            # Pauses at zero and fires the alarm once; the status script does
+            # the same when the popup is closed.
+            if ts.check_expired(self.state):
                 self._refresh_ui()
         return True
 
 
 if __name__ == "__main__":
-    TimerPopup.CSS = CSS
     TimerPopup().run()

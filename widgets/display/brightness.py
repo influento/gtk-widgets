@@ -23,37 +23,59 @@ def _run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def _read_backlight():
+    """Backlight percent, or None if brightnessctl has no backlight device."""
+    try:
+        if _run(["brightnessctl", "-c", "backlight", "info"]).returncode != 0:
+            return None
+        cur = int(_run(["brightnessctl", "-c", "backlight", "get"]).stdout.strip())
+        mx = int(_run(["brightnessctl", "-c", "backlight", "max"]).stdout.strip())
+        return round(cur * 100 / mx)
+    except (OSError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _read_ddc():
+    """DDC/CI percent from one `getvcp` round-trip, or None if no display answers."""
+    try:
+        result = _run(["ddcutil", "getvcp", "10"])
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    for part in result.stdout.split(","):
+        if "current value" in part:
+            try:
+                return int(part.split("=")[1].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def probe():
+    """Detect the backend and read its level in one pass: (backend, percent) or (None, None).
+
+    DDC round-trips take seconds, so callers should use the percent returned
+    here rather than calling get() again.
+    """
+    pct = _read_backlight()
+    if pct is not None:
+        return "backlight", pct
+    pct = _read_ddc()
+    if pct is not None:
+        return "ddc", pct
+    return None, None
+
+
 def detect_backend():
     """Return 'backlight', 'ddc', or None."""
-    try:
-        if _run(["brightnessctl", "-c", "backlight", "info"]).returncode == 0:
-            return "backlight"
-    except FileNotFoundError:
-        pass
-    try:
-        if _run(["ddcutil", "getvcp", "10"]).returncode == 0:
-            return "ddc"
-    except FileNotFoundError:
-        pass
-    return None
+    return probe()[0]
 
 
 def get(backend):
     """Current brightness as an integer percent (100 on failure)."""
-    if backend == "backlight":
-        try:
-            cur = int(_run(["brightnessctl", "-c", "backlight", "get"]).stdout.strip())
-            mx = int(_run(["brightnessctl", "-c", "backlight", "max"]).stdout.strip())
-            return round(cur * 100 / mx)
-        except Exception:
-            return 100
-    try:
-        for part in _run(["ddcutil", "getvcp", "10"]).stdout.split(","):
-            if "current value" in part:
-                return int(part.split("=")[1].strip())
-    except Exception:
-        pass
-    return 100
+    pct = _read_backlight() if backend == "backlight" else _read_ddc()
+    return 100 if pct is None else pct
 
 
 def set_pct(backend, pct):
@@ -65,9 +87,10 @@ def set_pct(backend, pct):
     return pct
 
 
-def adjust(backend, delta):
+def adjust(backend, delta, cur=None):
     """Step brightness by delta percent, snapped to the step grid."""
-    cur = get(backend)
+    if cur is None:
+        cur = get(backend)
     step = abs(delta) or STEP
     snapped = round(cur / step) * step
     return set_pct(backend, snapped + delta)
@@ -90,13 +113,13 @@ def main(argv):
     if not argv or argv[0] not in ("up", "down", "set", "get"):
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    backend = detect_backend()
+    backend, cur = probe()
     if backend is None:
         print("no brightness backend (brightnessctl/ddcutil)", file=sys.stderr)
         return 1
     cmd = argv[0]
     if cmd == "get":
-        print(get(backend))
+        print(cur)
         return 0
     if cmd == "set":
         if len(argv) < 2:
@@ -105,7 +128,7 @@ def main(argv):
         pct = set_pct(backend, argv[1])
     else:
         step = int(argv[1]) if len(argv) > 1 else STEP
-        pct = adjust(backend, step if cmd == "up" else -step)
+        pct = adjust(backend, step if cmd == "up" else -step, cur)
     notify(pct)
     print(pct)
     return 0

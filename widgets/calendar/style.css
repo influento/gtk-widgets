@@ -1,10 +1,5 @@
-.calendar-container {
-  background-color: @@BASE@@;
-  color: @@TEXT@@;
-  border: 1px solid @@SURFACE1@@;
-  border-radius: 8px;
-}
-
+/* GtkCalendar must see the family on its own node: when it only inherits it,
+   it lays out ~5px wider (measured). Everything else inherits from .popup. */
 calendar {
   font-family: "JetBrainsMono Nerd Font", monospace;
   font-size: 14px;

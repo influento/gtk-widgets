@@ -5,9 +5,7 @@ import os, subprocess, sys
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
-from lib.widget_base import Gtk, WidgetPopup, load_css
-
-CSS = load_css(os.path.join(_DIR, "style.css"))
+from lib.widget_base import Gtk, WidgetPopup
 
 ACTIONS = [
     ("󰌾", "Lock",      "color-blue",  [os.path.expanduser("~/.local/bin/lock")]),
@@ -53,5 +51,4 @@ class PowerPopup(WidgetPopup):
 
 
 if __name__ == "__main__":
-    PowerPopup.CSS = CSS
     PowerPopup().run()

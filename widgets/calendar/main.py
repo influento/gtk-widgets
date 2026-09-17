@@ -5,9 +5,7 @@ import os, sys
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
-from lib.widget_base import Gtk, WidgetPopup, load_css
-
-CSS = load_css(os.path.join(_DIR, "style.css"))
+from lib.widget_base import Gtk, WidgetPopup
 
 
 class CalendarPopup(WidgetPopup):
@@ -22,5 +20,4 @@ class CalendarPopup(WidgetPopup):
 
 
 if __name__ == "__main__":
-    CalendarPopup.CSS = CSS
     CalendarPopup().run()

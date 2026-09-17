@@ -28,6 +28,10 @@ ALLOWED_FS = ("exfat", "vfat", "ext4", "ntfs")
 NAME_RE = re.compile(r"^sd[a-z]+$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
+# MBR partition type per filesystem. Windows only mounts partitions whose type
+# it recognises: 0x07 (exFAT/NTFS) and 0x0c (FAT32 LBA); 0x83 is Linux-only.
+PART_TYPE = {"vfat": "c", "exfat": "7", "ntfs": "7", "ext4": "83"}
+
 MKFS = {
     "vfat": ["mkfs.vfat", "-F", "32"],
     "ext4": ["mkfs.ext4", "-F"],
@@ -106,15 +110,17 @@ def cmd_format(dev, fstype, label, check):
             mkfs += ["-L", label]
     name = validate_usb_disk(dev)
     disk, part = f"/dev/{name}", f"/dev/{name}1"
+    sfdisk_script = f"type={PART_TYPE[fstype]}\n"
     steps = [["wipefs", "-af", disk], ["sfdisk", disk], mkfs + [part]]
     if check:
-        for s in steps:
-            print("WOULD RUN:", " ".join(s))
+        print("WOULD RUN:", " ".join(steps[0]))
+        print("WOULD RUN:", " ".join(steps[1]), "<<<", sfdisk_script.strip())
+        print("WOULD RUN:", " ".join(steps[2]))
         return 0
     unmount(name)
     if subprocess.run(steps[0], capture_output=True).returncode != 0:
         die("wipefs failed")
-    if subprocess.run(steps[1], input=b"type=83\n", capture_output=True).returncode != 0:
+    if subprocess.run(steps[1], input=sfdisk_script.encode(), capture_output=True).returncode != 0:
         die("partitioning failed")
     subprocess.run(["udevadm", "settle"], capture_output=True)
     r = subprocess.run(steps[2], capture_output=True)

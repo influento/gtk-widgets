@@ -5,11 +5,9 @@ import json, os, re, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
-from lib.widget_base import Gdk, Gtk, WidgetPopup, load_css
+from lib.widget_base import Gtk, WidgetPopup
 
-from gi.repository import GLib, Gio
-
-CSS = load_css(os.path.join(_DIR, "style.css"))
+from gi.repository import GLib, Gio, Pango
 
 FS_TYPES = ["exfat", "vfat", "ext4", "ntfs"]
 _LABEL_RE = re.compile(r'^[A-Za-z0-9_-]+$')
@@ -153,6 +151,7 @@ class UsbPopup(WidgetPopup):
         super().__init__(application_id="dev.dotfiles.usb")
         self._monitor_id = 0
         self._poll_id = 0
+        self._udev_proc = None
         self._busy = {}
         self._busy_meta = {}   # dev_name -> (total, start_sectors)
         self._busy_labels = {} # dev_name -> Gtk.Label
@@ -227,7 +226,7 @@ class UsbPopup(WidgetPopup):
         name_label = Gtk.Label(label=display_name)
         name_label.add_css_class("usb-device-name")
         name_label.set_halign(Gtk.Align.START)
-        name_label.set_ellipsize(3)
+        name_label.set_ellipsize(Pango.EllipsizeMode.END)
         info_box.append(name_label)
 
         detail = Gtk.Label(label=f"/dev/{dev_name}  {size}")
@@ -239,7 +238,7 @@ class UsbPopup(WidgetPopup):
             busy_label = Gtk.Label(label=self._busy[dev_name])
             busy_label.add_css_class("usb-device-busy")
             busy_label.set_halign(Gtk.Align.START)
-            busy_label.set_ellipsize(3)
+            busy_label.set_ellipsize(Pango.EllipsizeMode.END)
             info_box.append(busy_label)
 
             progress_label = Gtk.Label(label="0%")
@@ -475,21 +474,14 @@ class UsbPopup(WidgetPopup):
             self._build_ui()
         return GLib.SOURCE_CONTINUE
 
-    def _on_key(self, controller, keyval, keycode, state):
-        if keyval in (Gdk.KEY_Escape, Gdk.KEY_q):
-            self.quit()
-            return True
-        return False
-
     def do_shutdown(self):
         if self._poll_id:
             GLib.source_remove(self._poll_id)
             self._poll_id = 0
-        if hasattr(self, "_udev_proc") and self._udev_proc.poll() is None:
+        if self._udev_proc and self._udev_proc.poll() is None:
             self._udev_proc.terminate()
         Gtk.Application.do_shutdown(self)
 
 
 if __name__ == "__main__":
-    UsbPopup.CSS = CSS
     UsbPopup().run()
