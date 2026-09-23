@@ -22,7 +22,7 @@ from gi.repository import GLib
 from nmutil import (  # noqa: E402
     EAP_INNER, EAP_METHODS, NM, VPN_TYPES, apply_eap, connection_security, eap_problem,
     eap_values, error_text, freq_band, mac_problem, parse_cidr, parse_ip, password_problem,
-    connection_ssid, ssid_text, wg_key_problem,
+    connection_ssid, reapply_refusal_text, ssid_text, wg_key_problem,
 )
 from ui import button, glyph_button, hbox, label, vbox  # noqa: E402
 
@@ -47,6 +47,12 @@ class FieldError(Exception):
     def __init__(self, key, message):
         super().__init__(message)
         self.key = key
+
+
+def shown_metered(s_con):
+    """Metered value the dropdown shows: the guessed values show as Automatic."""
+    cur = s_con.get_metered()
+    return cur if cur in (NM.Metered.YES, NM.Metered.NO) else NM.Metered.UNKNOWN
 
 
 def split_list(text):
@@ -337,8 +343,8 @@ class EditPage(Gtk.Box):
         self.apply_msg = label("", "net-inet-msg", hexpand=True)
         self.apply_msg.set_wrap(True)
         self.apply_bar.append(self.apply_msg)
-        self.apply_btn = button("Apply now", on_click=self._apply_now)
-        self.apply_bar.append(self.apply_btn)
+        self.reconnect_btn = button("Reconnect now", on_click=self._reconnect)
+        self.apply_bar.append(self.reconnect_btn)
         self.apply_bar.set_visible(False)
         self.append(self.apply_bar)
         footer = hbox(4)
@@ -425,8 +431,7 @@ class EditPage(Gtk.Box):
         self._row(sec, "connection.autoconnect-priority", "Priority", prio,
                   None if vpn else "Higher is tried first among autoconnect profiles")
         metered = Choice(METERED, self.changed)
-        cur = s_con.get_metered()
-        metered.set_value(cur if cur in (NM.Metered.YES, NM.Metered.NO) else NM.Metered.UNKNOWN)
+        metered.set_value(shown_metered(s_con))
         self._row(sec, "connection.metered", "Metered", metered)
         self.body.append(sec)
         uuid = s_con.get_uuid()
@@ -443,7 +448,7 @@ class EditPage(Gtk.Box):
             if not vpn:
                 c.set_property("autoconnect", auto.get_active())
             c.set_property("autoconnect-priority", int(prio.get_value()))
-            if metered.value() != (cur if cur in (NM.Metered.YES, NM.Metered.NO) else NM.Metered.UNKNOWN):
+            if metered.value() != shown_metered(c):  # keep guess-yes/-no unless changed
                 c.set_property("metered", metered.value())
         self._appliers.append(apply)
 
@@ -493,7 +498,7 @@ class EditPage(Gtk.Box):
                 value = custom.get_text().strip()
                 if mac_problem(value):
                     raise FieldError("802-11-wireless.bssid", mac_problem(value))
-            if (value or None) != cur_bssid:
+            if (value or None) != ((w.get_bssid() or "").upper() or None):
                 w.set_property("bssid", value)
             w.set_property("mtu", int(mtu.get_value()))
         self._appliers.append(apply)
@@ -582,7 +587,7 @@ class EditPage(Gtk.Box):
                     return
                 s = NM.SettingWireless.new() if setting_name == "802-11-wireless" else NM.SettingWired.new()
                 cand.add_setting(s)
-            if (value or None) != cur:
+            if (value or None) != s.get_cloned_mac_address():
                 s.set_property("cloned-mac-address", value)
         self._appliers.append(apply)
 
@@ -591,8 +596,7 @@ class EditPage(Gtk.Box):
         flags = s_wired.get_wake_on_lan() if s_wired else WOL.DEFAULT
         sec = edit_section("Ethernet")
         wol = toggle(self.changed)
-        was = bool(flags & WOL.MAGIC)
-        wol.set_active(was)
+        wol.set_active(bool(flags & WOL.MAGIC))
         wol.set_halign(Gtk.Align.START)
         other = flags & ~(WOL.MAGIC | WOL.DEFAULT | WOL.IGNORE)
         hint = "Off: the system default" + (" (other wake flags stay as set)" if other else "")
@@ -601,9 +605,10 @@ class EditPage(Gtk.Box):
 
         def apply(cand):
             on = wol.get_active()
-            if on == was:
-                return  # leave the flags exactly as stored
             s = cand.get_setting_wired()
+            flags = s.get_wake_on_lan() if s else WOL.DEFAULT
+            if on == bool(flags & WOL.MAGIC):
+                return  # leave the flags exactly as stored
             if s is None:
                 s = NM.SettingWired.new()
                 cand.add_setting(s)
@@ -639,8 +644,7 @@ class EditPage(Gtk.Box):
         gw_row = self._row(sec, f"{key}.gateway", "Gateway", gw)
         rt_dns = ", ".join(rt.get_nameservers() or []) if rt else ""
         dns = text_entry(self.changed, rt_dns or "comma-separated")
-        orig_dns = [s_ip.get_dns(i) for i in range(s_ip.get_num_dns())]
-        dns.set_text(", ".join(orig_dns))
+        dns.set_text(", ".join(s_ip.get_dns(i) for i in range(s_ip.get_num_dns())))
         dns_row = self._row(sec, f"{key}.dns", "DNS servers", dns)
         ignore_dns = toggle(self.changed)
         ignore_dns.set_active(s_ip.get_ignore_auto_dns())
@@ -689,7 +693,7 @@ class EditPage(Gtk.Box):
             for server in servers:
                 if not NM.utils_ipaddr_valid(family, server.split("#")[0]):
                     raise FieldError(f"{key}.dns", f"{server}: not an {title} address")
-            if servers != orig_dns:
+            if servers != [s.get_dns(i) for i in range(s.get_num_dns())]:
                 s.clear_dns()
                 for server in servers:
                     s.add_dns(server)
@@ -856,6 +860,15 @@ class EditPage(Gtk.Box):
         if peer is not None:
             self._secret_fields.append(("wireguard", editor.psk, editor.stored_psk))
 
+    def _rebase_peers(self):
+        """Point each peer editor at its saved peer (the candidate lists them in
+        editor order), so stored-PSK lookups use the saved public key."""
+        s_wg = self.base.get_setting_by_name("wireguard")
+        for i, editor in enumerate(self._peers):
+            if editor.peer is None:  # a new peer is now stored
+                self._secret_fields.append(("wireguard", editor.psk, editor.stored_psk))
+            editor.peer = s_wg.get_peer(i)
+
     def remove_peer(self, editor):
         self._peers.remove(editor)
         self._peer_box.remove(editor)
@@ -963,6 +976,7 @@ class EditPage(Gtk.Box):
             return
         remote, name = self.remote, cand.get_id()
         self.save_btn.set_sensitive(False)
+        self.apply_bar.set_visible(False)
         self._show_msg(f"Saving {name}…")
 
         def done(rc, res):
@@ -975,15 +989,13 @@ class EditPage(Gtk.Box):
             if rc is not self.remote:
                 return
             self.base = cand
+            self._rebase_peers()
             self.title.set_text(f"Edit {name}")
             self.active = next((ac for ac in self.app.client.get_active_connections()
                                 if ac.get_uuid() == rc.get_uuid()), None)
-            if self.active is not None:
-                self._show_msg(None)
-                self.apply_msg.set_text(f"Saved. {name} is connected: the changes take "
-                                        "effect when it reconnects.")
-                self.apply_btn.set_visible(True)
-                self.apply_bar.set_visible(True)
+            devs = self.active.get_devices() if self.active else []
+            if devs:
+                self._reapply(devs[0], name)
             else:
                 self._show_msg(f"Saved {name}", ok=True)
             self.changed()
@@ -1001,15 +1013,39 @@ class EditPage(Gtk.Box):
         self._fetched.add(setting)
         self._save()
 
-    def _apply_now(self):
-        """Reapply on the device (no disconnect); if NM refuses, reconnect."""
+    def _reapply(self, dev, name):
+        """Apply the saved profile to the connected device without a disconnect.
+        NM refuses changes it cannot make live (SSID, security, band, BSSID,
+        MAC, some MTUs): those wait for the user's Reconnect now, since a
+        reconnect drops open sessions."""
+        remote = self.remote
+        self._show_msg(f"Saved {name}; applying…")
+
+        def reapplied(d, res):
+            try:
+                d.reapply_finish(res)
+            except GLib.Error as e:
+                if remote is not self.remote:
+                    return
+                self._show_msg(None)
+                self.apply_msg.set_text(f"Saved. Takes effect after reconnecting "
+                                        f"({reapply_refusal_text(e)})")
+                self.reconnect_btn.set_visible(True)
+                self.apply_bar.set_visible(True)
+                return
+            if remote is self.remote:
+                self._show_msg(f"Saved and applied to {name}", ok=True)
+            self.app.queue_sync()
+        dev.reapply_async(None, 0, 0, None, reapplied)  # None: the saved profile, secrets included
+
+    def _reconnect(self):
         ac, remote = self.active, self.remote
         devs = ac.get_devices() if ac else []
         if not devs:
             return
         dev, name = devs[0], remote.get_id()
-        self.apply_btn.set_visible(False)
-        self.apply_msg.set_text(f"Applying to {name}…")
+        self.reconnect_btn.set_visible(False)
+        self.apply_msg.set_text(f"Reconnecting {name}…")
 
         def reconnected(c, res):
             try:
@@ -1017,22 +1053,9 @@ class EditPage(Gtk.Box):
             except GLib.Error as e:
                 self.apply_msg.set_text(f"Reconnecting {name} failed: {error_text(e)}")
                 return
-            self.apply_msg.set_text(f"Applied by reconnecting {name} (reapply was refused: {why[0]})")
+            self.apply_msg.set_text(f"Reconnected {name}: the changes are applied")
             self.app.queue_sync()
-
-        why = [""]
-
-        def reapplied(d, res):
-            try:
-                d.reapply_finish(res)
-            except GLib.Error as e:
-                why[0] = error_text(e)
-                self.apply_msg.set_text(f"Reapply refused ({why[0]}): reconnecting {name}…")
-                self.app.client.activate_connection_async(remote, dev, None, None, reconnected)
-                return
-            self.apply_msg.set_text(f"Applied to {name} without reconnecting (reapply)")
-            self.app.queue_sync()
-        dev.reapply_async(None, 0, 0, None, reapplied)  # None: the saved profile, secrets included
+        self.app.client.activate_connection_async(remote, dev, None, None, reconnected)
 
     def _cancel(self):
         self.remote = self.base = None

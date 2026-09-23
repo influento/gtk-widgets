@@ -1,6 +1,6 @@
 """libnm helpers shared by the network popup (main.py) and network-agent (agent.py)."""
 
-import base64, binascii, os, socket, time, uuid
+import base64, binascii, os, re, socket, time, uuid
 
 import gi
 
@@ -99,6 +99,12 @@ def error_text(err):
     if "Operation not supported" in msg and kernel_stale():
         msg += " (kernel updated: reboot to load its modules)"
     return msg
+
+
+def reapply_refusal_text(err):
+    """Why NM refused a reapply, shortened to the setting that cannot change live."""
+    m = re.search(r"reapply (?:any )?changes to '([^']+)'", err.message or "")
+    return f"{m.group(1)} cannot change while connected" if m else error_text(err)
 
 
 def device_reason_text(reason):

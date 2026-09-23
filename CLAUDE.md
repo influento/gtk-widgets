@@ -171,7 +171,7 @@ gtk-widgets/
 │   │   └── style.css
 │   └── network/
 │       ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page
-│       ├── editor.py      # Edit page: per-profile settings on a clone, verify(), full-secret saves, Apply now
+│       ├── editor.py      # Edit page: per-profile settings on a clone, verify(), full-secret saves, reapply on save (Reconnect now when refused)
 │       ├── ui.py          # Small GTK helpers shared by main.py and editor.py
 │       ├── agent.py       # network-agent: connection notifications + NM.SecretAgentOld password prompt
 │       ├── nmutil.py      # Shared libnm helpers: profile builders, reasons, connectivity, WireGuard .conf export
