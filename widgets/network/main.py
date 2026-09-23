@@ -6,8 +6,9 @@ UI follows client signals (plus a slow tick for signal strength and bitrates),
 folded into one debounced sync that updates keyed rows in place, so open
 password fields, details and confirmations survive updates.
 
-Two pages in a Gtk.Stack: the applet menu (switches, wired, Wi-Fi, VPN) and
-the saved-connections list (delete, hidden Wi-Fi, WireGuard import/export).
+Pages in a Gtk.Stack: the applet menu (switches, wired, Wi-Fi, the Exit
+group of VPNs and Proxy rules), the saved-connections list (delete, hidden
+Wi-Fi, WireGuard import/export), the Edit page and the Proxy rules page.
 """
 
 import os, secrets, socket, subprocess, sys
@@ -20,8 +21,10 @@ from lib.widget_base import Gdk, Gtk, WidgetPopup
 
 from gi.repository import Gio, GLib, GObject
 
-from ui import button, entry, glyph_button, hbox, label, section, switch, vbox  # noqa: E402
+from ui import KeyedList, button, entry, glyph_button, hbox, label, section, switch, vbox  # noqa: E402
 from editor import EDITABLE_TYPES, EapForm, EditPage  # noqa: E402
+from proxypage import ProxyPage  # noqa: E402
+import proxy as px  # noqa: E402
 from nmutil import (  # noqa: E402
     HOTSPOT_ID, ICON, NM, VPN_TYPES, ac_reason_text, ap_security, connection_security,
     connection_ssid, connectivity_problem, device_reason_text, eap_connection, eap_problem,
@@ -37,34 +40,17 @@ WG_DIR = os.path.expanduser("~/Dropbox/wireguard")
 EDITOR = "nm-connection-editor"
 
 AC_STATE = NM.ActiveConnectionState
+PROXY = "proxy-rules"  # the Proxy rules chip's key (VPN chips use profile UUIDs)
 HIDDEN_SECURITY = [("open", "None"), ("psk", "WPA/WPA2 Personal"), ("sae", "WPA3 Personal")]
 CONN_GROUPS = [("Wi-Fi", ("802-11-wireless",)), ("Ethernet", ("802-3-ethernet",)),
                ("WireGuard / VPN", VPN_TYPES), ("Other", None)]
 
 
-class KeyedList(Gtk.Box):
-    """Rows keyed by id, updated in place and reordered on each sync."""
-
-    def __init__(self, make_row, spacing=4):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=spacing)
-        self._make_row = make_row
-        self.rows = {}
-
-    def sync(self, items):
-        """items: [(key, data)] in display order; row.update(data) refreshes a row."""
-        keys = {k for k, _ in items}
-        for key in [k for k in self.rows if k not in keys]:
-            self.remove(self.rows.pop(key))
-        prev = None
-        for key, data in items:
-            row = self.rows.get(key)
-            if row is None:
-                row = self.rows[key] = self._make_row(key)
-                self.append(row)
-            row.update(data)
-            self.reorder_child_after(row, prev)
-            prev = row
-        self.set_visible(bool(items))
+def ac_name(ac):
+    """An active connection's name as its profile has it now: after a rename
+    the AC's own id can lag behind the profile's changed signal."""
+    conn = ac.get_connection()
+    return conn.get_id() if conn else ac.get_id()
 
 
 class Details(Gtk.Box):
@@ -192,7 +178,7 @@ class DeviceRow(ExpandRow):
     def update(self, dev):
         self.device, self.ac = dev, dev.get_active_connection()
         state = dev.get_state()
-        name = self.ac.get_id() if self.ac else "Ethernet"
+        name = ac_name(self.ac) if self.ac else "Ethernet"
         self.title.set_text(name)
         if state == NM.DeviceState.ACTIVATED:
             sub = f"{dev.get_iface()} · connected"
@@ -385,113 +371,176 @@ class EnterpriseForm(Gtk.Box):
         self.error.set_visible(bool(text))
 
 
-class VpnChips(Gtk.Box):
-    """VPNs are exclusive, so the section is one radio group: Off plus a chip
-    per profile, in a fixed order. A click connects or switches, Off
-    disconnects; the label line shows the state and toggles the details."""
+class ExitChips(Gtk.Box):
+    """The VPN and Proxy sections. Exits are exclusive: a chip per VPN profile
+    in a fixed order, and Proxy rules (per-app routing through sing-box). A
+    click on a chip connects or switches (the other exit goes down first), a
+    click on the selected chip turns it off. Each title line shows its state,
+    including when the other exit is the one on, and toggles the details."""
 
     PER_LINE = 6
 
     def __init__(self, app):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.app = app
-        line = hbox(6)
-        line.add_css_class("net-section-row")
-        line.append(label("VPN", "net-section"))
-        self.state = label("", "net-vpn-state", hexpand=True, ellipsize=True)
-        line.append(self.state)
-        self.expand = glyph_button(ICON["expand"], "Details", self._toggle_details)
-        line.append(self.expand)
-        self.append(line)
+        titles = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)  # the states line up
+        self.vpn = self._section("VPN", titles)
         self.flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
                                 min_children_per_line=self.PER_LINE,
                                 max_children_per_line=self.PER_LINE,
                                 row_spacing=4, column_spacing=4)
         self.append(self.flow)
-        self.details = Details(on_edit=app.open_editor)
-        self.details.add_css_class("net-vpn-details")
-        self.revealer = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.NONE,
-                                     child=self.details, visible=False)
-        self.append(self.revealer)
-        self._uuids = None
-        self._selected = None  # uuid shown as selected by the last update
-        self._chips = {}   # uuid (None: Off) -> ToggleButton
+        self.append(self.vpn["revealer"])
+        self.proxy = self._section("Proxy", titles, glyph_button(
+            ICON["settings"], "Proxy rules: proxies and apps", app.open_proxy_page))
+        # Proxy rules on a line of its own: its longer label would widen every
+        # chip of the homogeneous grid
+        self.proxy_line = hbox(8)
+        self.proxy_summary = label("", "net-row-subtitle", hexpand=True, ellipsize=True)
+        self.proxy_line.append(self.proxy_summary)
+        self.append(self.proxy_line)
+        self.append(self.proxy["revealer"])
+        self._profiles = None  # (uuid, name) per chip: a rename relabels and re-sorts
+        self._selected = None  # key shown as selected by the last update
+        self._chips = {}   # uuid or PROXY -> ToggleButton
         self._handlers = {}
 
-    def _rebuild(self, conns):
-        self.flow.remove_all()
-        self._chips, self._handlers = {}, {}
-        group = None
-        for conn in [None] + conns:
-            chip = Gtk.ToggleButton(label=conn.get_id() if conn else "Off")
-            chip.add_css_class("net-chip")
-            if conn is None:
-                chip.add_css_class("net-chip-off")
-            else:
-                chip.set_tooltip_text(vpn_place(conn.get_id()) or conn.get_id())
-            if group:
-                chip.set_group(group)
-            group = group or chip
-            uuid = conn.get_uuid() if conn else None
-            self._handlers[uuid] = chip.connect("toggled", self._on_toggled, conn)
-            self._chips[uuid] = chip
-            self.flow.append(chip)
-        self._uuids = [c.get_uuid() for c in conns]
+    def _section(self, title, titles, *extra):
+        """Title line (title, state, details toggle, extra) and a details revealer."""
+        line = hbox(8, "net-section-row")
+        name = label(title, "net-section")
+        titles.add_widget(name)
+        line.append(name)
+        sec = {"line": line, "state": label("", "net-exit-state", hexpand=True, ellipsize=True),
+               "details": Details(on_edit=self._edit)}
+        line.append(sec["state"])
+        sec["expand"] = glyph_button(ICON["expand"], "Details", lambda: self._toggle_details(sec))
+        line.append(sec["expand"])
+        for w in extra:
+            line.append(w)
+        self.append(line)
+        sec["details"].add_css_class("net-exit-details")
+        sec["revealer"] = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.NONE,
+                                       child=sec["details"], visible=False)
+        return sec
 
-    def update(self, conns, active, going, target, failed):
-        """conns: profiles in display order; active: the AC shown as selected
-        (activating or activated) or None; going: ACs being torn down;
-        target: uuid the user just picked ("" for Off); failed: uuid whose
-        last try failed."""
-        if [c.get_uuid() for c in conns] != self._uuids:
+    def _rebuild(self, conns):
+        # no toggle group: a group cannot turn its selected chip off, so update()
+        # keeps the chips exclusive
+        self.flow.remove_all()
+        if PROXY in self._chips:
+            self.proxy_line.remove(self._chips[PROXY])
+        self._chips, self._handlers = {}, {}
+        for conn in conns + [PROXY]:
+            if conn is PROXY:
+                chip, key = Gtk.ToggleButton(label="Proxy rules"), PROXY
+                chip.add_css_class("net-chip-proxy")
+            else:
+                chip, key = Gtk.ToggleButton(label=conn.get_id()), conn.get_uuid()
+                chip.set_tooltip_text(vpn_place(conn.get_id()) or conn.get_id())
+            chip.add_css_class("net-chip")
+            self._handlers[key] = chip.connect("toggled", self._on_toggled, conn)
+            self._chips[key] = chip
+            if key == PROXY:
+                self.proxy_line.prepend(chip)
+            else:
+                self.flow.append(chip)
+        self.flow.set_visible(bool(conns))
+        self._profiles = [(c.get_uuid(), c.get_id()) for c in conns]
+
+    def update(self, conns, active, going, target, failed, proxy):
+        """conns: VPN profiles in display order; active: the VPN AC shown as
+        selected (activating or activated) or None; going: VPN ACs being torn
+        down; target: key the user just picked ("" for off); failed: key whose
+        last try failed; proxy: Proxy rules state (up, on, going, crashed,
+        summary, pairs)."""
+        if [(c.get_uuid(), c.get_id()) for c in conns] != self._profiles:
             self._rebuild(conns)
-        selected = None if target == "" else target or (active.get_uuid() if active else None)
-        activated = active is not None and active.get_state() == AC_STATE.ACTIVATED \
-            and active.get_uuid() == selected
-        self._selected = selected
-        going_uuids = {ac.get_uuid() for ac in going}
-        if active is not None and active.get_uuid() != selected:
-            going_uuids.add(active.get_uuid())  # still up, but on its way out
-        for uuid, chip in self._chips.items():
-            chip.handler_block(self._handlers[uuid])
-            chip.set_active(uuid == selected)
-            chip.handler_unblock(self._handlers[uuid])
-            for cls, on in (("net-chip-connecting", uuid == selected and uuid and not activated),
-                            ("net-chip-going", uuid in going_uuids and uuid != selected),
-                            ("net-chip-failed", bool(uuid) and uuid == failed and uuid != selected)):
-                (chip.add_css_class if on else chip.remove_css_class)(cls)
-        name = next((c.get_id() for c in conns if c.get_uuid() == selected), None)
-        if name is None and (active or going):
-            self.state.set_text(f"disconnecting {(active or going[0]).get_id()}…")
-        elif name is None:
-            self.state.set_text("off")
-        elif activated:
-            place = vpn_place(name)
-            self.state.set_text(f"{ICON['check']} {name}" + (f" · {place}" if place else ""))
+        if target is not None:
+            selected = target or None
+        elif active is not None:
+            selected = active.get_uuid()
         else:
-            self.state.set_text(f"connecting {name}…")
-        self.state.set_css_classes(["net-vpn-state"] + (["net-vpn-on"] if activated else []))
-        self.expand.set_visible(activated)
-        if activated and self.revealer.get_visible():
-            self.details.update(connection_details(self.app.client, active), active.get_connection())
+            selected = PROXY if proxy["up"] else None
+        if selected == PROXY:
+            activated = proxy["on"]
+        else:
+            activated = active is not None and active.get_state() == AC_STATE.ACTIVATED \
+                and active.get_uuid() == selected
+        self._selected = selected
+        going_keys = {ac.get_uuid() for ac in going}
+        if active is not None and active.get_uuid() != selected:
+            going_keys.add(active.get_uuid())  # still up, but on its way out
+        if proxy["going"] or (proxy["up"] and selected != PROXY):
+            going_keys.add(PROXY)
+        self._chips[PROXY].set_tooltip_text(proxy["summary"])
+        self.proxy_summary.set_text(proxy["summary"])
+        for key, chip in self._chips.items():
+            chip.handler_block(self._handlers[key])
+            chip.set_active(key == selected)
+            chip.handler_unblock(self._handlers[key])
+            for cls, on in (("net-chip-connecting", key == selected and not activated),
+                            ("net-chip-going", key in going_keys and key != selected),
+                            ("net-chip-failed", key == failed and key != selected)):
+                (chip.add_css_class if on else chip.remove_css_class)(cls)
+
+        vpn_name = next((c.get_id() for c in conns if c.get_uuid() == selected), None)
+        if vpn_name and activated:
+            place = vpn_place(vpn_name)
+            vpn = (f"connected · {vpn_name}" + (f", {place}" if place else ""), "on")
+        elif vpn_name:
+            vpn = (f"connecting · {vpn_name}…", None)
+        elif active or going:
+            vpn = (f"disconnecting · {ac_name(active or going[0])}…", None)
+        elif selected == PROXY:
+            vpn = ("off · Proxy rules is on" if activated else "off · Proxy rules is starting", None)
+        else:
+            vpn = ("off", None)
+        if selected == PROXY:
+            prx = (f"on · {proxy['summary']}", "on") if activated else ("starting…", None)
+        elif PROXY in going_keys:
+            prx = ("stopping…", None)
+        elif proxy["crashed"]:
+            prx = ("stopped", "bad")
+        elif vpn_name and activated:
+            prx = (f"off · {vpn_name} is on", None)
+        else:
+            prx = ("off", None)
+        self.proxy_summary.set_visible(not (activated and selected == PROXY))  # the state says it
+        self._show(self.vpn, vpn, bool(vpn_name) and activated,
+                   lambda: (connection_details(self.app.client, active), active.get_connection()))
+        self._show(self.proxy, prx, selected == PROXY and activated,
+                   lambda: (proxy["pairs"], PROXY))
+
+    def _show(self, sec, state, activated, details):
+        text, tone = state
+        sec["state"].set_text(text)
+        sec["state"].set_css_classes(["net-exit-state"] + ([f"net-exit-{tone}"] if tone else []))
+        sec["expand"].set_visible(activated)
+        if activated and sec["revealer"].get_visible():
+            sec["details"].update(*details())
         elif not activated:
-            self.revealer.set_visible(False)
-            self.revealer.set_reveal_child(False)
-        self.expand.set_label(ICON["collapse" if self.revealer.get_visible() else "expand"])
+            sec["revealer"].set_visible(False)
+            sec["revealer"].set_reveal_child(False)
+        sec["expand"].set_label(ICON["collapse" if sec["revealer"].get_visible() else "expand"])
 
     def _on_toggled(self, chip, conn):
-        uuid = conn.get_uuid() if conn else None
-        if not chip.get_active() or uuid == self._selected:
-            return  # the group untoggles the previous chip; the current one is a no-op
-        if conn is None:
-            self.app.disconnect_vpns()
-        else:
-            self.app.activate_vpn(conn)
+        key = PROXY if conn is PROXY else conn.get_uuid()
+        if chip.get_active() and key != self._selected:
+            self.app.select_exit(conn)
+        elif not chip.get_active() and key == self._selected:
+            self.app.select_exit(None)  # a click on the selected chip turns it off
 
-    def _toggle_details(self):
-        show = not self.revealer.get_visible()
-        self.revealer.set_visible(show)
-        self.revealer.set_reveal_child(show)
+    def _edit(self, conn):
+        if conn is PROXY:
+            self.app.open_proxy_page()
+        else:
+            self.app.open_editor(conn)
+
+    def _toggle_details(self, sec):
+        show = not sec["revealer"].get_visible()
+        sec["revealer"].set_visible(show)
+        sec["revealer"].set_reveal_child(show)
         self.app.queue_sync()
 
 
@@ -687,8 +736,11 @@ class NetworkPopup(WidgetPopup):
         self.client = None
         self._sync_id = self._tick_id = 0
         self._pending = {}       # ssid -> WifiRow for new networks being activated
-        self._vpn_target = None  # uuid of the VPN being switched to, "" while turning off
-        self._vpn_failed = None  # uuid of the VPN whose last activation failed
+        self._exit_target = None  # uuid or PROXY being switched to, "" while turning off
+        self._exit_failed = None  # uuid or PROXY whose last start failed
+        self.proxy_state = px.load_state()
+        self.proxy_watch = None
+        self._proxy_busy = None   # "starting" / "stopping" while the helper runs
         self._scanning = False
 
     # --- UI ---
@@ -703,6 +755,8 @@ class NetworkPopup(WidgetPopup):
         self._editor = EditPage(self, lambda: self._show_page(self._editor_back))
         self._editor_back = "connections"
         self._stack.add_named(self._editor, "edit")
+        self._proxy_page = ProxyPage(self, lambda: self._show_page("main"))
+        self._stack.add_named(self._proxy_page, "proxies")
         self._container.append(self._stack)
 
         self._status = label("", "net-status")
@@ -712,6 +766,7 @@ class NetworkPopup(WidgetPopup):
         self._container.append(self._status)
 
         NM.Client.new_async(None, self._on_client)
+        self.proxy_watch = px.ServiceWatch(lambda _w: self.queue_sync())
         return self._container
 
     def _build_main(self):
@@ -777,9 +832,9 @@ class NetworkPopup(WidgetPopup):
         self._hotspot = HotspotForm(self)
         self._body.append(self._hotspot)
 
-        # VPN
-        self._vpn = VpnChips(self)
-        self._body.append(self._vpn)
+        # VPN and Proxy: one exclusive exit
+        self._exit = ExitChips(self)
+        self._body.append(self._exit)
 
         footer = hbox(4)
         footer.add_css_class("net-footer")
@@ -840,7 +895,7 @@ class NetworkPopup(WidgetPopup):
     def _on_key(self, controller, keyval, keycode, state):
         win = self.get_active_window()
         focus = win.get_focus() if win else None
-        if keyval == Gdk.KEY_q and isinstance(focus, Gtk.Text):
+        if keyval == Gdk.KEY_q and isinstance(focus, (Gtk.Text, Gtk.TextView)):
             return False
         return super()._on_key(controller, keyval, keycode, state)
 
@@ -942,10 +997,12 @@ class NetworkPopup(WidgetPopup):
             self._sync_connectivity()
             self._sync_wired()
             self._sync_wifi()
-            self._sync_vpn()
+            self._sync_exit()
         page = self._stack.get_visible_child_name()
         if page == "connections":
             self._sync_connections()
+        elif page == "proxies":
+            self._proxy_page.sync()
         elif page == "edit" and self._editor.remote is not None \
                 and self._editor.remote not in c.get_connections():
             name = self._editor.remote.get_id()
@@ -1039,23 +1096,41 @@ class NetworkPopup(WidgetPopup):
             it["ac"] is None, not it["conns"], -(it["ap"].get_strength() if it["ap"] else 0),
             it["ssid"].lower()))
 
-    def _sync_vpn(self):
+    def _proxy_info(self):
+        """Proxy rules as the Exit group shows it."""
+        w, st = self.proxy_watch, self.proxy_state
+        active, stopping = bool(w and w.active), self._proxy_busy == "stopping"
+        starting = self._proxy_busy == "starting" or bool(w and w.starting)
+        pairs = [(r["app"], px.exit_label(st, r["exit"])) for r in st["rules"]]
+        pairs.append(("everything else", px.exit_label(st, st["default"])))
+        return {"up": (active or starting) and not stopping,
+                "on": active and not starting and not stopping, "going": stopping,
+                "crashed": bool(w and w.crashed),
+                "summary": px.summary(st), "pairs": pairs}
+
+    def _proxy_running(self):
+        """sing-box is up, restarting or failed (a failed one may still hold the kill switch)."""
+        w = self.proxy_watch
+        return w is not None and w.state not in (None, "inactive")
+
+    def _sync_exit(self):
         c = self.client
         conns = [conn for conn in c.get_connections() if conn.get_connection_type() in VPN_TYPES]
         conns.sort(key=lambda conn: conn.get_id().lower())  # fixed order: muscle memory
         acs = [ac for ac in c.get_active_connections() if ac.get_connection_type() in VPN_TYPES]
         up = [ac for ac in acs if ac.get_state() in (AC_STATE.ACTIVATING, AC_STATE.ACTIVATED)]
         going = [ac for ac in acs if ac not in up]
-        if self._vpn_target == "" and not acs:
-            self._vpn_target = None  # Off has taken effect
-        self._vpn.set_visible(bool(conns))
-        self._vpn.update(conns, up[0] if up else None, going, self._vpn_target, self._vpn_failed)
+        proxy = self._proxy_info()
+        if self._exit_target == "" and not acs and not proxy["up"] and not proxy["going"]:
+            self._exit_target = None  # Off has taken effect
+        self._exit.update(conns, up[0] if up else None, going, self._exit_target,
+                          self._exit_failed, proxy)
 
     def _sync_connections(self):
         active = {}
         for ac in self.client.get_active_connections():
             devs = ac.get_devices()
-            active[ac.get_uuid()] = devs[0].get_iface() if devs else ac.get_id()
+            active[ac.get_uuid()] = devs[0].get_iface() if devs else ac_name(ac)
         grouped = {title: [] for title, _ in CONN_GROUPS}
         for conn in self.client.get_connections():
             if hidden_connection(conn):
@@ -1275,33 +1350,54 @@ class NetworkPopup(WidgetPopup):
         existing.update2(conn.to_dbus(NM.ConnectionSerializationFlags.ALL),
                          NM.SettingsUpdate2Flags.TO_DISK, None, None, updated)
 
-    def activate_vpn(self, conn):
-        """VPNs are exclusive: take the active one down first (and wait until
-        NM has removed it, so two tunnels never hold routes at once)."""
+    def select_exit(self, conn):
+        """Off (None), a VPN profile or PROXY. Exits are exclusive: the current
+        one goes down first, so two never hold routes at once."""
+        if conn is None:
+            self._exit_off()
+        elif conn is PROXY:
+            self._start_proxy()
+        else:
+            self._activate_vpn(conn)
+
+    def _activate_vpn(self, conn):
         name, uuid = conn.get_id(), conn.get_uuid()
-        self._vpn_target, self._vpn_failed = uuid, None
-        self._sync_vpn()  # show the pick as connecting right away, not after the debounce
+        self._exit_target, self._exit_failed = uuid, None
+        self._sync_exit()  # show the pick as connecting right away, not after the debounce
 
         def activated(_ac):
-            if self._vpn_target == uuid:
-                self._vpn_target = None
+            if self._exit_target == uuid:
+                self._exit_target = None
 
         def failed(_why):
-            if self._vpn_target == uuid:
-                self._vpn_target, self._vpn_failed = None, uuid
+            if self._exit_target == uuid:
+                self._exit_target, self._exit_failed = None, uuid
             self.queue_sync()
 
         def start():
             self.activate(conn, None, None, name, activated, failed)
 
+        def proxy_stopped(err=None):
+            if err:
+                failed(err)
+            else:
+                self._take_down_vpns(uuid, name, start, failed)
+        if self._proxy_running():
+            self._stop_proxy(proxy_stopped)
+        else:
+            proxy_stopped()
+
+    def _take_down_vpns(self, keep, name, start, failed):
+        """Deactivate every VPN but `keep`, wait until NM has removed them,
+        then start()."""
         others = [ac for ac in self.client.get_active_connections()
-                  if ac.get_connection_type() in VPN_TYPES and ac.get_uuid() != uuid]
+                  if ac.get_connection_type() in VPN_TYPES and ac.get_uuid() != keep]
         if not others:
             start()
             return
         paths = {ac.get_path() for ac in others}
         self.set_status(f"Switching to {name}: disconnecting "
-                        f"{', '.join(ac.get_id() for ac in others)}…")
+                        f"{', '.join(ac_name(ac) for ac in others)}…")
         state = {"failed": False, "started": False, "handler": 0}
 
         def gone():
@@ -1330,19 +1426,79 @@ class NetworkPopup(WidgetPopup):
         for ac in others:
             self.client.deactivate_connection_async(ac, None, done)
 
-    def disconnect_vpns(self):
-        self._vpn_target, self._vpn_failed = "", None
+    def _exit_off(self):
+        self._exit_target, self._exit_failed = "", None
         acs = [ac for ac in self.client.get_active_connections()
                if ac.get_connection_type() in VPN_TYPES]
-        def failed():
-            if self._vpn_target == "":
-                self._vpn_target = None  # still connected: show it again
+
+        def failed(*_):
+            if self._exit_target == "":
+                self._exit_target = None  # still connected: show it again
         for ac in acs:
             self.deactivate(ac, failed)
-        self._sync_vpn()
+        if self._proxy_running():
+            self._stop_proxy(lambda err: failed() if err else None)
+        self._sync_exit()
+
+    # --- Proxy rules ---
+
+    def open_proxy_page(self):
+        self._show_page("proxies")
+
+    def _start_proxy(self):
+        problem = px.usable_problem(self.proxy_state)
+        if problem:
+            self.open_proxy_page()
+            self._proxy_page.show_msg(f"{problem}, then pick Proxy rules again", error=True)
+            return
+        if self.proxy_watch is not None and self.proxy_watch.installed is False:
+            self.set_status("Proxy rules need setup: pacman -S sing-box, then run install.sh",
+                            error=True)
+            self.queue_sync()  # the chip goes back to the current exit
+            return
+        self._exit_target, self._exit_failed = PROXY, None
+        self._proxy_busy = "starting"
+        self._sync_exit()
+
+        def done(err):
+            self._proxy_busy = None
+            if self._exit_target == PROXY:
+                self._exit_target = None
+            if err:
+                self._exit_failed = PROXY
+                self.set_status(f"Proxy rules did not start: {err}", error=True)
+            else:
+                self.set_status(f"Proxy rules on: {px.summary(self.proxy_state)}", ok=True)
+            self.queue_sync()
+
+        def start():
+            self.set_status("Starting proxy rules…")
+            px.apply(self.proxy_state, done)
+
+        def failed(_why):
+            self._proxy_busy = None
+            if self._exit_target == PROXY:
+                self._exit_target, self._exit_failed = None, PROXY
+            self.queue_sync()
+        self._take_down_vpns(None, "Proxy rules", start, failed)
+
+    def _stop_proxy(self, then):
+        self._proxy_busy = "stopping"
+        self.set_status("Stopping proxy rules…")
+        self.queue_sync()
+
+        def done(err):
+            self._proxy_busy = None
+            if err:
+                self.set_status(f"Could not stop proxy rules: {err}", error=True)
+            else:
+                self.set_status("Proxy rules off", ok=True)
+            self.queue_sync()
+            then(err)
+        px.stop(done)
 
     def deactivate(self, ac, on_failed=None):
-        name = ac.get_id()
+        name = ac_name(ac)
         self.set_status(f"Disconnecting {name}…")
 
         def done(c, res):

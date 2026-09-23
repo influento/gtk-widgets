@@ -87,3 +87,28 @@ def section(text, *extra):
     for w in extra:
         row.append(w)
     return row
+
+
+class KeyedList(Gtk.Box):
+    """Rows keyed by id, updated in place and reordered on each sync."""
+
+    def __init__(self, make_row, spacing=4):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=spacing)
+        self._make_row = make_row
+        self.rows = {}
+
+    def sync(self, items):
+        """items: [(key, data)] in display order; row.update(data) refreshes a row."""
+        keys = {k for k, _ in items}
+        for key in [k for k in self.rows if k not in keys]:
+            self.remove(self.rows.pop(key))
+        prev = None
+        for key, data in items:
+            row = self.rows.get(key)
+            if row is None:
+                row = self.rows[key] = self._make_row(key)
+                self.append(row)
+            row.update(data)
+            self.reorder_child_after(row, prev)
+            prev = row
+        self.set_visible(bool(items))

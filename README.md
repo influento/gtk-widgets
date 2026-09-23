@@ -15,7 +15,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `usb`          | USB device manager: list, format, write ISO (root helper via polkit) |
 | `timer`        | Timer + stopwatch with alarm on expiry                     |
 | `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events) |
-| `network`      | nm-applet replacement via libnm: Wi-Fi/wired/VPN, hidden and Enterprise (PEAP/TTLS) networks, hotspot, connection list, WireGuard import/export, per-profile Edit page (Wi-Fi/Ethernet/WireGuard); `network-agent` for notifications + password prompts |
+| `network`      | nm-applet replacement via libnm: Wi-Fi/wired, mutually exclusive VPN and Proxy sections (WireGuard/VPN profile chips, or Proxy rules: per-app SOCKS5 routing through sing-box; clicking the active chip turns it off), hidden and Enterprise (PEAP/TTLS) networks, hotspot, connection list, WireGuard import/export, per-profile Edit page (Wi-Fi/Ethernet/WireGuard); `network-agent` for notifications + password prompts |
 
 ## Installation
 
@@ -26,7 +26,8 @@ in `lib/pulsectl/`.
 `network` needs NetworkManager's `libnm` (GObject introspection data, `NM-1.0.typelib`) and
 `notify-send` for `network-agent`'s notifications; `Advanced…` opens `nm-connection-editor`
 for the settings the Edit page doesn't cover. The Edit page shows WireGuard public keys with
-`wg` (wireguard-tools) when it is installed.
+`wg` (wireguard-tools) when it is installed. Proxy rules needs `sing-box` (Arch `extra`,
+1.14 or later) and `nftables` for its optional kill switch.
 
 ```bash
 ./install.sh                          # default theme (catppuccin-mocha)
@@ -43,8 +44,10 @@ This symlinks into `~/.local/bin/`:
 - `<name>-status` — each status script, if present (e.g., `calendar-status`)
 - `<widget>-<tool>` — extra CLI entry points (e.g., `display-brightness up|down|set|get`)
 
-The USB helper and its polkit rule are copied to `/usr/lib/gtk-widgets/usb-helper` and
-`/etc/polkit-1/rules.d/` with `sudo` (only when they changed).
+The root helpers (`usb-helper`, `proxy-helper`) and their polkit rules are copied to
+`/usr/lib/gtk-widgets/` and `/etc/polkit-1/rules.d/` with `sudo` (only when they changed),
+and the Proxy rules unit to `/etc/systemd/system/gtk-widgets-proxy.service` (never enabled:
+it starts when Proxy rules is picked in the popup).
 
 ## Waybar Integration
 
@@ -81,7 +84,8 @@ with `widget-toggle audio`.
 `network-status` is long-running: it follows NetworkManager and prints a line on every
 change, so give it no `interval`. It shows the connection carrying traffic, the active VPN
 and NM's connectivity check; `class` is a list (`wifi`/`wired`/`hotspot`/`other`/
-`disconnected`/`disabled`/`error`, plus `portal`/`limited`/`none`, plus `vpn`) for styling.
+`disconnected`/`disabled`/`error`, plus `portal`/`limited`/`none`, plus `vpn`, plus `proxy`
+while Proxy rules is on or `proxy-down` when sing-box failed) for styling.
 `network-status --once` prints the current state and exits.
 
 ```json
@@ -93,7 +97,8 @@ and NM's connectivity check; `class` is a list (`wifi`/`wired`/`hotspot`/`other`
 }
 ```
 
-`network-agent` is a long-running companion (connect/disconnect/VPN/captive-portal notifications and a
+`network-agent` is a long-running companion (connect/disconnect/VPN/captive-portal notifications,
+Proxy rules on/off/crashed and proxies that stop answering, and a
 NetworkManager secret agent that prompts for passwords); start it once from the compositor
 (e.g. `exec network-agent` in sway) instead of nm-applet.
 

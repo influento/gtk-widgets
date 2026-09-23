@@ -1,0 +1,15 @@
+// Authorise ONLY the gtk-widgets proxy helper to run without a password, and
+// only for an active local session in the wheel group.
+//
+// This matches the exact root-owned program path (action.lookup("program")) —
+// NOT a substring of the command line — so it cannot be bypassed by passing a
+// crafted command to pkexec. The helper accepts only a validated, structured
+// request and builds the sing-box config itself, so this grants no general-
+// purpose privilege: at most, starting or stopping gtk-widgets-proxy.service.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/lib/gtk-widgets/proxy-helper" &&
+        subject.active && subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

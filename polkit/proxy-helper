@@ -1,0 +1,411 @@
+#!/usr/bin/python3 -I
+"""Privileged proxy-routing helper for gtk-widgets (network widget, Proxy rules).
+
+Intended to be run ONLY via pkexec, authorised by the bundled polkit rule
+(50-gtk-widgets-proxy.rules), which permits exactly this root-owned binary.
+
+It builds the sing-box config for per-app proxy routing and starts or stops
+gtk-widgets-proxy.service. Security model:
+  - The caller never supplies a config, a path or a command. `apply` reads a
+    small structured JSON document on stdin (proxies, app rules, default exit,
+    kill switch), validates every field against a strict schema and builds the
+    sing-box config itself, so paths sing-box writes to (cache, log) stay fixed.
+  - The config holds the proxy passwords: it is written root:sing-box 0640 in a
+    root:sing-box 0750 directory, never readable by other users. Passwords are
+    read from stdin, never from argv (visible to every user in /proc).
+  - Every external command is discrete argv; no shell is ever invoked.
+  - `--check apply` validates and prints the config it WOULD write, then exits
+    without touching anything (no root needed).
+
+Usage: proxy-helper [--check] apply < request.json
+       proxy-helper stop
+"""
+
+import grp
+import ipaddress
+import json
+import os
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+SING_BOX = "/usr/bin/sing-box"
+SING_BOX_USER = "sing-box"
+UNIT = "gtk-widgets-proxy.service"
+CONF_DIR = "/etc/gtk-widgets/proxy"
+CONF_PATH = CONF_DIR + "/config.json"
+TUN_NAME = "gtkw-proxy"
+KILL_TABLE = "gtkw_proxy_killswitch"
+MAX_INPUT = 64 * 1024
+MAX_PROXIES = 32
+MAX_RULES = 128
+
+PROXY_ID_RE = re.compile(r"^p[1-9][0-9]?$")
+LABEL_RE = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+# Never routed through the TUN: LAN, link-local, CGNAT (Tailscale). IPv6 ULA
+# (fc00::/7) stays routed because the fake-IP range lives there; the
+# ip_is_private rule still sends real private destinations direct.
+ROUTE_EXCLUDE = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+                 "100.64.0.0/10", "fe80::/10"]
+FAKE_V4, FAKE_V6 = "198.18.0.0/15", "fc00::/18"
+# Names that only the local resolver knows: real answers, never fake IPs
+LOCAL_SUFFIXES = ["lan", "local", "localdomain", "home.arpa", "internal"]
+# Traffic the kill switch lets through when sing-box is down
+KILL_ALLOW_V4 = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+                 "100.64.0.0/10", "224.0.0.0/4", "255.255.255.255"]
+KILL_ALLOW_V6 = ["fe80::/10", "fc00::/7", "ff00::/8"]
+
+
+class Refused(Exception):
+    pass
+
+
+def die(msg, code=2):
+    print(f"proxy-helper: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# --- validation ---
+
+def _keys(obj, what, required, optional=()):
+    if not isinstance(obj, dict):
+        raise Refused(f"{what}: expected an object")
+    unknown = set(obj) - set(required) - set(optional)
+    if unknown:
+        raise Refused(f"{what}: unknown field {sorted(unknown)[0]!r}")
+    missing = [k for k in required if k not in obj]
+    if missing:
+        raise Refused(f"{what}: missing field {missing[0]!r}")
+
+
+def _bool(value, what):
+    if not isinstance(value, bool):
+        raise Refused(f"{what}: expected true or false")
+    return value
+
+
+def _text(value, what, max_bytes):
+    if not isinstance(value, str):
+        raise Refused(f"{what}: expected a string")
+    if CONTROL_RE.search(value):
+        raise Refused(f"{what}: control characters are not allowed")
+    if len(value.encode()) > max_bytes:
+        raise Refused(f"{what}: longer than {max_bytes} bytes")
+    return value
+
+
+def valid_host(host):
+    """IP literal or DNS name; returns (host, is_ip)."""
+    if not isinstance(host, str) or not host or len(host) > 253:
+        raise Refused(f"host {host!r}: expected an IP address or host name")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if getattr(ip, "scope_id", None):
+            raise Refused(f"host {host!r}: zone ids are not allowed")
+        return str(ip), True
+    name = host[:-1] if host.endswith(".") else host
+    labels = name.split(".")
+    if not all(LABEL_RE.match(label) for label in labels) or labels[-1].isdigit():
+        raise Refused(f"host {host!r}: not a valid IP address or host name")
+    return name.lower(), False
+
+
+def valid_app(app):
+    """An executable name as sing-box matches it: basename of /proc/<pid>/exe."""
+    _text(app, "app", 255)
+    if not app or app in (".", "..") or "/" in app or app != app.strip():
+        raise Refused(f"app {app!r}: expected an executable name")
+    return app
+
+
+def _exit(value, exits, what):
+    if not isinstance(value, str) or value not in exits:
+        raise Refused(f"{what}: unknown exit {value!r}")
+    return value
+
+
+def validate(req):
+    """Checked, normalised request; raises Refused on anything unexpected."""
+    _keys(req, "request", ("proxies", "rules", "default", "kill_switch"))
+    if not isinstance(req["proxies"], list) or len(req["proxies"]) > MAX_PROXIES:
+        raise Refused(f"proxies: expected a list of at most {MAX_PROXIES}")
+    proxies, ids = [], set()
+    for i, p in enumerate(req["proxies"]):
+        _keys(p, f"proxy {i + 1}", ("id", "host", "port", "username", "password", "block_quic"))
+        pid = p["id"]
+        if not isinstance(pid, str) or not PROXY_ID_RE.match(pid):
+            raise Refused(f"proxy {i + 1}: id must be p1..p99")
+        if pid in ids:
+            raise Refused(f"proxy {pid}: duplicate id")
+        ids.add(pid)
+        host, is_ip = valid_host(p["host"])
+        port = p["port"]
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise Refused(f"proxy {pid}: port must be 1-65535")
+        # RFC 1929: both fields are 1-255 bytes; empty both means no authentication
+        user = _text(p["username"], f"proxy {pid} username", 255)
+        password = _text(p["password"], f"proxy {pid} password", 255)
+        if bool(user) != bool(password):
+            raise Refused(f"proxy {pid}: give both a username and a password, or neither")
+        proxies.append({"id": pid, "host": host, "is_ip": is_ip, "port": port,
+                        "username": user, "password": password,
+                        "block_quic": _bool(p["block_quic"], f"proxy {pid} block_quic")})
+    exits = ids | {"direct"}
+    if not isinstance(req["rules"], list) or len(req["rules"]) > MAX_RULES:
+        raise Refused(f"rules: expected a list of at most {MAX_RULES}")
+    rules, apps = [], set()
+    for i, r in enumerate(req["rules"]):
+        _keys(r, f"rule {i + 1}", ("app", "exit"))
+        app = valid_app(r["app"])
+        if app in apps:
+            raise Refused(f"app {app!r}: more than one rule")
+        apps.add(app)
+        rules.append({"app": app, "exit": _exit(r["exit"], exits, f"app {app!r}")})
+    _exit(req["default"], exits, "default")
+    if not any(r["exit"] != "direct" for r in rules) and req["default"] == "direct":
+        raise Refused("nothing goes through a proxy: add an app rule or pick a proxy as default")
+    return {"proxies": proxies, "rules": rules, "default": req["default"],
+            "kill_switch": _bool(req["kill_switch"], "kill_switch")}
+
+
+# --- config ---
+
+def build_config(req):
+    """sing-box 1.14 config for a validated request.
+
+    DNS: every A/AAAA query gets a fake IP (systemd-resolved sends all lookups
+    itself, so queries cannot be told apart per app). A connection to a fake IP
+    carries its domain again, so a SOCKS outbound hands the name to the proxy,
+    which resolves it at the exit, and direct connections resolve it through
+    the local resolver. No lookup of a proxied app ever leaves this machine.
+    """
+    proxies, rules = req["proxies"], req["rules"]
+    by_exit = {}
+    for r in rules:
+        by_exit.setdefault(r["exit"], []).append(r["app"])
+    quic_blocked = {p["id"] for p in proxies if p["block_quic"]}
+
+    outbounds = [{"type": "direct", "tag": "direct"}]
+    for p in proxies:
+        ob = {"type": "socks", "tag": p["id"], "server": p["host"],
+              "server_port": p["port"], "version": "5"}
+        if p["username"]:
+            ob["username"], ob["password"] = p["username"], p["password"]
+        outbounds.append(ob)
+
+    route_rules = []
+    # QUIC reject must come before sniff: only then does reject answer with
+    # ICMP unreachable, so browsers fall back to TCP at once
+    for pid in sorted(quic_blocked):
+        if by_exit.get(pid):
+            route_rules.append({"process_name": by_exit[pid], "network": "udp", "port": 443,
+                                "action": "reject"})
+    if req["default"] in quic_blocked:
+        quic = {"network": "udp", "port": 443}
+        if rules:
+            route_rules.append({"type": "logical", "mode": "and", "rules": [
+                {"process_name": [r["app"] for r in rules], "invert": True}, quic],
+                "action": "reject"})
+        else:
+            route_rules.append(dict(quic, action="reject"))
+    route_rules += [
+        {"action": "sniff"},
+        {"type": "logical", "mode": "or", "rules": [{"protocol": "dns"}, {"port": 53}],
+         "action": "hijack-dns"},
+        {"ip_is_private": True, "action": "route", "outbound": "direct"},
+    ]
+    # the proxies themselves are always reached directly (no proxy chains)
+    names = sorted({p["host"] for p in proxies if not p["is_ip"]})
+    addrs = sorted({p["host"] for p in proxies if p["is_ip"]})
+    if names:
+        route_rules.append({"domain": names, "action": "route", "outbound": "direct"})
+    if addrs:
+        route_rules.append({"ip_cidr": addrs, "action": "route", "outbound": "direct"})
+    for exit_ in ["direct"] + [p["id"] for p in proxies]:
+        if by_exit.get(exit_):
+            route_rules.append({"process_name": by_exit[exit_], "action": "route",
+                                "outbound": exit_})
+
+    dns_rules = [{"domain_suffix": LOCAL_SUFFIXES, "action": "route", "server": "dns-local"}]
+    if names:
+        dns_rules.append({"domain": names, "action": "route", "server": "dns-local"})
+    dns_rules += [
+        {"query_type": ["A", "AAAA"], "action": "route", "server": "dns-fake", "rewrite_ttl": 60},
+        # HTTPS/SVCB records carry real address hints that would bypass the fake IPs
+        {"query_type": ["HTTPS", "SVCB"], "action": "predefined", "rcode": "NOERROR"},
+    ]
+
+    return {
+        "log": {"level": "warn", "timestamp": False},
+        "dns": {
+            "servers": [
+                {"type": "local", "tag": "dns-local"},
+                {"type": "fakeip", "tag": "dns-fake", "inet4_range": FAKE_V4, "inet6_range": FAKE_V6},
+            ],
+            "rules": dns_rules,
+            "final": "dns-local",
+        },
+        "inbounds": [{
+            "type": "tun", "tag": "tun-in", "interface_name": TUN_NAME,
+            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+            "auto_route": True, "auto_redirect": True, "strict_route": True,
+            "route_exclude_address": ROUTE_EXCLUDE,
+            "stack": "mixed",
+        }],
+        "outbounds": outbounds,
+        "route": {
+            "rules": route_rules,
+            "final": req["default"],
+            "auto_detect_interface": True,
+            "default_domain_resolver": "dns-local",
+        },
+        # fake IP mappings survive a restart (Apply), so open connections' names stay known
+        "experimental": {"cache_file": {"enabled": True, "path": "cache.db", "store_fakeip": True}},
+    }
+
+
+def killswitch_ruleset(sing_box_uid):
+    """nftables table that blocks all traffic except LAN while sing-box is down.
+    Only sing-box's own sockets, the TUN and loopback (auto_redirect) pass."""
+    return "\n".join([
+        f"table inet {KILL_TABLE} {{",
+        "  chain output {",
+        "    type filter hook output priority filter; policy accept;",
+        '    oifname "lo" accept',
+        f"    meta skuid {int(sing_box_uid)} accept",
+        f'    oifname "{TUN_NAME}" accept',
+        f"    ip daddr {{ {', '.join(KILL_ALLOW_V4)} }} accept",
+        f"    ip6 daddr {{ {', '.join(KILL_ALLOW_V6)} }} accept",
+        "    reject",
+        "  }",
+        "}",
+        "",
+    ])
+
+
+# --- system ---
+
+def run(argv, input_=None):
+    r = subprocess.run(argv, input=input_, capture_output=True, text=True)
+    return r.returncode, (r.stderr or r.stdout).strip()
+
+
+def sing_box_group():
+    try:
+        return grp.getgrnam(SING_BOX_USER)
+    except KeyError:
+        die("sing-box is not installed (pacman -S sing-box)")
+
+
+def secure_dir(path, gid, mode):
+    """Create or verify a real, root-owned directory (never a symlink)."""
+    try:
+        os.mkdir(path, mode)
+    except FileExistsError:
+        pass
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0:
+        die(f"{path}: not a root-owned directory")
+    os.chown(path, 0, gid)
+    os.chmod(path, mode)
+
+
+def write_config(config, gid):
+    secure_dir(os.path.dirname(CONF_DIR), 0, 0o755)
+    secure_dir(CONF_DIR, gid, 0o750)
+    fd, tmp = tempfile.mkstemp(prefix=".config.", suffix=".json", dir=CONF_DIR)
+    try:
+        os.fchown(fd, 0, gid)
+        os.fchmod(fd, 0o640)
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        work = tempfile.mkdtemp(prefix="proxy-check.")
+        try:
+            rc, err = run([SING_BOX, "check", "-D", work, "-c", tmp])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        if rc != 0:
+            die(f"sing-box rejected the config: {err.splitlines()[-1] if err else rc}")
+        os.replace(tmp, CONF_PATH)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def remove_killswitch():
+    run(["nft", "delete", "table", "inet", KILL_TABLE])  # absent is fine
+
+
+def cmd_apply(check):
+    data = sys.stdin.read(MAX_INPUT + 1)
+    if len(data) > MAX_INPUT:
+        die("request too large")
+    try:
+        req = validate(json.loads(data))
+    except json.JSONDecodeError as e:
+        die(f"request is not JSON: {e.msg}")
+    except RecursionError:
+        die("request nested too deeply")
+    except Refused as e:
+        die(str(e))
+    config = build_config(req)
+    if check:
+        json.dump(config, sys.stdout, indent=2)
+        print()
+        return 0
+    if not os.access(SING_BOX, os.X_OK):
+        die("sing-box is not installed (pacman -S sing-box)")
+    group = sing_box_group()
+    write_config(config, group.gr_gid)
+    if req["kill_switch"]:
+        uid = pwd.getpwnam(SING_BOX_USER).pw_uid
+        remove_killswitch()
+        rc, err = run(["nft", "-f", "-"], killswitch_ruleset(uid))
+        if rc != 0:
+            die(f"kill switch not installed: {err}")
+    else:
+        remove_killswitch()
+    rc, err = run(["systemctl", "restart", UNIT])
+    if rc != 0:
+        remove_killswitch()  # it only guards a running sing-box, never a failed start
+        die(f"{UNIT} did not start: {err or rc} (journalctl -u {UNIT})")
+    return 0
+
+
+def cmd_stop():
+    rc, err = run(["systemctl", "stop", UNIT])
+    remove_killswitch()
+    # resolved has cached fake IPs; they mean nothing without sing-box
+    run(["resolvectl", "flush-caches"])
+    if rc != 0:
+        die(f"{UNIT} did not stop: {err or rc}")
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+    check = False
+    if args and args[0] == "--check":
+        check, args = True, args[1:]
+    if args == ["apply"]:
+        sys.exit(cmd_apply(check))
+    if args == ["stop"] and not check:
+        sys.exit(cmd_stop())
+    die("usage: proxy-helper [--check] apply < request.json | proxy-helper stop")
+
+
+if __name__ == "__main__":
+    main()

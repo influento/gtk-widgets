@@ -20,6 +20,9 @@ ICON = {
     "hotspot": "\U000F0002",    # nf-md-access_point_network
     "lock": "\U000F033E",       # nf-md-lock
     "check": "\U000F012C",      # nf-md-check
+    "cross": "\U000F0156",      # nf-md-close
+    "proxy": "\U000F048D",      # nf-md-server_network
+    "settings": "\U000F0493",   # nf-md-cog
     "saved": "\U000F0193",      # nf-md-content_save
     "expand": "\U000F0142",     # nf-md-chevron_right
     "collapse": "\U000F0140",   # nf-md-chevron_down

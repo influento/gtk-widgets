@@ -4,6 +4,8 @@
 - Notifications (notify-send) when a connection comes up, drops or fails, when
   a VPN goes up or down, and when NM's connectivity check finds a captive
   portal. Only transitions seen while running are reported.
+- Proxy rules: notifies when sing-box (gtk-widgets-proxy.service) starts,
+  stops or dies, and when a proxy in use stops answering or answers again.
 - Secret agent: NetworkManager asks it for missing secrets (a changed Wi-Fi
   password, a password needed at connect time, a WireGuard private key) and it
   asks the user with a layer-shell prompt. Secrets are returned, never stored
@@ -13,7 +15,7 @@
 Runs as a single instance (GApplication id); start it from the compositor.
 """
 
-import os, signal, subprocess, sys
+import os, signal, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
@@ -27,11 +29,15 @@ from nmutil import (  # noqa: E402
     ICON, NM, VPN_TYPES, ac_reason_text, connection_ssid, device_reason_text,
     hidden_connection, is_hotspot, link_connection,
 )
+import proxy as px  # noqa: E402
+import socks5  # noqa: E402
 
 APP_ID = "dev.dotfiles.network-agent"
 AC_STATE = NM.ActiveConnectionState
 GetFlags = NM.SecretAgentGetSecretsFlags
 MARGIN_TOP = 40
+PROXY_PROBE_S = 60   # liveness probe of the proxies in use while Proxy rules is on
+PROXY_FAILS = 2      # consecutive failed probes before "not answering"
 
 
 def notify(summary, body="", icon="network-wireless", urgency="normal"):
@@ -149,6 +155,81 @@ class Notifier:
                 notify(f"Disconnected from {name}", "" if user else why, "network-offline")
         elif not user:
             notify(f"Could not connect to {name}", why, "network-error", "critical")
+
+
+# --- Proxy rules ---
+
+class ProxyMonitor:
+    """Follows gtk-widgets-proxy.service and probes the proxies in use."""
+
+    def __init__(self):
+        self._was = None      # "up" / "down" / "crashed" as last seen
+        self._fails = {}      # proxy id -> consecutive failed probes
+        self._down = set()    # proxy ids reported as not answering
+        self._probing = False
+        self.watch = px.ServiceWatch(self._changed)
+        GLib.timeout_add_seconds(PROXY_PROBE_S, self._probe)
+
+    def _changed(self, w):
+        now = "up" if w.active else "crashed" if w.crashed else "down" if w.state == "inactive" \
+            else None  # activating/deactivating: wait for where it lands
+        if now is None or now == self._was:
+            return
+        was, self._was = self._was, now
+        if was is None:
+            return  # the state at startup is not a transition
+        st = px.load_state()
+        if now == "up":
+            notify("Proxy rules back on" if was == "crashed" else "Proxy rules on",
+                   px.summary(st), "network-vpn")
+            self._fails.clear()
+            self._down.clear()
+            GLib.timeout_add_seconds(5, lambda: self._probe() and False)
+        elif now == "crashed":
+            restarting = w.sub_state == "auto-restart"
+            body = "sing-box exited" + ("; restarting" if restarting else f" (journalctl -u {px.UNIT})")
+            body += (". Kill switch: internet is blocked until you pick another exit"
+                     if st["kill_switch"] else ". Proxied apps are unprotected until it is back")
+            notify("Proxy rules stopped", body, "network-error", "critical")
+        elif was == "up":
+            notify("Proxy rules off", "", "network-vpn-disconnected")
+
+    def _probe(self):
+        if self._was == "up" and not self._probing:
+            st = px.load_state()
+            used = {r["exit"] for r in st["rules"]} | {st["default"]}
+            proxies = [p for p in st["proxies"] if p["id"] in used]
+            if proxies:
+                self._probing = True
+                threading.Thread(target=self._probe_all, args=(proxies,), daemon=True).start()
+        return GLib.SOURCE_CONTINUE
+
+    def _probe_all(self, proxies):
+        results = [(p["id"], socks5.alive(p["host"], p["port"], p["username"], p["password"]))
+                   for p in proxies]
+        GLib.idle_add(self._probed, results)
+
+    def _probed(self, results):
+        self._probing = False
+        if self._was != "up":
+            return GLib.SOURCE_REMOVE
+        st = px.load_state()
+        for pid, (ok, err) in results:
+            apps = [r["app"] for r in st["rules"] if r["exit"] == pid]
+            if st["default"] == pid:
+                apps.append("everything else")
+            if ok:
+                self._fails.pop(pid, None)
+                if pid in self._down:
+                    self._down.discard(pid)
+                    notify(f"Proxy {pid} answers again", ", ".join(apps), "network-vpn")
+                continue
+            self._fails[pid] = self._fails.get(pid, 0) + 1
+            if self._fails[pid] >= PROXY_FAILS and pid not in self._down:
+                self._down.add(pid)
+                notify(f"Proxy {pid} is not answering",
+                       f"{err}. No connection for: {', '.join(apps)}", "network-error", "critical")
+        return GLib.SOURCE_REMOVE
 
 
 # --- secret agent ---
@@ -314,7 +395,7 @@ class Prompt:
 class NetworkAgent(Gtk.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID)
-        self.client = self.agent = self.notifier = None
+        self.client = self.agent = self.notifier = self.proxy_monitor = None
         self._queue = []
         self._prompt = None
 
@@ -327,6 +408,7 @@ class NetworkAgent(Gtk.Application):
         NM.Client.new_async(None, self._on_client)
         self.agent = PromptAgent(self)
         self.agent.init_async(GLib.PRIORITY_DEFAULT, None, self._on_agent)
+        self.proxy_monitor = ProxyMonitor()
 
     def do_activate(self):
         pass  # a second launch just finds this instance running

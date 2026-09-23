@@ -15,7 +15,7 @@ had a PSK is gone. Such updates must carry the complete set.
 
 import base64, shutil, socket, subprocess
 
-from lib.widget_base import Gtk
+from lib.widget_base import Gtk, pass_wheel
 
 from gi.repository import GLib
 
@@ -88,12 +88,26 @@ def text_entry(on_change, placeholder=""):
     return ent
 
 
-def spin(lo, hi, on_change):
-    sp = Gtk.SpinButton.new_with_range(lo, hi, 1)
-    sp.set_numeric(True)
-    sp.add_css_class("net-spin")
-    sp.connect("value-changed", lambda *_: on_change())
-    return sp
+class Spin(Gtk.SpinButton):
+    """Integer spin button that reports edits as they are typed: value-changed
+    alone waits for Enter or focus-out, so value() reads the text."""
+
+    def __init__(self, lo, hi, on_change):
+        super().__init__(adjustment=Gtk.Adjustment(lower=lo, upper=hi, step_increment=1,
+                                                   page_increment=10), numeric=True)
+        self.add_css_class("net-spin")
+        pass_wheel(self)  # the page scrolls under the pointer
+        self.connect("value-changed", lambda *_: on_change())
+        self.connect("changed", lambda *_: on_change())
+
+    def value(self):
+        """The typed number clamped to the range, as a commit would make it."""
+        try:
+            typed = int(self.get_text().strip())
+        except ValueError:
+            return int(self.get_value())
+        adj = self.get_adjustment()
+        return int(min(max(typed, adj.get_lower()), adj.get_upper()))
 
 
 def toggle(on_change):
@@ -425,7 +439,7 @@ class EditPage(Gtk.Box):
         auto.set_halign(Gtk.Align.START)
         if not vpn:  # VPNs are only ever connected by hand
             self._row(sec, "connection.autoconnect", "Autoconnect", auto)
-        prio = spin(-999, 999, self.changed)
+        prio = Spin(-999, 999, self.changed)
         prio.set_value(s_con.get_autoconnect_priority())
         prio.set_halign(Gtk.Align.START)
         self._row(sec, "connection.autoconnect-priority", "Priority", prio,
@@ -447,7 +461,7 @@ class EditPage(Gtk.Box):
             c.set_property("id", new)
             if not vpn:
                 c.set_property("autoconnect", auto.get_active())
-            c.set_property("autoconnect-priority", int(prio.get_value()))
+            c.set_property("autoconnect-priority", prio.value())
             if metered.value() != shown_metered(c):  # keep guess-yes/-no unless changed
                 c.set_property("metered", metered.value())
         self._appliers.append(apply)
@@ -484,7 +498,7 @@ class EditPage(Gtk.Box):
         bssid.connect("notify::selected", lambda *_: custom.set_visible(bssid.value() == "custom"))
         self._row(sec, "802-11-wireless.bssid", "BSSID lock", box,
                   "Locking to one access point stops roaming between them")
-        mtu = spin(0, 9000, self.changed)
+        mtu = Spin(0, 9000, self.changed)
         mtu.set_value(s_wifi.get_mtu())
         mtu.set_halign(Gtk.Align.START)
         self._row(sec, "802-11-wireless.mtu", "MTU", mtu, "0 = automatic")
@@ -500,7 +514,7 @@ class EditPage(Gtk.Box):
                     raise FieldError("802-11-wireless.bssid", mac_problem(value))
             if (value or None) != ((w.get_bssid() or "").upper() or None):
                 w.set_property("bssid", value)
-            w.set_property("mtu", int(mtu.get_value()))
+            w.set_property("mtu", mtu.value())
         self._appliers.append(apply)
 
     def _build_security(self):
@@ -778,14 +792,14 @@ class EditPage(Gtk.Box):
             pub_row.set_visible(True)
         self._pub = (pub, pub_row, key)
         self._pub_for = None  # private key the shown public key was derived from
-        port = spin(0, 65535, self.changed)
+        port = Spin(0, 65535, self.changed)
         port.set_value(s_wg.get_listen_port())
         port.set_halign(Gtk.Align.START)
         self._row(sec, "wireguard.listen-port", "Listen port", port, "0 = random")
         fwmark = text_entry(self.changed, "0 = off")
         fwmark.set_text(f"{s_wg.get_fwmark():#x}" if s_wg.get_fwmark() else "")
         self._row(sec, "wireguard.fwmark", "Firewall mark", fwmark)
-        mtu = spin(0, 9000, self.changed)
+        mtu = Spin(0, 9000, self.changed)
         mtu.set_value(s_wg.get_mtu())
         mtu.set_halign(Gtk.Align.START)
         self._row(sec, "wireguard.mtu", "MTU", mtu, "0 = automatic")
@@ -804,7 +818,7 @@ class EditPage(Gtk.Box):
                 if problem:
                     raise FieldError("wireguard.private-key", problem)
                 s.set_property("private-key", value)
-            s.set_property("listen-port", int(port.get_value()))
+            s.set_property("listen-port", port.value())
             text = fwmark.get_text().strip() or "0"
             try:
                 mark = int(text, 0)
@@ -813,7 +827,7 @@ class EditPage(Gtk.Box):
             if not 0 <= mark <= 0xFFFFFFFF:
                 raise FieldError("wireguard.fwmark", "At most 0xffffffff")
             s.set_property("fwmark", mark)
-            s.set_property("mtu", int(mtu.get_value()))
+            s.set_property("mtu", mtu.value())
             s.set_property("peer-routes", peer_routes.get_active())
         self._appliers.append(apply)
 
@@ -1083,7 +1097,7 @@ class PeerEditor(Gtk.Box):
                                "Saved (Show to reveal)" if peer else "optional")
         if peer is None:
             self.psk.loaded = True  # nothing stored to fetch
-        self.keepalive = spin(0, 65535, ch)
+        self.keepalive = Spin(0, 65535, ch)
         self.keepalive.set_halign(Gtk.Align.START)
         self.rows = {}
         for key, name, widget, hint in (
@@ -1154,7 +1168,7 @@ class PeerEditor(Gtk.Box):
             peer.append_allowed_ip(ip, True)
         if psk is not None:
             peer.set_preshared_key(psk or None, True)
-        peer.set_persistent_keepalive(int(self.keepalive.get_value()))
+        peer.set_persistent_keepalive(self.keepalive.value())
         peer.seal()
         ok, err = _peer_valid(peer)
         if not ok:

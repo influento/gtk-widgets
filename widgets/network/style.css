@@ -17,7 +17,7 @@
 .net-section {
   font-size: 11px;
   font-weight: bold;
-  color: @@OVERLAY1@@;
+  color: @@SUBTEXT0@@;
 }
 
 .net-section-row {
@@ -124,7 +124,21 @@ scrolledwindow {
   color: @@LAVENDER@@;
 }
 
-/* VPN radio chips */
+/* VPN and Proxy: title-line states at row text contrast */
+.net-exit-state {
+  font-size: 12px;
+  color: @@TEXT@@;
+}
+
+.net-exit-on {
+  color: @@GREEN@@;
+}
+
+.net-exit-bad {
+  color: @@RED@@;
+}
+
+/* Proxy rules page header state */
 .net-vpn-state {
   font-size: 11px;
   color: @@OVERLAY0@@;
@@ -161,15 +175,6 @@ button.net-chip:checked {
   font-weight: bold;
 }
 
-button.net-chip-off {
-  color: @@OVERLAY1@@;
-}
-
-button.net-chip-off:checked {
-  background: @@SURFACE1@@;
-  color: @@TEXT@@;
-}
-
 @keyframes net-pulse {
   from { opacity: 1; }
   to { opacity: 0.55; }
@@ -199,7 +204,7 @@ button.net-chip-failed {
   margin: 2px 0 0 30px;
 }
 
-.net-vpn-details {
+.net-exit-details {
   margin-left: 0;
 }
 
@@ -501,4 +506,48 @@ checkbutton check:checked {
   background: @@BLUE@@;
   border-color: @@BLUE@@;
   color: @@BASE@@;
+}
+
+/* Proxy rules page */
+.net-udp-ok {
+  color: @@GREEN@@;
+}
+
+.net-udp-bad {
+  color: @@PEACH@@;
+}
+
+textview.net-paste,
+textview.net-paste > text {
+  background: @@MANTLE@@;
+  color: @@TEXT@@;
+  font-size: 11px;
+}
+
+textview.net-paste {
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+list.net-app-list {
+  background: transparent;
+}
+
+list.net-app-list > row {
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+
+list.net-app-list > row:hover {
+  background: @@SURFACE1@@;
+}
+
+.net-app-name {
+  font-size: 12px;
+}
+
+.net-app-window {
+  font-size: 10px;
+  color: @@BLUE@@;
 }

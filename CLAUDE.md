@@ -58,7 +58,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `usb`          | USB device manager: list, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
-| `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), exclusive VPN radio chips, details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
+| `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
 
 ## Theming System
 
@@ -96,6 +96,11 @@ Defined in `themes/catppuccin-mocha.json`:
   `@@TEXT@@` color and the `"JetBrainsMono Nerd Font", monospace` font. Do not repeat
   these in a widget's `style.css`; children inherit the font
 - Disable built-in borders and backgrounds on GTK widgets inside the container
+- Scrollbars come from the base: `popup_window()` turns overlay scrolling off, so a
+  scrollbar takes its own column (thin slider, gap on the content side, styled in
+  `BASE_CSS`) only while a list overflows. Do not restyle scrollbars per widget
+- Value controls inside a scrolling list (sliders, spin buttons) must not take the mouse
+  wheel: the wheel always scrolls the list
 - Window background is always `transparent` (set by the base class; layer-shell overlay)
 - Use `widget-toggle <name>` for toggling, never create per-widget toggle scripts
 - Each widget has a unique `application_id` (e.g., `dev.dotfiles.<name>`)
@@ -120,7 +125,7 @@ Defined in `themes/catppuccin-mocha.json`:
 gtk-widgets/
 ├── CLAUDE.md
 ├── README.md
-├── install.sh             # Symlinks widgets + scripts into ~/.local/bin; installs usb-helper + polkit rule (sudo)
+├── install.sh             # Symlinks widgets + scripts into ~/.local/bin; installs root helpers, polkit rules, proxy unit (sudo)
 ├── widget-toggle          # Generic toggle for GTK4 popups (flock-based)
 ├── lib/
 │   ├── widget_base.py     # Shared GTK4 popup base class + theme loader
@@ -128,7 +133,10 @@ gtk-widgets/
 │   └── pulsectl/          # Vendored libpulse ctypes bindings (upstream commit + changes in README.md)
 ├── polkit/
 │   ├── usb-helper         # Root helper for USB format/write, installed to /usr/lib/gtk-widgets/
-│   └── 50-gtk-widgets-usb.rules  # Polkit rule that authorises only that helper
+│   ├── 50-gtk-widgets-usb.rules  # Polkit rule that authorises only that helper
+│   ├── proxy-helper       # Root helper: validates a Proxy rules request, builds the sing-box config, starts/stops the unit
+│   ├── 50-gtk-widgets-proxy.rules  # Polkit rule that authorises only that helper
+│   └── gtk-widgets-proxy.service   # sing-box unit (User=sing-box), installed to /etc/systemd/system/, never enabled
 ├── widgets/
 │   ├── bluetooth/
 │   │   ├── main.py
@@ -175,8 +183,11 @@ gtk-widgets/
 │       ├── ui.py          # Small GTK helpers shared by main.py and editor.py
 │       ├── agent.py       # network-agent: connection notifications + NM.SecretAgentOld password prompt
 │       ├── nmutil.py      # Shared libnm helpers: profile builders, reasons, connectivity, WireGuard .conf export
+│       ├── proxy.py       # Proxy rules model: state file (0600), paste parser, helper call, unit watch (D-Bus)
+│       ├── proxypage.py   # Proxy rules page: proxies (paste, check, Block QUIC), app rules, default exit, kill switch
+│       ├── socks5.py      # Minimal SOCKS5 client: login, CONNECT trace (exit IP, country, latency), UDP ASSOCIATE round trip
 │       ├── style.css      # Also styles network-agent's prompt
-│       └── status         # JSON: link, active VPN, connectivity; long-running (one line per change)
+│       └── status         # JSON: link, active VPN, Proxy rules, connectivity; long-running (one line per change)
 └── themes/
     ├── catppuccin-mocha.json
     └── current.json       # Symlink to the active theme (created by install.sh)
@@ -217,13 +228,32 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   changes the WireGuard peer set
 - New Wi-Fi profiles are added `persist=volatile` and saved to disk only once they activate,
   so NM itself drops a profile whose password was wrong
-- Imported WireGuard profiles never autoconnect; VPNs are exclusive (switching takes the
-  active one down first)
+- Imported WireGuard profiles never autoconnect; VPN and Proxy rules are exclusive exits
+  (switching takes the active VPN or Proxy rules down first)
 - libnm via PyGObject pitfalls: `NM.Device.disconnect()` shadows `GObject.disconnect()` (use
   `handler_disconnect`); `filter_connections()` returns an empty list (use `connection_valid()`);
   `SecretAgentOld` vfuncs get an extra user_data argument; `NM.WireGuardPeer.new()` defaults
   the PSK flags to NOT_REQUIRED, which NM does not store (set 0); `WireGuardPeer.set_endpoint()`
   takes no None through GI (build a fresh peer to clear it)
+
+### network — Proxy rules (phase 3)
+
+- sing-box (1.14) runs as `gtk-widgets-proxy.service` (User=sing-box, the Arch package's user
+  and capabilities). `proxy-helper` (pkexec) takes only a structured request on stdin
+  (proxies, app rules, default exit, kill switch), validates it and builds the config itself;
+  the config (with the passwords) is root:sing-box 0640 in `/etc/gtk-widgets/proxy/`. The
+  popup's copy, with the passwords its checks need, is `~/.config/gtk-widgets/network-proxy.json` (0600)
+- Rules match `process_name` = basename of `/proc/<pid>/exe` (not comm): `Telegram`,
+  `steamwebhelper`. LAN/private ranges always go direct; the proxy servers themselves too
+- DNS: systemd-resolved makes every lookup come from `systemd-resolved`, so DNS rules per app
+  cannot work. All A/AAAA queries get fake IPs (198.18.0.0/15, fc00::/18); a connection to one
+  carries its domain again, so a SOCKS outbound resolves at the proxy's exit and direct ones via
+  the local resolver. HTTPS/SVCB queries get an empty answer (their address hints bypass fake IPs)
+- Block QUIC is per proxy: a reject rule before sniff (so the reject is an ICMP unreachable)
+- Kill switch (off by default): an nftables table that allows only sing-box's own uid, the TUN,
+  loopback and LAN; it stays when sing-box dies and goes when Proxy rules is turned off. It cannot tell apps apart once
+  sing-box is gone, so it blocks direct apps too
+- The unit is never enabled; after a reboot Proxy rules is off, like VPNs
 
 ### audio — deferred features
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install gtk-widgets: symlink popups, status scripts, and widget-toggle into ~/.local/bin
+# Install gtk-widgets: symlink popups, status scripts, and widget-toggle into ~/.local/bin;
+# install the root helpers, their polkit rules and the Proxy rules unit (sudo)
 # Usage: install.sh [--theme <name>]   (default: catppuccin-mocha)
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -55,24 +56,37 @@ for widget_dir in "$REPO_DIR"/widgets/*/; do
   done
 done
 
-# Privileged USB helper + polkit rule (requires sudo). The helper is the only
-# program the rule authorises, so install it root-owned at a fixed path.
-helper_src="$REPO_DIR/polkit/usb-helper"
-helper_dst="/usr/lib/gtk-widgets/usb-helper"
-if [[ -f "$helper_src" ]]; then
-  if [[ ! -f "$helper_dst" ]] || ! diff -q "$helper_src" "$helper_dst" &>/dev/null; then
-    sudo install -D -m 0755 -o root -g root "$helper_src" "$helper_dst"
-    echo "  helper: $helper_dst"
+# Privileged helpers + polkit rules (requires sudo). Each rule authorises only
+# its helper, so install the helpers root-owned at a fixed path.
+for helper in usb-helper proxy-helper; do
+  helper_src="$REPO_DIR/polkit/$helper"
+  helper_dst="/usr/lib/gtk-widgets/$helper"
+  if [[ -f "$helper_src" ]]; then
+    if [[ ! -f "$helper_dst" ]] || ! diff -q "$helper_src" "$helper_dst" &>/dev/null; then
+      sudo install -D -m 0755 -o root -g root "$helper_src" "$helper_dst"
+      echo "  helper: $helper_dst"
+    fi
   fi
-fi
+done
 
-polkit_src="$REPO_DIR/polkit/50-gtk-widgets-usb.rules"
-polkit_dst="/etc/polkit-1/rules.d/50-gtk-widgets-usb.rules"
-if [[ -f "$polkit_src" ]]; then
+for polkit_src in "$REPO_DIR"/polkit/*.rules; do
+  polkit_dst="/etc/polkit-1/rules.d/$(basename "$polkit_src")"
   if [[ ! -f "$polkit_dst" ]] || ! diff -q "$polkit_src" "$polkit_dst" &>/dev/null; then
-    sudo cp "$polkit_src" "$polkit_dst"
-    echo "  polkit: 50-gtk-widgets-usb.rules"
+    sudo install -m 0644 -o root -g root "$polkit_src" "$polkit_dst"
+    echo "  polkit: $(basename "$polkit_src")"
   fi
+done
+
+# sing-box unit for the network widget's Proxy rules (never enabled at boot)
+unit_src="$REPO_DIR/polkit/gtk-widgets-proxy.service"
+unit_dst="/etc/systemd/system/gtk-widgets-proxy.service"
+if [[ ! -f "$unit_dst" ]] || ! diff -q "$unit_src" "$unit_dst" &>/dev/null; then
+  sudo install -m 0644 -o root -g root "$unit_src" "$unit_dst"
+  sudo systemctl daemon-reload
+  echo "  unit: gtk-widgets-proxy.service"
+fi
+if ! command -v sing-box &>/dev/null; then
+  echo "  note: Proxy rules needs sing-box (pacman -S sing-box)"
 fi
 
 echo "done"
