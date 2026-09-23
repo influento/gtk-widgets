@@ -530,8 +530,10 @@ textview.net-paste {
   padding: 4px 6px;
 }
 
+/* A GtkListBox takes the theme's view colours, dark text on this popup */
 list.net-app-list {
   background: transparent;
+  color: @@TEXT@@;
 }
 
 list.net-app-list > row {
