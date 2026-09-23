@@ -18,7 +18,7 @@ import lib.pulsectl as pulsectl
 from lib.pulsectl import _pulsectl as c
 
 METER_RATE = 30        # peaks per second per stream
-MIN_PEAK = 1e-3        # -60 dBFS, the bottom of the meter scale; silence is not sent to GTK
+MIN_PEAK = 1e-6        # 1% of a meter on its cubic scale; silence is not sent to GTK
 APP_ID = "dev.dotfiles.audio"
 # Mixers' meter streams (ours included) are source outputs; like pavucontrol,
 # the Recording tab hides them.

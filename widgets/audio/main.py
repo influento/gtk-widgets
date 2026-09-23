@@ -30,15 +30,13 @@ DRAG_GRACE = 0.2               # seconds volume events stay ignored after a drag
 BACKOFF_START, BACKOFF_MAX = 0.5, 5  # reconnect delay doubles from 0.5 s, capped at 5 s
 LATENCY_RANGE_MS = 2000
 EVENT_ROLE = "sink-input-by-media-role:event"
-METER_RANGE_DB = 60            # meters span -60..0 dBFS (pavucontrol: linear, barely moves)
-METER_DECAY = 0.5              # meter fall per second, in bar lengths (30 dB/s)
+METER_DECAY = 0.5              # meter fall per second, in bar lengths
 
 
 def meter_position(peak):
-    """Linear sample peak -> 0..1 along a meter's dB scale."""
-    if peak <= 0:
-        return 0.0
-    return min(max(1 + 20 * math.log10(peak) / METER_RANGE_DB, 0.0), 1.0)
+    """Linear sample peak -> 0..1 on the volume sliders' cubic scale (loud
+    speech ~60%). pavucontrol draws linear peaks, which barely move."""
+    return min(max(peak, 0.0), 1.0) ** (1 / 3)
 
 
 # level bar offsets (name, upper bound in dBFS): green, yellow, red near clipping
@@ -391,7 +389,7 @@ class VolumeControl(Gtk.Box):
             self.meter_step(0.0, None)
 
     def meter_step(self, peak, dt):
-        """One frame: jump up to linear sample `peak` (drawn in dB), else fall
+        """One frame: jump up to linear sample `peak` (drawn cubic), else fall
         METER_DECAY per second. dt None resets to `peak`. Returns the position shown."""
         if self._meter is None:
             return 0.0
