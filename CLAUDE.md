@@ -58,7 +58,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `usb`          | USB device manager: list, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
-| `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), exclusive VPN radio chips, details, Connections page (delete, WireGuard import/export); `network-agent` = notifications + secret agent prompt |
+| `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), exclusive VPN radio chips, details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
 
 ## Theming System
 
@@ -171,9 +171,12 @@ gtk-widgets/
 │   │   └── style.css
 │   └── network/
 │       ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page
+│       ├── editor.py      # Edit page: per-profile settings on a clone, verify(), full-secret saves, Apply now
+│       ├── ui.py          # Small GTK helpers shared by main.py and editor.py
 │       ├── agent.py       # network-agent: connection notifications + NM.SecretAgentOld password prompt
-│       ├── nmutil.py      # Shared libnm helpers: profile builders, reasons, WireGuard .conf export
-│       └── style.css      # Also styles network-agent's prompt
+│       ├── nmutil.py      # Shared libnm helpers: profile builders, reasons, connectivity, WireGuard .conf export
+│       ├── style.css      # Also styles network-agent's prompt
+│       └── status         # JSON: link, active VPN, connectivity; long-running (one line per change)
 └── themes/
     ├── catppuccin-mocha.json
     └── current.json       # Symlink to the active theme (created by install.sh)
@@ -201,16 +204,26 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 
 ### network — phase 2 and notes
 
-- Phase 2 (with dotfiles): per-connection settings editing (General, Wi-Fi, Security,
-  IPv4/IPv6, routes, WireGuard peers); until then `Advanced…`/Edit open `nm-connection-editor`
-- Mobile broadband is out of scope
+- Phase 2 Edit page (`editor.py`) covers Wi-Fi, Ethernet and WireGuard profiles: General
+  (name, autoconnect, priority, metered; no autoconnect switch for VPNs), Wi-Fi (band, BSSID
+  lock, MTU), Security (PSK; PEAP/TTLS without certificates), MAC (cloned address), Ethernet
+  (Wake-on-LAN magic), IPv4/IPv6, routes, WireGuard interface and peers. Other types and
+  everything else (TLS/certificates, channel, proxy, …) stay behind `Advanced…`
+  (`nm-connection-editor`); a later review decides what else moves in
+- Mobile broadband is out of scope for now (a separate phase later)
+- Saving secrets: NM keeps stored secrets when an update carries none, but an update with any
+  secret replaces them all, and re-applying its cached secrets fails once a peer with a PSK is
+  removed. The editor therefore fetches every secret before a save that carries one or
+  changes the WireGuard peer set
 - New Wi-Fi profiles are added `persist=volatile` and saved to disk only once they activate,
   so NM itself drops a profile whose password was wrong
 - Imported WireGuard profiles never autoconnect; VPNs are exclusive (switching takes the
   active one down first)
 - libnm via PyGObject pitfalls: `NM.Device.disconnect()` shadows `GObject.disconnect()` (use
   `handler_disconnect`); `filter_connections()` returns an empty list (use `connection_valid()`);
-  `SecretAgentOld` vfuncs get an extra user_data argument
+  `SecretAgentOld` vfuncs get an extra user_data argument; `NM.WireGuardPeer.new()` defaults
+  the PSK flags to NOT_REQUIRED, which NM does not store (set 0); `WireGuardPeer.set_endpoint()`
+  takes no None through GI (build a fresh peer to clear it)
 
 ### audio — deferred features
 

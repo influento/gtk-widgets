@@ -240,6 +240,11 @@ button.net-chip-failed {
   background: @@SAPPHIRE@@;
 }
 
+.net-btn-accent:disabled {
+  background: @@SURFACE1@@;
+  color: @@OVERLAY0@@;
+}
+
 .net-btn-danger {
   background: @@RED@@;
   color: @@BASE@@;
@@ -388,6 +393,23 @@ passwordentry.net-entry image {
 .net-status-ok { color: @@GREEN@@; }
 .net-status-err { color: @@RED@@; }
 
+/* Connectivity check problem */
+.net-inet {
+  background-color: @@SURFACE0@@;
+  border-radius: 6px;
+  padding: 6px 12px;
+}
+
+.net-inet-icon {
+  font-size: 16px;
+  color: @@YELLOW@@;
+}
+
+.net-inet-msg {
+  font-size: 11px;
+  color: @@YELLOW@@;
+}
+
 /* Offline / error */
 .net-error-icon {
   font-size: 24px;
@@ -414,4 +436,69 @@ passwordentry.net-entry image {
 .net-prompt-text {
   font-size: 12px;
   color: @@SUBTEXT1@@;
+}
+
+/* Edit page */
+.net-edit-section {
+  padding-bottom: 4px;
+}
+
+.net-edit-key {
+  font-size: 11px;
+  color: @@SUBTEXT0@@;
+}
+
+.net-edit-value {
+  font-size: 12px;
+}
+
+.net-edit-hint {
+  font-size: 10px;
+  color: @@OVERLAY1@@;
+}
+
+.net-edit-msg {
+  font-size: 10px;
+  color: @@SUBTEXT0@@;
+}
+
+spinbutton.net-spin {
+  font-size: 12px;
+  background: @@MANTLE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+spinbutton.net-spin:focus-within {
+  border-color: @@BLUE@@;
+}
+
+spinbutton.net-spin > button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @@OVERLAY1@@;
+}
+
+spinbutton.net-spin > button:hover {
+  color: @@TEXT@@;
+}
+
+checkbutton {
+  font-size: 11px;
+  color: @@SUBTEXT1@@;
+}
+
+checkbutton check {
+  background: @@MANTLE@@;
+  border: 1px solid @@SURFACE2@@;
+  box-shadow: none;
+}
+
+checkbutton check:checked {
+  background: @@BLUE@@;
+  border-color: @@BLUE@@;
+  color: @@BASE@@;
 }

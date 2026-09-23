@@ -18,13 +18,17 @@ sys.path.insert(0, _DIR)
 from lib.copy_label import CopyLabel
 from lib.widget_base import Gdk, Gtk, WidgetPopup
 
-from gi.repository import Gio, GLib, GObject, Pango
+from gi.repository import Gio, GLib, GObject
 
+from ui import button, entry, glyph_button, hbox, label, section, switch, vbox  # noqa: E402
+from editor import EDITABLE_TYPES, EapForm, EditPage  # noqa: E402
 from nmutil import (  # noqa: E402
     HOTSPOT_ID, ICON, NM, VPN_TYPES, ac_reason_text, ap_security, connection_security,
-    connection_ssid, device_reason_text, error_text, freq_band, hidden_connection,
-    hotspot_connection, ip_lines, is_hotspot, password_problem, relative_time,
-    signal_glyph, vpn_place, wifi_connection, wireguard_conf, write_private,
+    connection_ssid, connectivity_problem, device_reason_text, eap_connection, eap_problem,
+    error_text, freq_band,
+    hidden_connection, hotspot_connection, ip_lines, is_hotspot, link_connection,
+    password_problem, relative_time, signal_glyph, vpn_place, wifi_connection,
+    wireguard_conf, write_private,
 )
 
 SYNC_DELAY_MS = 150    # debounce for bursts of client signals
@@ -36,92 +40,6 @@ AC_STATE = NM.ActiveConnectionState
 HIDDEN_SECURITY = [("open", "None"), ("psk", "WPA/WPA2 Personal"), ("sae", "WPA3 Personal")]
 CONN_GROUPS = [("Wi-Fi", ("802-11-wireless",)), ("Ethernet", ("802-3-ethernet",)),
                ("WireGuard / VPN", VPN_TYPES), ("Other", None)]
-
-
-# --- small widgets ---
-
-def label(text="", css_class=None, xalign=0, hexpand=False, ellipsize=False):
-    lbl = Gtk.Label(label=text, xalign=xalign, hexpand=hexpand)
-    if css_class:
-        lbl.add_css_class(css_class)
-    if ellipsize:
-        lbl.set_ellipsize(Pango.EllipsizeMode.END)
-    return lbl
-
-
-def button(text, css_class="net-btn", tooltip=None, on_click=None):
-    btn = Gtk.Button(label=text)
-    btn.add_css_class(css_class)
-    btn.set_valign(Gtk.Align.CENTER)
-    if tooltip:
-        btn.set_tooltip_text(tooltip)
-    if on_click:
-        btn.connect("clicked", lambda *_: on_click())
-    return btn
-
-
-def glyph_button(glyph, tooltip, on_click=None, css_class=None):
-    btn = button(glyph, "net-icon-btn", tooltip, on_click)
-    if css_class:
-        btn.add_css_class(css_class)
-    return btn
-
-
-def hbox(spacing=8, css_class=None):
-    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=spacing)
-    if css_class:
-        box.add_css_class(css_class)
-    return box
-
-
-def vbox(spacing=4, css_class=None):
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=spacing)
-    if css_class:
-        box.add_css_class(css_class)
-    return box
-
-
-def entry(placeholder, secret=False, on_activate=None):
-    ent = Gtk.PasswordEntry(show_peek_icon=True) if secret else Gtk.Entry()
-    ent.add_css_class("net-entry")
-    ent.set_hexpand(True)
-    if secret:
-        ent.set_property("placeholder-text", placeholder)
-    else:
-        ent.set_placeholder_text(placeholder)
-    if on_activate:
-        ent.connect("activate", lambda *_: on_activate())
-    return ent
-
-
-def switch(on_toggle):
-    """Gtk.Switch that reports user flips via on_toggle(active) and is
-    otherwise only moved by set(), so NM state stays the source of truth."""
-    sw = Gtk.Switch(valign=Gtk.Align.CENTER)
-    sw.add_css_class("net-switch")
-
-    def state_set(_sw, active):
-        on_toggle(active)
-        return True  # keep the visual state until NM reports the change
-
-    handler = sw.connect("state-set", state_set)
-
-    def set_(active):
-        sw.handler_block(handler)
-        sw.set_active(active)
-        sw.set_state(active)
-        sw.handler_unblock(handler)
-    sw.set_ = set_
-    return sw
-
-
-def section(text, *extra):
-    row = hbox(6)
-    row.add_css_class("net-section-row")
-    row.append(label(text, "net-section", hexpand=True))
-    for w in extra:
-        row.append(w)
-    return row
 
 
 class KeyedList(Gtk.Box):
@@ -149,31 +67,42 @@ class KeyedList(Gtk.Box):
         self.set_visible(bool(items))
 
 
-class Details(Gtk.Grid):
-    """Name/value pairs of an active connection; values copy on click."""
+class Details(Gtk.Box):
+    """Name/value pairs of an active connection (values copy on click), plus
+    an Edit… link to its profile when on_edit is set."""
 
-    def __init__(self):
-        super().__init__(column_spacing=12, row_spacing=2)
+    def __init__(self, on_edit=None):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.add_css_class("net-details")
+        self.grid = Gtk.Grid(column_spacing=12, row_spacing=2)
+        self.append(self.grid)
+        self.on_edit = on_edit
+        self._conn = None
+        self.edit_btn = button("Edit…", on_click=lambda: self.on_edit(self._conn))
+        self.edit_btn.set_halign(Gtk.Align.START)
+        self.edit_btn.set_visible(False)
+        self.append(self.edit_btn)
         self._keys = None
         self._values = []
 
-    def update(self, pairs):
+    def update(self, pairs, conn=None):
         keys = [k for k, _ in pairs]
         if keys != self._keys:
-            while child := self.get_first_child():
-                self.remove(child)
+            while child := self.grid.get_first_child():
+                self.grid.remove(child)
             self._values = []
             for i, key in enumerate(keys):
                 name = label(key, "net-detail-key")
                 name.set_valign(Gtk.Align.START)
-                self.attach(name, 0, i, 1, 1)
+                self.grid.attach(name, 0, i, 1, 1)
                 value = CopyLabel("net-detail-value")
-                self.attach(value, 1, i, 1, 1)
+                self.grid.attach(value, 1, i, 1, 1)
                 self._values.append(value)
             self._keys = keys
         for value, (_k, text) in zip(self._values, pairs):
             value.set_content(text)
+        self._conn = conn
+        self.edit_btn.set_visible(conn is not None and self.on_edit is not None)
 
 
 def connection_details(client, ac):
@@ -257,6 +186,7 @@ class DeviceRow(ExpandRow):
         self.expand = glyph_button(ICON["expand"], "Details", self._toggle_details)
         for w in (self.icon, text, self.action, self.expand):
             self.head.append(w)
+        self.details.on_edit = app.open_editor
         self.device = self.ac = None
 
     def update(self, dev):
@@ -278,7 +208,7 @@ class DeviceRow(ExpandRow):
         self.action.set_visible(state != NM.DeviceState.UNAVAILABLE)
         self.expand.set_visible(active)
         if active and self.revealed():
-            self.details.update(connection_details(self.app.client, self.ac))
+            self.details.update(connection_details(self.app.client, self.ac), self.ac.get_connection())
         elif not active:
             self.reveal(None)
         self.expand.set_label(ICON["collapse" if self.revealed() else "expand"])
@@ -342,6 +272,8 @@ class WifiRow(ExpandRow):
         click.connect("released", lambda *_: self._on_click())
         self.head.add_controller(click)
         self.form = PasswordForm(self._on_password, lambda: self.reveal(None))
+        self.eap_form = None  # built on first use: Enterprise networks only
+        self.details.on_edit = app.open_editor
 
     def update(self, item):
         self.item = item
@@ -367,7 +299,7 @@ class WifiRow(ExpandRow):
         if ac is not None:
             self.add_css_class("net-row-active")
             if self.revealed() is self.details:
-                self.details.update(connection_details(self.app.client, ac))
+                self.details.update(connection_details(self.app.client, ac), ac.get_connection())
         else:
             self.remove_css_class("net-row-active")
             if self.revealed() is self.details:
@@ -389,8 +321,25 @@ class WifiRow(ExpandRow):
                 self.form.show_error(None)
                 self.reveal(self.form)
                 self.form.entry.grab_focus()
+        elif item["kind"] == "eap":
+            if self.eap_form is None:
+                self.eap_form = EnterpriseForm(self._on_enterprise, lambda: self.reveal(None))
+            if self.revealed() is self.eap_form:
+                self.reveal(None)
+            else:
+                self.eap_form.show_error(None)
+                self.reveal(self.eap_form)
+                self.eap_form.form.identity.grab_focus()
         else:
             self.app.set_status(f"{item['security']} networks need {EDITOR}: use Advanced…", error=True)
+
+    def _on_enterprise(self, values, password):
+        problem = eap_problem(values, password, False)
+        if problem:
+            self.eap_form.show_error(problem)
+            return
+        self.eap_form.show_error(None)
+        self.app.connect_enterprise(self, self.item, values, password)
 
     def _on_password(self, password):
         problem = password_problem(self.item["kind"], password)
@@ -408,6 +357,32 @@ class WifiRow(ExpandRow):
         if self.item and self.item["kind"] in ("psk", "sae"):
             self.form.show_error(f"Not connected: {reason}. The profile was not saved.")
             self.reveal(self.form)
+        elif self.item and self.item["kind"] == "eap" and self.eap_form is not None:
+            self.eap_form.show_error(f"Not connected: {reason}. The profile was not saved.")
+            self.reveal(self.eap_form)
+
+
+class EnterpriseForm(Gtk.Box):
+    """Inline PEAP/TTLS form for a new WPA Enterprise network."""
+
+    def __init__(self, on_submit, on_cancel):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.form = EapForm(lambda: None)
+        self.append(self.form)
+        self.error = label("", "net-form-error")
+        self.error.set_wrap(True)
+        self.error.set_visible(False)
+        self.append(self.error)
+        buttons = hbox(4)
+        buttons.set_halign(Gtk.Align.END)
+        buttons.append(button("Cancel", on_click=on_cancel))
+        buttons.append(button("Connect", "net-btn-accent",
+                              on_click=lambda: on_submit(self.form.values(), self.form.password_value())))
+        self.append(buttons)
+
+    def show_error(self, text):
+        self.error.set_text(text or "")
+        self.error.set_visible(bool(text))
 
 
 class VpnChips(Gtk.Box):
@@ -433,7 +408,7 @@ class VpnChips(Gtk.Box):
                                 max_children_per_line=self.PER_LINE,
                                 row_spacing=4, column_spacing=4)
         self.append(self.flow)
-        self.details = Details()
+        self.details = Details(on_edit=app.open_editor)
         self.details.add_css_class("net-vpn-details")
         self.revealer = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.NONE,
                                      child=self.details, visible=False)
@@ -498,7 +473,7 @@ class VpnChips(Gtk.Box):
         self.state.set_css_classes(["net-vpn-state"] + (["net-vpn-on"] if activated else []))
         self.expand.set_visible(activated)
         if activated and self.revealer.get_visible():
-            self.details.update(connection_details(self.app.client, active))
+            self.details.update(connection_details(self.app.client, active), active.get_connection())
         elif not activated:
             self.revealer.set_visible(False)
             self.revealer.set_reveal_child(False)
@@ -542,8 +517,8 @@ class ConnRow(Gtk.Box):
         self.export = glyph_button(ICON["export"], "Export .conf",
                                    lambda: self.app.export_wireguard(self.conn))
         actions.append(self.export)
-        actions.append(glyph_button(ICON["edit"], f"Edit in {EDITOR}",
-                                    lambda: self.app.edit(self.conn)))
+        self.edit_btn = glyph_button(ICON["edit"], "Edit", lambda: self.app.open_editor(self.conn))
+        actions.append(self.edit_btn)
         actions.append(glyph_button(ICON["delete"], "Delete",
                                     lambda: self.stack.set_visible_child_name("confirm"),
                                     "net-delete-btn"))
@@ -565,6 +540,8 @@ class ConnRow(Gtk.Box):
             used = "never used"
         self.subtitle.set_text(f"{iface} · {used}")
         self.export.set_visible(self.conn.get_connection_type() == "wireguard")
+        editable = self.conn.get_connection_type() in EDITABLE_TYPES
+        self.edit_btn.set_tooltip_text("Edit" if editable else f"Edit in {EDITOR}")
 
     def _delete(self):
         self.stack.set_visible_child_name("actions")
@@ -723,6 +700,9 @@ class NetworkPopup(WidgetPopup):
         self._stack.set_hhomogeneous(True)
         self._stack.add_named(self._build_main(), "main")
         self._stack.add_named(self._build_connections(), "connections")
+        self._editor = EditPage(self, lambda: self._show_page(self._editor_back))
+        self._editor_back = "connections"
+        self._stack.add_named(self._editor, "edit")
         self._container.append(self._stack)
 
         self._status = label("", "net-status")
@@ -742,6 +722,19 @@ class NetworkPopup(WidgetPopup):
         self._net_switch = switch(self._set_networking)
         header.append(self._net_switch)
         page.append(header)
+
+        # connectivity check result: captive portal, limited, none
+        self._inet = hbox(8, "net-inet")
+        self._inet_icon = label("", "net-inet-icon")
+        self._inet.append(self._inet_icon)
+        self._inet_msg = label("", "net-inet-msg", hexpand=True)
+        self._inet_msg.set_wrap(True)
+        self._inet.append(self._inet_msg)
+        self._portal_btn = button("Sign in…", tooltip="Open the portal's login page",
+                                  on_click=self._open_portal)
+        self._inet.append(self._portal_btn)
+        self._inet.set_visible(False)
+        page.append(self._inet)
 
         self._offline = vbox(4)
         self._offline.set_halign(Gtk.Align.CENTER)
@@ -863,7 +856,8 @@ class NetworkPopup(WidgetPopup):
         for sig in ("device-added", "device-removed", "active-connection-added",
                     "active-connection-removed", "connection-added", "connection-removed",
                     "notify::nm-running", "notify::networking-enabled",
-                    "notify::wireless-enabled", "notify::wireless-hardware-enabled"):
+                    "notify::wireless-enabled", "notify::wireless-hardware-enabled",
+                    "notify::connectivity", "notify::primary-connection"):
             c.connect(sig, self._on_client_signal)
         for dev in c.get_devices():
             self._watch_device(dev)
@@ -874,6 +868,14 @@ class NetworkPopup(WidgetPopup):
         self._tick_id = GLib.timeout_add_seconds(TICK_S, self._tick)
         self._sync()
         self._rescan(quiet=True)
+        if c.connectivity_check_get_enabled():  # fresh result, not up to 5 min old
+            c.check_connectivity_async(None, self._on_checked)
+
+    def _on_checked(self, client, res):
+        try:
+            client.check_connectivity_finish(res)
+        except GLib.Error:
+            pass  # the property keeps NM's last result
 
     def _on_client_signal(self, _client, *args):
         obj = args[0] if args and isinstance(args[0], GObject.Object) else None
@@ -932,16 +934,34 @@ class NetworkPopup(WidgetPopup):
         self._net_switch.set_sensitive(True)
         self._net_switch.set_(networking)
         if not networking:
+            self._inet.set_visible(False)
             self._show_offline("Networking is disabled", "")
         else:
             self._offline.set_visible(False)
             self._body.set_visible(True)
+            self._sync_connectivity()
             self._sync_wired()
             self._sync_wifi()
             self._sync_vpn()
-        if self._stack.get_visible_child_name() == "connections":
+        page = self._stack.get_visible_child_name()
+        if page == "connections":
             self._sync_connections()
+        elif page == "edit" and self._editor.remote is not None \
+                and self._editor.remote not in c.get_connections():
+            name = self._editor.remote.get_id()
+            self._editor.remote = None
+            self._show_page("connections")
+            self.set_status(f"{name} was deleted", error=True)
         return GLib.SOURCE_REMOVE
+
+    def _sync_connectivity(self):
+        problem = connectivity_problem(self.client) if link_connection(self.client) else None
+        self._inet.set_visible(problem is not None)
+        if problem:
+            kind, text = problem
+            self._inet_icon.set_text(ICON["portal"] if kind == "portal" else ICON["limited"])
+            self._inet_msg.set_text(text)
+            self._portal_btn.set_visible(kind == "portal")
 
     def _sync_wired(self):
         devs = self._devices(NM.DeviceEthernet)
@@ -1192,6 +1212,11 @@ class NetworkPopup(WidgetPopup):
         self._add_and_activate(conn, item["device"], item["ap"], item["ssid"], row.failed,
                                on_activated=lambda _ac: row.reveal(None))
 
+    def connect_enterprise(self, row, item, values, password):
+        conn = eap_connection(item["ssid"], values, None if values["ask"] else password)
+        self._add_and_activate(conn, item["device"], item["ap"], item["ssid"], row.failed,
+                               on_activated=lambda _ac: row.reveal(None))
+
     def connect_hidden(self, form, ssid, kind, password):
         devs = self._devices(NM.DeviceWifi)
         if not devs:
@@ -1355,14 +1380,38 @@ class NetworkPopup(WidgetPopup):
             self.queue_sync()
         conn.delete_async(None, done)
 
+    def open_editor(self, conn):
+        """The Edit page for Wi-Fi, Ethernet and WireGuard; nm-connection-editor otherwise."""
+        if conn is None or conn.get_connection_type() not in EDITABLE_TYPES:
+            self.edit(conn)
+            return
+        page = self._stack.get_visible_child_name()
+        self._editor_back = page if page != "edit" else self._editor_back
+        self._editor.open(conn)
+        self._stack.set_visible_child_name("edit")
+        self.set_status(None)
+
     def edit(self, conn):
-        """Hand over to nm-connection-editor (phase 2 replaces it) and close."""
+        """Hand over to nm-connection-editor (settings the Edit page lacks) and close."""
         args = [EDITOR] + ([f"--edit={conn.get_uuid()}"] if conn else [])
         try:
             subprocess.Popen(args, start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:
             self._fail(f"Cannot start {EDITOR}", e)
+            return
+        self.quit()
+
+    def _open_portal(self):
+        """Any plain-http page gets redirected to the portal's login; NM's check
+        URI is one (connectivity is only PORTAL while checks are enabled)."""
+        uri = self.client.connectivity_check_get_uri() if self.client else None
+        if not uri:
+            return
+        try:
+            Gio.AppInfo.launch_default_for_uri(uri, None)
+        except GLib.Error as e:
+            self._fail("Cannot open the login page", e)
             return
         self.quit()
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """network-agent — long-running NetworkManager companion to the network popup.
 
-- Notifications (notify-send) when a connection comes up, drops or fails, and
-  when a VPN goes up or down. Only transitions seen while running are reported.
+- Notifications (notify-send) when a connection comes up, drops or fails, when
+  a VPN goes up or down, and when NM's connectivity check finds a captive
+  portal. Only transitions seen while running are reported.
 - Secret agent: NetworkManager asks it for missing secrets (a changed Wi-Fi
   password, a password needed at connect time, a WireGuard private key) and it
   asks the user with a layer-shell prompt. Secrets are returned, never stored
@@ -24,7 +25,7 @@ from gi.repository import GLib
 
 from nmutil import (  # noqa: E402
     ICON, NM, VPN_TYPES, ac_reason_text, connection_ssid, device_reason_text,
-    hidden_connection, is_hotspot,
+    hidden_connection, is_hotspot, link_connection,
 )
 
 APP_ID = "dev.dotfiles.network-agent"
@@ -58,6 +59,18 @@ class Notifier:
         client.connect("active-connection-removed", lambda _c, ac: self._removed(ac))
         for ac in client.get_active_connections():
             self._watch(ac, initial=True)
+        self._portal = client.get_connectivity() == NM.ConnectivityState.PORTAL
+        client.connect("notify::connectivity", self._connectivity_changed)
+
+    def _connectivity_changed(self, client, _pspec):
+        portal = client.get_connectivity() == NM.ConnectivityState.PORTAL
+        if portal and not self._portal:
+            link = link_connection(client)
+            name = self._describe(link)[1] if link else "This network"
+            notify("Sign in to the network",
+                   f"{name} has a captive portal: open the network popup to sign in",
+                   "network-wireless")
+        self._portal = portal
 
     def _watch(self, ac, initial):
         conn = ac.get_connection()
