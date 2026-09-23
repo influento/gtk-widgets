@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
 from lib.copy_label import CopyLabel
-from lib.widget_base import Gdk, Gtk, WidgetPopup
+from lib.widget_base import Gdk, Gtk, WidgetPopup, pass_wheel
 
 from gi.repository import GLib, Pango
 
@@ -27,7 +27,7 @@ except OSError:  # libpulse.so.0 missing
 
 PA_INVALID = 2**32 - 1
 VOLUME_UI_MAX = 153            # PA_VOLUME_UI_MAX (+11 dB) in percent
-SCROLL_STEP = 5                # percent per mouse-wheel notch
+SCROLL_STEP = 5                # percent per Page Up/Down on a slider
 DRAG_GRACE = 0.2               # seconds volume events stay ignored after a drag
 BACKOFF_START, BACKOFF_MAX = 0.5, 5  # reconnect delay doubles from 0.5 s, capped at 5 s
 LATENCY_RANGE_MS = 2000
@@ -309,12 +309,7 @@ class VolumeControl(Gtk.Box):
         press.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         press.connect("event", self._on_scale_event)
         scale.add_controller(press)
-
-        scroll = Gtk.EventControllerScroll(
-            flags=Gtk.EventControllerScrollFlags.VERTICAL | Gtk.EventControllerScrollFlags.DISCRETE)
-        scroll.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        scroll.connect("scroll", self._on_scale_scroll, scale)
-        scale.add_controller(scroll)
+        pass_wheel(scale)
         return scale, handler
 
     def _rebuild_channels(self, names):
@@ -440,12 +435,6 @@ class VolumeControl(Gtk.Box):
             self._touch()
         return False
 
-    def _on_scale_scroll(self, _ctrl, _dx, dy, scale):
-        if dy:
-            self._touch()
-            scale.set_value(round(scale.get_value()) - dy * SCROLL_STEP)
-        return True  # stop the list from scrolling while over a slider
-
     # --- UI -> server ---
 
     def _commit(self, values, source):
@@ -534,6 +523,7 @@ class DeviceRow(Gtk.Box):
         self._latency = Gtk.SpinButton(adjustment=adj, numeric=True)
         self._latency.set_width_chars(5)
         self._latency.add_css_class("au-spin")
+        pass_wheel(self._latency)
         self._latency_handler = self._latency.connect("value-changed", self._on_latency)
         self._latency_row.append(self._latency)
         unit = Gtk.Label(label="ms")
@@ -758,8 +748,15 @@ class Tab:
             label = Gtk.Label(label="Show", xalign=0)
             label.add_css_class("au-field-label")
             bar.append(label)
-            choice = Choice(lambda f: on_filter(self, f))
-            choice.set_items([(k, l, True) for k, l in filters], default_filter)
+            items = [(k, l, True) for k, l in filters]
+
+            def pick(flt):
+                # a local setting: nothing confirms it later, so it is the
+                # active item right away (else picking back the old one is ignored)
+                choice.set_items(items, flt)
+                on_filter(self, flt)
+            choice = Choice(pick)
+            choice.set_items(items, default_filter)
             bar.append(choice)
             self.page.append(bar)
 
