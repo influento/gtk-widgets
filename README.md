@@ -15,6 +15,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `usb`          | USB device manager: list, format, write ISO (root helper via polkit) |
 | `timer`        | Timer + stopwatch with alarm on expiry                     |
 | `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events) |
+| `network`      | nm-applet replacement via libnm: Wi-Fi/wired/VPN, hidden networks, hotspot, connection list, WireGuard import/export; `network-agent` for notifications + password prompts |
 
 ## Installation
 
@@ -22,6 +23,8 @@ Requires Python 3, GTK4, and [gtk4-layer-shell](https://github.com/wmww/gtk4-lay
 `audio` also needs `libpulse` and a PulseAudio-compatible server such as `pipewire-pulse`;
 its Python bindings ([pulsectl](https://github.com/mk-fg/python-pulse-control)) are vendored
 in `lib/pulsectl/`.
+`network` needs NetworkManager's `libnm` (GObject introspection data, `NM-1.0.typelib`) and
+`notify-send` for `network-agent`'s notifications; `Advanced…` opens `nm-connection-editor`.
 
 ```bash
 ./install.sh                          # default theme (catppuccin-mocha)
@@ -72,6 +75,10 @@ Waybar module example:
 `translate` has no status script — it is triggered by a keybinding, not a waybar module.
 `audio` has none either; waybar's built-in `pulseaudio` module shows the volume and opens it
 with `widget-toggle audio`.
+`network` has none: waybar's built-in `network` module opens it with `widget-toggle network`.
+`network-agent` is a long-running companion (connect/disconnect/VPN notifications and a
+NetworkManager secret agent that prompts for passwords); start it once from the compositor
+(e.g. `exec network-agent` in sway) instead of nm-applet.
 
 > **Privacy:** `translate` sends the current text selection to Anthropic (via the `claude` CLI)
 > each time it runs. Avoid triggering it on sensitive text.

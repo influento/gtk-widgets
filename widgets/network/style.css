@@ -1,0 +1,417 @@
+.net-container {
+  padding: 16px 24px;
+  min-width: 420px;
+}
+
+.net-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: @@BLUE@@;
+}
+
+.net-switch-label {
+  font-size: 11px;
+  color: @@SUBTEXT0@@;
+}
+
+.net-section {
+  font-size: 11px;
+  font-weight: bold;
+  color: @@OVERLAY1@@;
+}
+
+.net-section-row {
+  margin-top: 4px;
+}
+
+.net-empty {
+  font-size: 12px;
+  color: @@SURFACE2@@;
+}
+
+/* Switches */
+switch.net-switch {
+  background: @@SURFACE1@@;
+  background-image: none;
+  border: none;
+  border-radius: 10px;
+  min-width: 34px;
+  min-height: 18px;
+  box-shadow: none;
+}
+
+switch.net-switch:checked {
+  background: @@BLUE@@;
+}
+
+switch.net-switch > slider {
+  background: @@TEXT@@;
+  border: none;
+  box-shadow: none;
+  min-width: 14px;
+  min-height: 14px;
+  margin: 2px;
+  border-radius: 8px;
+}
+
+switch.net-switch:checked > slider {
+  background: @@BASE@@;
+}
+
+switch.net-switch:disabled {
+  background: @@SURFACE0@@;
+}
+
+switch.net-switch image {
+  color: transparent;
+}
+
+/* Rows */
+scrolledwindow {
+  background: transparent;
+}
+
+.net-row {
+  background-color: @@SURFACE0@@;
+  border-radius: 6px;
+  padding: 6px 12px;
+  min-height: 24px;
+  border: 1px solid transparent;
+}
+
+.net-row-active {
+  border-color: @@SURFACE2@@;
+}
+
+.net-row-icon {
+  font-size: 16px;
+  color: @@BLUE@@;
+  min-width: 20px;
+}
+
+.net-row-title {
+  font-size: 12px;
+  color: @@TEXT@@;
+}
+
+.net-row-active .net-row-title {
+  font-weight: bold;
+}
+
+.net-row-subtitle {
+  font-size: 10px;
+  color: @@SUBTEXT0@@;
+}
+
+.net-row-state {
+  font-size: 11px;
+  color: @@GREEN@@;
+}
+
+.net-pct {
+  font-size: 10px;
+  color: @@SUBTEXT0@@;
+  min-width: 32px;
+}
+
+.net-lock,
+.net-saved {
+  font-size: 12px;
+  color: @@OVERLAY1@@;
+}
+
+.net-saved {
+  color: @@LAVENDER@@;
+}
+
+/* VPN radio chips */
+.net-vpn-state {
+  font-size: 11px;
+  color: @@OVERLAY0@@;
+}
+
+.net-vpn-on {
+  color: @@GREEN@@;
+}
+
+flowboxchild {
+  padding: 0;
+  background: transparent;
+}
+
+button.net-chip {
+  font-size: 11px;
+  background: @@SURFACE0@@;
+  color: @@SUBTEXT1@@;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 6px;
+  min-height: 0;
+  box-shadow: none;
+}
+
+button.net-chip:hover {
+  background: @@SURFACE1@@;
+  color: @@TEXT@@;
+}
+
+button.net-chip:checked {
+  background: @@BLUE@@;
+  color: @@CRUST@@;
+  font-weight: bold;
+}
+
+button.net-chip-off {
+  color: @@OVERLAY1@@;
+}
+
+button.net-chip-off:checked {
+  background: @@SURFACE1@@;
+  color: @@TEXT@@;
+}
+
+@keyframes net-pulse {
+  from { opacity: 1; }
+  to { opacity: 0.55; }
+}
+
+button.net-chip-connecting,
+button.net-chip-connecting:checked {
+  background: @@SURFACE0@@;
+  color: @@YELLOW@@;
+  border-color: @@YELLOW@@;
+  animation: net-pulse 0.55s ease-in-out infinite alternate;
+}
+
+button.net-chip-going {
+  background: transparent;
+  color: @@OVERLAY0@@;
+  border: 1px dashed @@SURFACE2@@;
+}
+
+button.net-chip-failed {
+  color: @@RED@@;
+  border-color: @@RED@@;
+}
+
+/* Details */
+.net-details {
+  margin: 2px 0 0 30px;
+}
+
+.net-vpn-details {
+  margin-left: 0;
+}
+
+.net-detail-key {
+  font-size: 10px;
+  color: @@OVERLAY1@@;
+}
+
+.net-detail-value {
+  font-size: 11px;
+  color: @@SUBTEXT1@@;
+}
+
+/* Buttons */
+.net-btn,
+.net-btn-accent,
+.net-btn-danger {
+  font-size: 11px;
+  background: @@SURFACE1@@;
+  color: @@TEXT@@;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  min-height: 0;
+  box-shadow: none;
+}
+
+.net-btn:hover {
+  background: @@SURFACE2@@;
+}
+
+.net-btn-accent {
+  background: @@BLUE@@;
+  color: @@BASE@@;
+}
+
+.net-btn-accent:hover {
+  background: @@SAPPHIRE@@;
+}
+
+.net-btn-danger {
+  background: @@RED@@;
+  color: @@BASE@@;
+}
+
+.net-btn-danger:hover {
+  background: @@MAROON@@;
+}
+
+.net-icon-btn {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-size: 15px;
+  color: @@SUBTEXT0@@;
+  padding: 0 4px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.net-icon-btn:hover {
+  color: @@BLUE@@;
+  background: transparent;
+}
+
+.net-icon-btn:disabled {
+  color: @@SURFACE2@@;
+}
+
+.net-scanning {
+  color: @@BLUE@@;
+}
+
+.net-delete-btn:hover {
+  color: @@RED@@;
+}
+
+.net-confirm {
+  font-size: 11px;
+  color: @@RED@@;
+}
+
+.net-footer {
+  margin-top: 4px;
+}
+
+/* Forms */
+.net-form {
+  background-color: @@SURFACE0@@;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.net-form-title {
+  font-size: 12px;
+  font-weight: bold;
+  color: @@TEXT@@;
+}
+
+.net-form-warning {
+  font-size: 10px;
+  color: @@YELLOW@@;
+}
+
+.net-form-error {
+  font-size: 10px;
+  color: @@RED@@;
+}
+
+entry.net-entry,
+passwordentry.net-entry {
+  font-size: 12px;
+  background: @@MANTLE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 4px;
+  padding: 4px 8px;
+  min-height: 0;
+  box-shadow: none;
+  outline: none;
+  caret-color: @@TEXT@@;
+}
+
+entry.net-entry:focus-within,
+passwordentry.net-entry:focus-within {
+  border-color: @@BLUE@@;
+}
+
+passwordentry.net-entry image {
+  color: @@OVERLAY1@@;
+}
+
+/* Dropdowns (hidden-network security, hotspot band) */
+.net-choice > button {
+  font-size: 11px;
+  background: @@MANTLE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 4px;
+  padding: 4px 8px;
+  min-height: 0;
+  box-shadow: none;
+}
+
+.net-choice > button:hover {
+  background: @@SURFACE1@@;
+}
+
+/* Adwaita resets popover fonts; inherit the popup's */
+.net-choice popover {
+  font-family: inherit;
+}
+
+.net-choice popover > contents {
+  background-color: @@MANTLE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: none;
+}
+
+.net-choice popover listview {
+  background: transparent;
+}
+
+.net-choice popover row {
+  font-size: 11px;
+  color: @@TEXT@@;
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+.net-choice popover row:hover,
+.net-choice popover row:selected {
+  background-color: @@SURFACE0@@;
+  color: @@TEXT@@;
+}
+
+/* Status line */
+.net-status {
+  font-size: 10px;
+  color: @@SUBTEXT0@@;
+}
+
+.net-status-ok { color: @@GREEN@@; }
+.net-status-err { color: @@RED@@; }
+
+/* Offline / error */
+.net-error-icon {
+  font-size: 24px;
+  color: @@RED@@;
+  margin-top: 4px;
+}
+
+.net-error-msg {
+  font-size: 12px;
+  color: @@SUBTEXT0@@;
+}
+
+.net-error-hint {
+  font-size: 10px;
+  color: @@OVERLAY0@@;
+}
+
+/* network-agent password prompt */
+.net-prompt {
+  padding: 16px 24px;
+  min-width: 360px;
+}
+
+.net-prompt-text {
+  font-size: 12px;
+  color: @@SUBTEXT1@@;
+}

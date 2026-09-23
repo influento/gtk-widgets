@@ -39,7 +39,9 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 - `widget-toggle <name>` handles launch/dismiss via `flock` (prevents duplicates)
 - Close via Escape/q key or clicking outside the widget
 - Shared components live in `lib/` beside the base class: `CopyLabel` (`lib/copy_label.py`)
-  is a label that copies its text (or a longer copy text) to the clipboard on click
+  is a label that copies its text (or a longer copy text) to the clipboard on click.
+  `popup_window()`/`show_popup()`/`install_css()` in `lib/widget_base.py` build the same
+  layer-shell overlay for long-running apps that open popups on demand (`network-agent`)
 - Widgets with a `status` script (bash or Python) output JSON (`text`, `tooltip`, `class`) for status bars
 - Extra executable `<widget>/<name>.py` files are symlinked as `<widget>-<name>` CLI entry points (e.g. `display-brightness`, bound to XF86MonBrightness keys in dotfiles)
 
@@ -56,6 +58,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `usb`          | USB device manager: list, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
+| `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), exclusive VPN radio chips, details, Connections page (delete, WireGuard import/export); `network-agent` = notifications + secret agent prompt |
 
 ## Theming System
 
@@ -161,11 +164,16 @@ gtk-widgets/
 │   │   ├── state.py       # Shared state model (popup + status script), alarm fires once
 │   │   ├── style.css
 │   │   └── status         # JSON: hh:mm:ss, fires alarm at zero
-│   └── audio/
-│       ├── main.py        # pulsectl: event thread + main-thread command connection, rows updated in place
-│       ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
-│       ├── recorder.py    # Input test recording: parec into memory (30 s cap), pacat playback, discard
-│       └── style.css
+│   ├── audio/
+│   │   ├── main.py        # pulsectl: event thread + main-thread command connection, rows updated in place
+│   │   ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
+│   │   ├── recorder.py    # Input test recording: parec into memory (30 s cap), pacat playback, discard
+│   │   └── style.css
+│   └── network/
+│       ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page
+│       ├── agent.py       # network-agent: connection notifications + NM.SecretAgentOld password prompt
+│       ├── nmutil.py      # Shared libnm helpers: profile builders, reasons, WireGuard .conf export
+│       └── style.css      # Also styles network-agent's prompt
 └── themes/
     ├── catppuccin-mocha.json
     └── current.json       # Symlink to the active theme (created by install.sh)
@@ -190,6 +198,19 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 - **Explain** — explain selected text/concept
 - **Summarize** — condense text or URL content
 - URL detection: if input starts with `http`, auto-fetch page content before passing to Claude
+
+### network — phase 2 and notes
+
+- Phase 2 (with dotfiles): per-connection settings editing (General, Wi-Fi, Security,
+  IPv4/IPv6, routes, WireGuard peers); until then `Advanced…`/Edit open `nm-connection-editor`
+- Mobile broadband is out of scope
+- New Wi-Fi profiles are added `persist=volatile` and saved to disk only once they activate,
+  so NM itself drops a profile whose password was wrong
+- Imported WireGuard profiles never autoconnect; VPNs are exclusive (switching takes the
+  active one down first)
+- libnm via PyGObject pitfalls: `NM.Device.disconnect()` shadows `GObject.disconnect()` (use
+  `handler_disconnect`); `filter_connections()` returns an empty list (use `connection_valid()`);
+  `SecretAgentOld` vfuncs get an extra user_data argument
 
 ### audio — deferred features
 
