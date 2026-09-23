@@ -14,10 +14,14 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `translate`    | ezpick text tool: translate, fix English, dictionary (via `claude` CLI) |
 | `usb`          | USB device manager: list, format, write ISO (root helper via polkit) |
 | `timer`        | Timer + stopwatch with alarm on expiry                     |
+| `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events) |
 
 ## Installation
 
 Requires Python 3, GTK4, and [gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell).
+`audio` also needs `libpulse` and a PulseAudio-compatible server such as `pipewire-pulse`;
+its Python bindings ([pulsectl](https://github.com/mk-fg/python-pulse-control)) are vendored
+in `lib/pulsectl/`.
 
 ```bash
 ./install.sh                          # default theme (catppuccin-mocha)
@@ -66,6 +70,8 @@ Waybar module example:
 ```
 
 `translate` has no status script — it is triggered by a keybinding, not a waybar module.
+`audio` has none either; waybar's built-in `pulseaudio` module shows the volume and opens it
+with `widget-toggle audio`.
 
 > **Privacy:** `translate` sends the current text selection to Anthropic (via the `claude` CLI)
 > each time it runs. Avoid triggering it on sensitive text.

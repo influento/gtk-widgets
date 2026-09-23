@@ -53,6 +53,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `translate`    | ezpick text tool (`dev.dotfiles.ezpick`): translate, fix English, dictionary via `claude` CLI |
 | `usb`          | USB device manager: list, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
+| `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters |
 
 ## Theming System
 
@@ -103,8 +104,9 @@ Defined in `themes/catppuccin-mocha.json`:
 - Indent with 2 spaces, no tabs
 - Functions use `snake_case`
 - Quote all variable expansions
-- Python widgets use standard library only (+ PyGObject)
-- Never add `Co-Authored-By` trailers to git commits
+- Python widgets use standard library only (+ PyGObject). No third-party Python packages:
+  if a binding is unavoidable, vendor a pinned, audited copy under `lib/` (as `lib/pulsectl/`,
+  ctypes over libpulse, used by `audio`) with its license and a note of local changes
 - Before every commit/push, audit the staged diff for sensitive information leaks
 
 ## File Structure
@@ -116,7 +118,8 @@ gtk-widgets/
 ├── install.sh             # Symlinks widgets + scripts into ~/.local/bin; installs usb-helper + polkit rule (sudo)
 ├── widget-toggle          # Generic toggle for GTK4 popups (flock-based)
 ├── lib/
-│   └── widget_base.py     # Shared GTK4 popup base class + theme loader
+│   ├── widget_base.py     # Shared GTK4 popup base class + theme loader
+│   └── pulsectl/          # Vendored libpulse ctypes bindings (upstream commit + changes in README.md)
 ├── polkit/
 │   ├── usb-helper         # Root helper for USB format/write, installed to /usr/lib/gtk-widgets/
 │   └── 50-gtk-widgets-usb.rules  # Polkit rule that authorises only that helper
@@ -150,11 +153,15 @@ gtk-widgets/
 │   │   ├── main.py
 │   │   ├── style.css
 │   │   └── status         # JSON: USB icon, event-driven via udevadm
-│   └── timer/
-│       ├── main.py
-│       ├── state.py       # Shared state model (popup + status script), alarm fires once
-│       ├── style.css
-│       └── status         # JSON: hh:mm:ss, fires alarm at zero
+│   ├── timer/
+│   │   ├── main.py
+│   │   ├── state.py       # Shared state model (popup + status script), alarm fires once
+│   │   ├── style.css
+│   │   └── status         # JSON: hh:mm:ss, fires alarm at zero
+│   └── audio/
+│       ├── main.py        # pulsectl: event thread + main-thread command connection, rows updated in place
+│       ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
+│       └── style.css
 └── themes/
     ├── catppuccin-mocha.json
     └── current.json       # Symlink to the active theme (created by install.sh)
@@ -179,6 +186,12 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 - **Explain** — explain selected text/concept
 - **Summarize** — condense text or URL content
 - URL detection: if input starts with `http`, auto-fetch page content before passing to Claude
+
+### audio — deferred features
+
+- Passthrough formats (AC-3/DTS/… over HDMI/S/PDIF): skipped, no receiver here; `pactl set-sink-formats` covers it if one appears
+- Dotfiles: point waybar's `pulseaudio` `on-click-right` at `widget-toggle audio` once parity
+  is confirmed (keep `pavucontrol-toggle` until then)
 
 ### Backlog
 
