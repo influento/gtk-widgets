@@ -157,6 +157,29 @@ def pass_wheel(widget):
             ctrl.set_propagation_phase(Gtk.PropagationPhase.NONE)
 
 
+class VScroller(Gtk.ScrolledWindow):
+    """Vertical-only scrolled list that grows with its content up to
+    max_height. While the content overflows, its width includes the
+    scrollbar's column: GTK 4.22 leaves a classic scrollbar out of the measured
+    width, so a popup sized to its content lost its right edge to the
+    scrollbar, and the rows ran under it."""
+
+    def __init__(self, max_height, child=None):
+        super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                         propagate_natural_height=True, max_content_height=max_height)
+        if child is not None:
+            self.set_child(child)
+
+    def do_measure(self, orientation, for_size):
+        mn, nat, _, _ = Gtk.ScrolledWindow.do_measure(self, orientation, for_size)
+        child = self.get_child()
+        if (orientation == Gtk.Orientation.HORIZONTAL and child is not None
+                and child.measure(Gtk.Orientation.VERTICAL, -1)[1] > self.get_max_content_height()):
+            bar = self.get_vscrollbar().measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+            mn, nat = mn + bar, nat + bar
+        return mn, nat, -1, -1
+
+
 def popup_window(app, on_dismiss, on_key):
     """Fullscreen transparent layer-shell overlay with exclusive keyboard.
     A click on the backdrop calls on_dismiss(); key presses go to on_key.

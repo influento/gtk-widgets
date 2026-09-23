@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
 from lib.copy_label import CopyLabel
-from lib.widget_base import Gdk, Gtk, WidgetPopup, pass_wheel
+from lib.widget_base import Gdk, Gtk, VScroller, WidgetPopup, pass_wheel
 
 from gi.repository import GLib, Pango
 
@@ -734,11 +734,7 @@ class Tab:
         self.empty.add_css_class("au-empty")
         self.list.append(self.empty)
 
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_propagate_natural_height(True)
-        scroll.set_max_content_height(460)
-        scroll.set_child(self.list)
+        scroll = VScroller(460, self.list)
         scroll.set_vexpand(True)
         self.page.append(scroll)
 

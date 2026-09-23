@@ -15,7 +15,7 @@ had a PSK is gone. Such updates must carry the complete set.
 
 import base64, shutil, socket, subprocess
 
-from lib.widget_base import Gtk, pass_wheel
+from lib.widget_base import Gtk, VScroller, pass_wheel
 
 from gi.repository import GLib
 
@@ -344,8 +344,7 @@ class EditPage(Gtk.Box):
         header.append(self.title)
         self.append(header)
         self.body = vbox(12)
-        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                      propagate_natural_height=True, max_content_height=560)
+        scroller = VScroller(560)
         scroller.set_child(self.body)
         self.scroller = scroller
         self.append(scroller)

@@ -99,6 +99,9 @@ Defined in `themes/catppuccin-mocha.json`:
 - Scrollbars come from the base: `popup_window()` turns overlay scrolling off, so a
   scrollbar takes its own column (thin slider, gap on the content side, styled in
   `BASE_CSS`) only while a list overflows. Do not restyle scrollbars per widget
+- Build a vertical scrolled list with `VScroller(max_height)`, never a bare
+  `Gtk.ScrolledWindow`: GTK leaves that scrollbar column out of the measured width, so
+  a popup sized to its content loses its right edge to the scrollbar
 - Value controls inside a scrolling list (sliders, spin buttons) must not take the mouse
   wheel: the wheel always scrolls the list
 - Window background is always `transparent` (set by the base class; layer-shell overlay)

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
 from lib.copy_label import CopyLabel
-from lib.widget_base import Gdk, Gtk, WidgetPopup
+from lib.widget_base import Gdk, Gtk, VScroller, WidgetPopup
 
 from gi.repository import Gio, GLib, GObject
 
@@ -818,8 +818,7 @@ class NetworkPopup(WidgetPopup):
         self._wifi_msg = label("", "net-empty")
         self._body.append(self._wifi_msg)
         self._wifi = KeyedList(lambda ssid: WifiRow(self, ssid))
-        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                      propagate_natural_height=True, max_content_height=300)
+        scroller = VScroller(300)
         scroller.set_child(self._wifi)
         self._wifi_scroller = scroller
         self._body.append(scroller)
@@ -860,8 +859,7 @@ class NetworkPopup(WidgetPopup):
             groups.append(sec)
             groups.append(lst)
             self._conn_groups[title] = (sec, lst)
-        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                      propagate_natural_height=True, max_content_height=480)
+        scroller = VScroller(480)
         scroller.set_child(groups)
         page.append(scroller)
 

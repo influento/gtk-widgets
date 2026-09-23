@@ -5,7 +5,7 @@ while Proxy rules is on, an Apply bar restarts sing-box with them."""
 
 import threading
 
-from lib.widget_base import Gtk
+from lib.widget_base import Gtk, VScroller
 
 from gi.repository import GLib, Pango
 
@@ -157,8 +157,7 @@ class AppPicker(Gtk.Box):
         self.list.add_css_class("net-app-list")
         self.list.set_filter_func(self._filter)
         self.list.connect("row-activated", lambda _l, r: self.on_pick(r.app))
-        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                      propagate_natural_height=True, max_content_height=200)
+        scroller = VScroller(200)
         scroller.set_child(self.list)
         self.append(scroller)
         buttons = hbox(4)
@@ -253,8 +252,7 @@ class ProxyPage(Gtk.Box):
         self.append(header)
 
         body = vbox(10)
-        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                      propagate_natural_height=True, max_content_height=560)
+        scroller = VScroller(560)
         scroller.set_child(body)
         self.append(scroller)
 
