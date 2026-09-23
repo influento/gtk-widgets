@@ -116,6 +116,57 @@ def load_css(css_path):
         return render_css(f.read())
 
 
+def install_css(css):
+    """Apply rendered CSS to the default display at application priority."""
+    provider = Gtk.CssProvider()
+    provider.load_from_string(css)
+    Gtk.StyleContext.add_provider_for_display(
+        Gdk.Display.get_default(),
+        provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+    )
+
+
+def popup_window(app, on_dismiss, on_key):
+    """Fullscreen transparent layer-shell overlay with exclusive keyboard.
+    A click on the backdrop calls on_dismiss(); key presses go to on_key.
+    Returns (window, overlay); add the popup container with show_popup()."""
+    win = Gtk.ApplicationWindow(application=app, title=app.get_application_id())
+
+    Gtk4LayerShell.init_for_window(win)
+    Gtk4LayerShell.set_layer(win, Gtk4LayerShell.Layer.OVERLAY)
+    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.TOP, True)
+    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.BOTTOM, True)
+    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.LEFT, True)
+    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.RIGHT, True)
+    Gtk4LayerShell.set_keyboard_mode(win, Gtk4LayerShell.KeyboardMode.EXCLUSIVE)
+
+    overlay = Gtk.Overlay()
+    backdrop = Gtk.DrawingArea()
+    backdrop.set_hexpand(True)
+    backdrop.set_vexpand(True)
+    backdrop_click = Gtk.GestureClick()
+    backdrop_click.connect("released", lambda *_: on_dismiss())
+    backdrop.add_controller(backdrop_click)
+    overlay.set_child(backdrop)
+
+    controller = Gtk.EventControllerKey()
+    controller.connect("key-pressed", on_key)
+    win.add_controller(controller)
+    return win, overlay
+
+
+def show_popup(win, overlay, container, margin_top):
+    """Place the .popup container top-centre on the overlay and present."""
+    container.add_css_class("popup")
+    container.set_halign(Gtk.Align.CENTER)
+    container.set_valign(Gtk.Align.START)
+    container.set_margin_top(margin_top)
+    overlay.add_overlay(container)
+    win.set_child(overlay)
+    win.present()
+
+
 class WidgetPopup(Gtk.Application):
     """Base GTK4 popup with layer-shell overlay, backdrop dismiss, and Esc/q close."""
 
@@ -137,46 +188,9 @@ class WidgetPopup(Gtk.Application):
     def do_activate(self):
         if self.get_windows():
             return  # re-activated by a second launch; the popup is already up
-        provider = Gtk.CssProvider()
-        provider.load_from_string(render_css(BASE_CSS) + self._widget_css())
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(),
-            provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-        )
-
-        win = Gtk.ApplicationWindow(application=self, title=self.get_application_id())
-
-        Gtk4LayerShell.init_for_window(win)
-        Gtk4LayerShell.set_layer(win, Gtk4LayerShell.Layer.OVERLAY)
-        Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.TOP, True)
-        Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.BOTTOM, True)
-        Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.LEFT, True)
-        Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.RIGHT, True)
-        Gtk4LayerShell.set_keyboard_mode(win, Gtk4LayerShell.KeyboardMode.EXCLUSIVE)
-
-        overlay = Gtk.Overlay()
-        backdrop = Gtk.DrawingArea()
-        backdrop.set_hexpand(True)
-        backdrop.set_vexpand(True)
-        backdrop_click = Gtk.GestureClick()
-        backdrop_click.connect("released", lambda *_: self.quit())
-        backdrop.add_controller(backdrop_click)
-        overlay.set_child(backdrop)
-
-        container = self.build_ui()
-        container.add_css_class("popup")
-        container.set_halign(Gtk.Align.CENTER)
-        container.set_valign(Gtk.Align.START)
-        container.set_margin_top(self.MARGIN_TOP)
-        overlay.add_overlay(container)
-
-        controller = Gtk.EventControllerKey()
-        controller.connect("key-pressed", self._on_key)
-        win.add_controller(controller)
-
-        win.set_child(overlay)
-        win.present()
+        install_css(render_css(BASE_CSS) + self._widget_css())
+        win, overlay = popup_window(self, self.quit, self._on_key)
+        show_popup(win, overlay, self.build_ui(), self.MARGIN_TOP)
 
     def build_ui(self):
         """Override to build widget content. Must return the container widget."""
