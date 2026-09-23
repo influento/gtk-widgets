@@ -194,8 +194,6 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 ### audio — deferred features
 
 - Passthrough formats (AC-3/DTS/… over HDMI/S/PDIF): skipped, no receiver here; `pactl set-sink-formats` covers it if one appears
-- Dotfiles: point waybar's `pulseaudio` `on-click-right` at `widget-toggle audio` once parity
-  is confirmed (keep `pavucontrol-toggle` until then)
 
 ### Backlog
 
