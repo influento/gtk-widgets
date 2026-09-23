@@ -179,7 +179,7 @@ def validate(req):
 
 # --- config ---
 
-def build_config(req):
+def build_config(req, ipv6=True):
     """sing-box 1.14 config for a validated request.
 
     DNS: every A/AAAA query gets a fake IP (systemd-resolved sends all lookups
@@ -187,6 +187,10 @@ def build_config(req):
     carries its domain again, so a SOCKS outbound hands the name to the proxy,
     which resolves it at the exit, and direct connections resolve it through
     the local resolver. No lookup of a proxied app ever leaves this machine.
+
+    ipv6=False (the host has no IPv6 default route): the TUN gets no IPv6
+    address and AAAA queries an empty answer. Else apps would see working
+    IPv6 through the TUN, try it first, and sing-box could not dial it out.
     """
     proxies, rules = req["proxies"], req["rules"]
     by_exit = {}
@@ -239,24 +243,29 @@ def build_config(req):
     if names:
         dns_rules.append({"domain": names, "action": "route", "server": "dns-local"})
     dns_rules += [
-        {"query_type": ["A", "AAAA"], "action": "route", "server": "dns-fake", "rewrite_ttl": 60},
+        {"query_type": ["A", "AAAA"] if ipv6 else ["A"], "action": "route",
+         "server": "dns-fake", "rewrite_ttl": 60},
         # HTTPS/SVCB records carry real address hints that would bypass the fake IPs
-        {"query_type": ["HTTPS", "SVCB"], "action": "predefined", "rcode": "NOERROR"},
+        {"query_type": ["HTTPS", "SVCB"] if ipv6 else ["AAAA", "HTTPS", "SVCB"],
+         "action": "predefined", "rcode": "NOERROR"},
     ]
+    fake = {"type": "fakeip", "tag": "dns-fake", "inet4_range": FAKE_V4}
+    if ipv6:
+        fake["inet6_range"] = FAKE_V6
 
     return {
         "log": {"level": "warn", "timestamp": False},
         "dns": {
             "servers": [
                 {"type": "local", "tag": "dns-local"},
-                {"type": "fakeip", "tag": "dns-fake", "inet4_range": FAKE_V4, "inet6_range": FAKE_V6},
+                fake,
             ],
             "rules": dns_rules,
             "final": "dns-local",
         },
         "inbounds": [{
             "type": "tun", "tag": "tun-in", "interface_name": TUN_NAME,
-            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+            "address": ["172.19.0.1/30"] + (["fdfe:dcba:9876::1/126"] if ipv6 else []),
             "auto_route": True, "auto_redirect": True, "strict_route": True,
             "route_exclude_address": ROUTE_EXCLUDE,
             "stack": "mixed",
@@ -297,6 +306,19 @@ def killswitch_ruleset(sing_box_uid):
 def run(argv, input_=None):
     r = subprocess.run(argv, input=input_, capture_output=True, text=True)
     return r.returncode, (r.stderr or r.stdout).strip()
+
+
+def has_ipv6_default():
+    """The host routes IPv6 to the internet: a default route outside the TUN.
+    Read at each apply, so a move to an IPv6 network needs an off/on. When
+    unsure, no: IPv4 alone works everywhere."""
+    r = subprocess.run(["ip", "-j", "-6", "route", "show", "default"],
+                       capture_output=True, text=True)
+    try:
+        routes = json.loads(r.stdout) if r.returncode == 0 else []
+    except ValueError:
+        return False
+    return any(r.get("dev") != TUN_NAME for r in routes)
 
 
 def sing_box_group():
@@ -361,7 +383,7 @@ def cmd_apply(check):
         die("request nested too deeply")
     except Refused as e:
         die(str(e))
-    config = build_config(req)
+    config = build_config(req, ipv6=has_ipv6_default())
     if check:
         json.dump(config, sys.stdout, indent=2)
         print()

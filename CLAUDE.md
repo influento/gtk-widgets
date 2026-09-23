@@ -252,6 +252,10 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   cannot work. All A/AAAA queries get fake IPs (198.18.0.0/15, fc00::/18); a connection to one
   carries its domain again, so a SOCKS outbound resolves at the proxy's exit and direct ones via
   the local resolver. HTTPS/SVCB queries get an empty answer (their address hints bypass fake IPs)
+- IPv6 only when the host has an IPv6 default route (checked by the helper at each apply): else
+  the TUN gets no IPv6 address and AAAA gets an empty answer, since apps would try the TUN's
+  working-looking IPv6 first and sing-box could not dial out. A move to an IPv6 network while
+  Proxy rules is on is picked up at the next off/on
 - Block QUIC is per proxy: a reject rule before sniff (so the reject is an ICMP unreachable)
 - Kill switch (off by default): an nftables table that allows only sing-box's own uid, the TUN,
   loopback and LAN; it stays when sing-box dies and goes when Proxy rules is turned off. It cannot tell apps apart once
