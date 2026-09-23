@@ -38,6 +38,11 @@ window {
   font-family: "JetBrainsMono Nerd Font", monospace;
 }
 
+/* lib/copy_label.py flash; outranks a widget's single-class label colour */
+.popup label.copy-label-copied {
+  color: @@GREEN@@;
+}
+
 /* Overlay scrollbars keep their thin idle look: Adwaita widens them and
    paints a trough on hover/drag. Application priority beats the theme. */
 scrollbar.overlay-indicator {

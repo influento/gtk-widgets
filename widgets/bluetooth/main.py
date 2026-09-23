@@ -5,6 +5,7 @@ import os, shutil, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
+from lib.copy_label import CopyLabel
 from lib.widget_base import Gtk, WidgetPopup
 
 from gi.repository import GLib
@@ -221,9 +222,8 @@ class BluetoothPopup(WidgetPopup):
 
         info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         info_box.set_hexpand(True)
-        name_label = Gtk.Label(label=name)
-        name_label.add_css_class("bt-device-name")
-        name_label.set_halign(Gtk.Align.START)
+        name_label = CopyLabel("bt-device-name")
+        name_label.set_content(name, f"{name} ({mac})", f"{name}\n{mac}")
         info_box.append(name_label)
         mac_label = Gtk.Label(label=mac)
         mac_label.add_css_class("bt-device-mac")

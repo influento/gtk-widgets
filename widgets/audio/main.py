@@ -13,6 +13,7 @@ _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
+from lib.copy_label import CopyLabel
 from lib.widget_base import Gdk, Gtk, WidgetPopup
 
 from gi.repository import GLib, Pango
@@ -491,7 +492,7 @@ class DeviceRow(Gtk.Box):
         self._card = self._card_port = None
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self._title = title_label("")
+        self._title = CopyLabel("au-row-title")
         header.append(self._title)
         self._default = glyph_button("au-default-btn")
         self._default.connect("clicked", lambda _: app.set_default(kind, self.info.name))
@@ -530,8 +531,8 @@ class DeviceRow(Gtk.Box):
 
     def update(self, info, is_default, card):
         self.info = info
-        self._title.set_text(info.description)
-        self._title.set_tooltip_text(f"{info.description}\n{info.name}")
+        self._title.set_content(info.description, f"{info.description} ({info.name})",
+                                f"{info.description}\n{info.name}")
         self.volume.set_base(info.base_volume)
         self.volume.update(info.volume.values, info.channel_list, bool(info.mute))
 
@@ -676,7 +677,7 @@ class CardRow(Gtk.Box):
         icon = Gtk.Label(label=ICON["card"])
         icon.add_css_class("au-glyph-icon")
         header.append(icon)
-        self._title = title_label("")
+        self._title = CopyLabel("au-row-title")
         header.append(self._title)
         self.append(header)
         profile_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -690,8 +691,8 @@ class CardRow(Gtk.Box):
 
     def update(self, info):
         self.info = info
-        self._title.set_text(info.proplist.get("device.description") or info.name)
-        self._title.set_tooltip_text(info.name)
+        desc = info.proplist.get("device.description") or info.name
+        self._title.set_content(desc, f"{desc} ({info.name})", f"{desc}\n{info.name}")
         profiles = sorted(info.profile_list, key=lambda p: -p.priority)
         items = [(p.name, p.description + ("" if p.available else " (unavailable)"),
                   bool(p.available)) for p in profiles]
