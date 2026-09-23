@@ -37,6 +37,44 @@ window {
   border-radius: 8px;
   font-family: "JetBrainsMono Nerd Font", monospace;
 }
+
+/* Overlay scrollbars keep their thin idle look: Adwaita widens them and
+   paints a trough on hover/drag. Application priority beats the theme. */
+scrollbar.overlay-indicator {
+  background-color: transparent;
+  border-color: transparent;
+  transition: none;
+}
+
+scrollbar.overlay-indicator > range > trough > slider {
+  margin: 0;
+  min-width: 3px;
+  min-height: 3px;
+  border: 1px solid alpha(@@CRUST@@, 0.4);
+  background-color: alpha(@@TEXT@@, 0.4);
+  transition: none;
+}
+
+scrollbar.overlay-indicator.vertical > range > trough > slider {
+  margin: 2px 0;
+  min-height: 40px;
+}
+
+scrollbar.overlay-indicator.horizontal > range > trough > slider {
+  margin: 0 2px;
+  min-width: 40px;
+}
+
+/* Tooltips are separate surfaces outside .popup: theme them to match. */
+tooltip {
+  background-color: @@MANTLE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 6px;
+  box-shadow: none;
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 13px;
+}
 """
 
 
