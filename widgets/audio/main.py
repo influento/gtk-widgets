@@ -8,7 +8,7 @@ its own thread for the peak meter streams (meters.py). Rows are keyed by pulse
 index and updated in place; the lists are never rebuilt.
 """
 
-import json, math, os, subprocess, sys, threading, time
+import json, math, os, signal, subprocess, sys, threading, time
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
@@ -20,7 +20,8 @@ from gi.repository import GLib, Pango
 
 try:
     import lib.pulsectl as pulsectl
-    from meters import METER_RATE, MIXER_APP_IDS, MeterThread
+    from meters import APP_ID, METER_RATE, MIXER_APP_IDS, MeterThread
+    from recorder import Recorder
 except OSError:  # libpulse.so.0 missing
     pulsectl = None
 
@@ -64,6 +65,8 @@ ICON = {
     "offline": "\U000F0581",      # nf-md-volume_off
     "kill": "\U000F0156",         # nf-md-close
     "meters": "\U000F0128",       # nf-md-chart_bar
+    "record": "\U000F044A",       # nf-md-record
+    "stop": "\U000F04DB",         # nf-md-stop
 }
 
 # (key, label, list facility, empty-list message, filters, default filter)
@@ -494,6 +497,15 @@ class DeviceRow(Gtk.Box):
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._title = CopyLabel("au-row-title")
         header.append(self._title)
+        if kind == "source":
+            self._rec_time = Gtk.Label()
+            self._rec_time.add_css_class("au-rec-time")
+            self._rec_time.set_visible(False)
+            header.append(self._rec_time)
+            self._record = glyph_button("au-record-btn", "Record")
+            self._record.set_label(ICON["record"])
+            self._record.connect("clicked", lambda _: app.toggle_record(self))
+            header.append(self._record)
         self._default = glyph_button("au-default-btn")
         self._default.connect("clicked", lambda _: app.set_default(kind, self.info.name))
         header.append(self._default)
@@ -563,6 +575,22 @@ class DeviceRow(Gtk.Box):
         if card_port is not None and self._latency.get_focus_child() is None:
             with self._latency.handler_block(self._latency_handler):
                 self._latency.set_value(card_port.latency_offset / 1000)
+
+    def show_record(self, state, seconds, enabled):
+        """Test recording controls (sources only): state idle | recording | playing."""
+        busy = state != "idle"
+        self._record.set_label(ICON["stop" if busy else "record"])
+        self._record.set_tooltip_text("Stop" if busy else "Record")
+        self._record.set_sensitive(enabled)
+        for name in ("recording", "playing"):
+            if state == name:
+                self._record.add_css_class(f"au-rec-{name}")
+                self._rec_time.add_css_class(f"au-rec-{name}")
+            else:
+                self._record.remove_css_class(f"au-rec-{name}")
+                self._rec_time.remove_css_class(f"au-rec-{name}")
+        self._rec_time.set_visible(busy)
+        self._rec_time.set_text(f"{int(seconds) // 60}:{int(seconds) % 60:02}")
 
     def _on_latency(self, spin):
         if self._card_port is not None:
@@ -804,6 +832,8 @@ class AudioPopup(WidgetPopup):
         self._meter_targets = {}   # (facility, index) -> stream spec sent to the thread
         self._meter_sync_id = self._tick_id = 0
         self._frame_time = 0.0
+        self._recorder = Recorder(self._on_record_change) if pulsectl else None
+        self._record_tick_id = 0
 
     # --- UI ---
 
@@ -860,6 +890,9 @@ class AudioPopup(WidgetPopup):
 
         tab = self._state.get("tab")
         self._switch_tab(tab if tab in self._tabs else "playback", save=False)
+        # widget-toggle closes the popup with SIGTERM: quit cleanly so do_shutdown
+        # stops a test recording's parec/pacat
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit)
         self._connect()
         return self._container
 
@@ -878,6 +911,8 @@ class AudioPopup(WidgetPopup):
         return box
 
     def _switch_tab(self, key, save=True):
+        if key != self._stack.get_visible_child_name():
+            self._recorder.cancel()
         self._stack.set_visible_child_name(key)
         self._queue_meters()
         for k, btn in self._tab_buttons.items():
@@ -891,6 +926,7 @@ class AudioPopup(WidgetPopup):
 
     def _on_filter(self, tab, flt):
         tab.filter = flt
+        self._recorder.cancel()
         tab.refilter()
         self._queue_meters()
 
@@ -961,6 +997,7 @@ class AudioPopup(WidgetPopup):
             self._events.stop()
             self._events = None
         self._stop_meters()
+        self._recorder.cancel()
         if self._cmd:
             self._cmd.close()
             self._cmd = None
@@ -1084,8 +1121,11 @@ class AudioPopup(WidgetPopup):
         return [(i, info.description) for i, info in sorted(self._infos[facility].items())]
 
     def _upsert(self, facility, info):
-        if facility == "source_output" and info.proplist.get("application.id") in MIXER_APP_IDS:
-            return  # a meter stream (ours or another mixer's)
+        app_id = info.proplist.get("application.id")
+        if facility == "source_output" and app_id in MIXER_APP_IDS:
+            return  # a meter stream (ours or another mixer's) or our test recording
+        if facility == "sink_input" and app_id == APP_ID:
+            return  # our test recording's playback
         tab = self._tab_for(facility)
         row = tab.rows.get(info.index)
         if facility in ("sink", "source", "card"):
@@ -1102,6 +1142,8 @@ class AudioPopup(WidgetPopup):
         if facility in ("sink", "source"):
             card = self._infos["card"].get(info.card)
             row.update(info, info.name == self._defaults[facility], card)
+            if facility == "source" and self._recorder.state != "idle":
+                self._show_record()  # a new row is disabled while a recording runs
         elif facility == "sink_input":
             if info.proplist.get("module-stream-restore.id") == EVENT_ROLE:
                 row.info = None  # shown by the System Sounds row instead
@@ -1113,6 +1155,8 @@ class AudioPopup(WidgetPopup):
             row.update(info)
 
     def _remove(self, facility, index):
+        if facility == "source" and index == self._recorder.source:
+            self._recorder.cancel()
         if facility in self._infos:
             self._infos[facility].pop(index, None)
         self._tab_for(facility).remove(index)
@@ -1233,6 +1277,36 @@ class AudioPopup(WidgetPopup):
         self._tick_id, self._frame_time = 0, 0.0
         return GLib.SOURCE_REMOVE
 
+    # --- test recording ---
+
+    def toggle_record(self, row):
+        if self._recorder.state == "idle":
+            self._recorder.record(row.info.name, row.index)
+        else:
+            self._recorder.stop()
+
+    def _on_record_change(self):
+        busy = self._recorder.state != "idle"
+        if busy and not self._record_tick_id:
+            self._record_tick_id = GLib.timeout_add(250, self._record_tick)
+        self._show_record()
+
+    def _show_record(self):
+        rec = self._recorder
+        for index, row in self._rows("source").items():
+            mine = index == rec.source
+            row.show_record(rec.state if mine else "idle", rec.seconds(),
+                            rec.state == "idle" or mine)
+
+    def _record_tick(self):
+        if self._recorder.state == "idle":
+            self._record_tick_id = 0
+            return GLib.SOURCE_REMOVE
+        row = self._rows("source").get(self._recorder.source)
+        if row is not None:
+            row.show_record(self._recorder.state, self._recorder.seconds(), True)
+        return GLib.SOURCE_CONTINUE
+
     # --- writes (command connection, main thread) ---
 
     def _act(self, method, *args, choice=None, **kwargs):
@@ -1303,6 +1377,8 @@ class AudioPopup(WidgetPopup):
             self._events.stop()
         if self._meters:
             self._meters.stop()
+        if self._recorder:
+            self._recorder.cancel()
         if self._cmd:
             self._cmd.close()
         Gtk.Application.do_shutdown(self)

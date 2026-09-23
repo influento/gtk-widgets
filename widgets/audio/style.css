@@ -116,6 +116,15 @@ scrolledwindow {
 .au-lock-btn:checked,
 .au-meters-btn:checked { color: @@BLUE@@; background: transparent; }
 .au-kill-btn:hover { color: @@RED@@; }
+.au-record-btn:disabled { color: @@SURFACE2@@; }
+.au-record-btn.au-rec-recording,
+.au-rec-time.au-rec-recording { color: @@RED@@; }
+.au-record-btn.au-rec-playing,
+.au-rec-time.au-rec-playing { color: @@GREEN@@; }
+
+.au-rec-time {
+  font-size: 11px;
+}
 .au-default-on,
 .au-default-on:hover { color: @@YELLOW@@; }
 

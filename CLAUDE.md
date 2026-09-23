@@ -55,7 +55,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `translate`    | ezpick text tool (`dev.dotfiles.ezpick`): translate, fix English, dictionary via `claude` CLI |
 | `usb`          | USB device manager: list, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
-| `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters |
+| `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
 
 ## Theming System
 
@@ -164,6 +164,7 @@ gtk-widgets/
 │   └── audio/
 │       ├── main.py        # pulsectl: event thread + main-thread command connection, rows updated in place
 │       ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
+│       ├── recorder.py    # Input test recording: parec into memory (30 s cap), pacat playback, discard
 │       └── style.css
 └── themes/
     ├── catppuccin-mocha.json
