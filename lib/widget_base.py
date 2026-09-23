@@ -43,30 +43,49 @@ window {
   color: @@GREEN@@;
 }
 
-/* Overlay scrollbars keep their thin idle look: Adwaita widens them and
-   paints a trough on hover/drag. Application priority beats the theme. */
-scrollbar.overlay-indicator {
+/* Scrollbars get a column of their own beside the content while a list
+   overflows (popup_window turns overlay scrolling off), so rows never run
+   under them: a thin slider, a gap on the content side, no trough. */
+scrollbar {
   background-color: transparent;
-  border-color: transparent;
+  border: none;
   transition: none;
 }
 
-scrollbar.overlay-indicator > range > trough > slider {
+scrollbar.vertical {
+  margin-left: 6px;
+}
+
+scrollbar.horizontal {
+  margin-top: 6px;
+}
+
+scrollbar > range > trough {
+  background-color: transparent;
+  border: none;
+}
+
+scrollbar > range > trough > slider {
   margin: 0;
   min-width: 3px;
   min-height: 3px;
   border: 1px solid alpha(@@CRUST@@, 0.4);
+  border-radius: 3px;
+  background-clip: border-box;
   background-color: alpha(@@TEXT@@, 0.4);
   transition: none;
 }
 
-scrollbar.overlay-indicator.vertical > range > trough > slider {
-  margin: 2px 0;
+scrollbar > range > trough > slider:hover,
+scrollbar > range > trough > slider:active {
+  background-color: alpha(@@TEXT@@, 0.6);
+}
+
+scrollbar.vertical > range > trough > slider {
   min-height: 40px;
 }
 
-scrollbar.overlay-indicator.horizontal > range > trough > slider {
-  margin: 0 2px;
+scrollbar.horizontal > range > trough > slider {
   min-width: 40px;
 }
 
@@ -127,10 +146,24 @@ def install_css(css):
     )
 
 
+def pass_wheel(widget):
+    """Leave the mouse wheel to the enclosing scrolled list: a slider or spin
+    button in a list otherwise takes it wherever the pointer lands, and the
+    list stops scrolling."""
+    controllers = widget.observe_controllers()
+    for i in range(controllers.get_n_items()):
+        ctrl = controllers.get_item(i)
+        if isinstance(ctrl, Gtk.EventControllerScroll):
+            ctrl.set_propagation_phase(Gtk.PropagationPhase.NONE)
+
+
 def popup_window(app, on_dismiss, on_key):
     """Fullscreen transparent layer-shell overlay with exclusive keyboard.
     A click on the backdrop calls on_dismiss(); key presses go to on_key.
     Returns (window, overlay); add the popup container with show_popup()."""
+    # Classic scrollbars take their own space beside the content; overlay ones
+    # are drawn over the right edge of every row (the gap is in BASE_CSS)
+    Gtk.Settings.get_default().set_property("gtk-overlay-scrolling", False)
     win = Gtk.ApplicationWindow(application=app, title=app.get_application_id())
 
     Gtk4LayerShell.init_for_window(win)
