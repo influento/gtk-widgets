@@ -19,6 +19,7 @@ had a PSK is gone. Such updates must carry the complete set.
 import base64, os, pwd, re, shutil, socket, subprocess
 from types import SimpleNamespace
 
+from lib.copy_label import copyable
 from lib.widget_base import Gtk, VScroller, pass_wheel
 
 from gi.repository import GLib
@@ -28,7 +29,7 @@ from nmutil import (  # noqa: E402
     eap_values, error_text, freq_band, mac_problem, parse_cidr, parse_ip, password_problem,
     connection_ssid, is_hotspot, reapply_refusal_text, ssid_text, wg_key_problem,
 )
-from ui import button, glyph_button, hbox, label, vbox  # noqa: E402
+from ui import button, error_label, glyph_button, hbox, label, vbox  # noqa: E402
 
 EDITABLE_TYPES = ("802-11-wireless", "802-3-ethernet", "wireguard")
 SECRET_SETTINGS = ("802-11-wireless-security", "802-1x", "wireguard")
@@ -346,9 +347,7 @@ class FieldRow(Gtk.Box):
         self.hint.set_wrap(True)
         self.hint.set_visible(bool(hint))
         self.append(self.hint)
-        self.error = label("", "net-form-error")
-        self.error.set_wrap(True)
-        self.error.set_visible(False)
+        self.error = error_label()
         self.append(self.error)
 
     def replace_widget(self, old, new):
@@ -1229,6 +1228,7 @@ class EditPage(Gtk.Box):
         self.msg.set_visible(bool(text))
         self.msg.set_css_classes(["net-edit-msg"] + (["net-status-err"] if error else [])
                                  + (["net-status-ok"] if ok else []))
+        copyable(self.msg, error)
 
     @staticmethod
     def _peer_keys(conn):
@@ -1313,6 +1313,7 @@ class EditPage(Gtk.Box):
                 self._show_msg(None)
                 self.apply_msg.set_text(f"Saved. Takes effect after reconnecting "
                                         f"({reapply_refusal_text(e)})")
+                copyable(self.apply_msg)
                 self.reconnect_btn.set_visible(True)
                 self.apply_bar.set_visible(True)
                 return
@@ -1329,12 +1330,14 @@ class EditPage(Gtk.Box):
         dev, name = devs[0], remote.get_id()
         self.reconnect_btn.set_visible(False)
         self.apply_msg.set_text(f"Reconnecting {name}…")
+        copyable(self.apply_msg, False)
 
         def reconnected(c, res):
             try:
                 c.activate_connection_finish(res)
             except GLib.Error as e:
                 self.apply_msg.set_text(f"Reconnecting {name} failed: {error_text(e)}")
+                copyable(self.apply_msg)
                 return
             self.apply_msg.set_text(f"Reconnected {name}: the changes are applied")
             self.app.queue_sync()

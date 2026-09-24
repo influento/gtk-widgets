@@ -39,7 +39,9 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 - `widget-toggle <name>` handles launch/dismiss via `flock` (prevents duplicates)
 - Close via Escape/q key or clicking outside the widget
 - Shared components live in `lib/` beside the base class: `CopyLabel` (`lib/copy_label.py`)
-  is a label that copies its text (or a longer copy text) to the clipboard on click.
+  is a label that copies its text (or a longer copy text) to the clipboard on click;
+  `copyable(label, on)` gives a plain label the same click-to-copy. Every error line
+  shown in a widget is copyable (status labels switch it on only while showing an error).
   `popup_window()`/`show_popup()`/`install_css()` in `lib/widget_base.py` build the same
   layer-shell overlay for long-running apps that open popups on demand (`network-agent`)
 - Widgets with a `status` script (bash or Python) output JSON (`text`, `tooltip`, `class`) for status bars
@@ -132,7 +134,7 @@ gtk-widgets/
 ├── widget-toggle          # Generic toggle for GTK4 popups (flock-based)
 ├── lib/
 │   ├── widget_base.py     # Shared GTK4 popup base class + theme loader
-│   ├── copy_label.py      # CopyLabel: click copies text via wl-copy, flashes "Copied"
+│   ├── copy_label.py      # CopyLabel + copyable(): click copies text via wl-copy, flashes "Copied"
 │   └── pulsectl/          # Vendored libpulse ctypes bindings (upstream commit + changes in README.md)
 ├── polkit/
 │   ├── usb-helper         # Root helper for USB format/write, installed to /usr/lib/gtk-widgets/

@@ -6,7 +6,7 @@ _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
 from lib.widget_base import Gtk, WidgetPopup
-from lib.copy_label import CopyLabel
+from lib.copy_label import CopyLabel, copyable
 
 from gi.repository import GLib, Gio, Pango
 
@@ -233,10 +233,9 @@ class UsbPopup(WidgetPopup):
         self._container.append(title_row)
 
         if self._error:
-            err = CopyLabel("usb-warning")
-            err.set_content(self._error)
-            err.set_ellipsize(Pango.EllipsizeMode.NONE)
-            err.set_wrap(True)
+            err = Gtk.Label(label=self._error, xalign=0, wrap=True)
+            err.add_css_class("usb-warning")
+            copyable(err)
             self._container.append(err)
             self._error = None
 

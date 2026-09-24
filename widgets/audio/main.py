@@ -13,7 +13,7 @@ _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
-from lib.copy_label import CopyLabel
+from lib.copy_label import CopyLabel, copyable
 from lib.widget_base import Gdk, Gtk, VScroller, WidgetPopup, pass_wheel
 
 from gi.repository import GLib, Pango
@@ -897,6 +897,7 @@ class AudioPopup(WidgetPopup):
         box.append(icon)
         msg = Gtk.Label(label=message)
         msg.add_css_class("au-error-msg")
+        copyable(msg)
         box.append(msg)
         hint_label = Gtk.Label(label=hint)
         hint_label.add_css_class("au-error-hint")

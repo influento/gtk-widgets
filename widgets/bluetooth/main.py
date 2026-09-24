@@ -5,7 +5,7 @@ import os, shutil, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
-from lib.copy_label import CopyLabel
+from lib.copy_label import CopyLabel, copyable
 from lib.widget_base import Gtk, WidgetPopup
 
 from gi.repository import GLib
@@ -141,6 +141,7 @@ class BluetoothPopup(WidgetPopup):
             msg = Gtk.Label(label="bluetoothctl not installed" if status == "missing"
                             else "No controller available")
             msg.add_css_class("bt-error-msg")
+            copyable(msg)
             error_box.append(msg)
             if status == "missing":
                 hint_text = "Install bluez (provides bluetoothctl)"
@@ -248,6 +249,7 @@ class BluetoothPopup(WidgetPopup):
         self._status.remove_css_class("bt-status-err")
         if css_class:
             self._status.add_css_class(css_class)
+        copyable(self._status, css_class == "bt-status-err")
 
     def _on_power_toggle(self, _btn):
         action = "off" if is_powered() else "on"

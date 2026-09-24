@@ -20,6 +20,7 @@ _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
+from lib.copy_label import copyable  # noqa: E402
 from lib.widget_base import (BASE_CSS, Gdk, Gtk, install_css, load_css, popup_window,
                              render_css, show_popup)
 
@@ -347,6 +348,7 @@ class Prompt:
             self.entries[key] = ent
         self.error = Gtk.Label(xalign=0, wrap=True, visible=False)
         self.error.add_css_class("net-form-error")
+        copyable(self.error)
         box.append(self.error)
 
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,

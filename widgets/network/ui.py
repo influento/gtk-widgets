@@ -1,5 +1,6 @@
 """Small GTK helpers shared by the network popup (main.py) and its editor page."""
 
+from lib.copy_label import copyable
 from lib.widget_base import Gtk
 
 from gi.repository import Pango
@@ -11,6 +12,14 @@ def label(text="", css_class=None, xalign=0, hexpand=False, ellipsize=False):
         lbl.add_css_class(css_class)
     if ellipsize:
         lbl.set_ellipsize(Pango.EllipsizeMode.END)
+    return lbl
+
+
+def error_label():
+    """Hidden, wrapping, click-to-copy error line under a form."""
+    lbl = copyable(label("", "net-form-error"))
+    lbl.set_wrap(True)
+    lbl.set_visible(False)
     return lbl
 
 

@@ -1,4 +1,4 @@
-"""Clickable label that copies its text to the Wayland clipboard."""
+"""Click-to-copy labels: CopyLabel, and copyable() for error lines."""
 
 import subprocess
 
@@ -7,6 +7,7 @@ from lib.widget_base import Gtk
 from gi.repository import GLib, Pango
 
 FLASH_MS = 1000  # how long a clicked label reads "Copied"
+COPIED = "Copied to clipboard"
 
 
 def copy_to_clipboard(text):
@@ -51,7 +52,7 @@ class CopyLabel(Gtk.Label):
     def _on_click(self, *_):
         if not self._copy or not copy_to_clipboard(self._copy):
             return
-        self.set_text("Copied to clipboard")
+        self.set_text(COPIED)
         self.add_css_class("copy-label-copied")
         if self._flash_id:
             GLib.source_remove(self._flash_id)
@@ -61,4 +62,58 @@ class CopyLabel(Gtk.Label):
         self._flash_id = 0
         self.remove_css_class("copy-label-copied")
         self.set_text(self._text)
+        return GLib.SOURCE_REMOVE
+
+
+def copyable(label, on=True, copy_text=None):
+    """Let a plain Gtk.Label (an error line) copy its text on click, or stop it.
+
+    A click copies `copy_text` (default: the text shown) and flashes "Copied
+    to clipboard" at the label's current size, so a wrapped error does not
+    reflow the popup. Labels that show errors only some of the time call this
+    again with on=False for other messages. Sets a "Click to copy" tooltip
+    while on. Returns the label.
+    """
+    copier = getattr(label, "_copier", None)
+    if copier is None:
+        if not on:
+            return label
+        copier = label._copier = _Copier(label)
+    copier.on, copier.copy_text = on, copy_text
+    label.set_cursor_from_name("pointer" if on else None)
+    label.set_tooltip_text("Click to copy" if on else None)
+    return label
+
+
+class _Copier:
+    def __init__(self, label):
+        self.label = label
+        self.on, self.copy_text = False, None
+        self.text, self.size, self.flash_id = "", (-1, -1), 0
+        click = Gtk.GestureClick()
+        click.connect("released", self._on_click)
+        label.add_controller(click)
+
+    def _on_click(self, *_):
+        shown = self.label.get_text()
+        if self.flash_id and shown == COPIED:
+            shown = self.text
+        if not self.on or not shown or not copy_to_clipboard(self.copy_text or shown):
+            return
+        self.text = shown
+        if self.flash_id:
+            GLib.source_remove(self.flash_id)
+        else:
+            self.size = self.label.get_size_request()
+            self.label.set_size_request(self.label.get_width(), self.label.get_height())
+        self.label.set_text(COPIED)
+        self.label.add_css_class("copy-label-copied")
+        self.flash_id = GLib.timeout_add(FLASH_MS, self._end_flash)
+
+    def _end_flash(self):
+        self.flash_id = 0
+        self.label.remove_css_class("copy-label-copied")
+        self.label.set_size_request(*self.size)
+        if self.label.get_text() == COPIED:  # else a new message replaced it meanwhile
+            self.label.set_text(self.text)
         return GLib.SOURCE_REMOVE

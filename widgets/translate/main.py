@@ -5,6 +5,7 @@ import os, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
+from lib.copy_label import copyable
 from lib.widget_base import Gdk, Gtk, WidgetPopup
 
 from gi.repository import GLib
@@ -294,6 +295,7 @@ class EzpickPopup(WidgetPopup):
         action_names = ["translating...", "fixing...", "looking up..."]
         self._status.set_text(action_names[self._active_action])
         self._status.remove_css_class("translate-error")
+        copyable(self._status, False)
         self._copy_btn.set_sensitive(False)
         self._result_text.set_text("")
 
@@ -331,6 +333,7 @@ class EzpickPopup(WidgetPopup):
             return GLib.SOURCE_REMOVE
         self._status.set_text(f"error: {error}")
         self._status.add_css_class("translate-error")
+        copyable(self._status)
         return GLib.SOURCE_REMOVE
 
     def _on_copy(self, _button):

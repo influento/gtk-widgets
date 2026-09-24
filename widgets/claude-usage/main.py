@@ -6,6 +6,7 @@ _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
+from lib.copy_label import copyable
 from lib.widget_base import Gtk, WidgetPopup
 
 from gi.repository import GLib
@@ -147,6 +148,7 @@ class ClaudeUsagePopup(WidgetPopup):
             error_label.add_css_class("usage-error")
             error_label.set_wrap(True)
             error_label.set_max_width_chars(40)
+            copyable(error_label)
             self._container.append(error_label)
         return GLib.SOURCE_REMOVE
 
@@ -281,6 +283,7 @@ class ClaudeUsagePopup(WidgetPopup):
             self._status_label.remove_css_class(cls)
         if css_class:
             self._status_label.add_css_class(css_class)
+        copyable(self._status_label, css_class == "session-status-err")
 
 
 if __name__ == "__main__":

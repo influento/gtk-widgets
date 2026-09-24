@@ -16,12 +16,13 @@ _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
 
-from lib.copy_label import CopyLabel
+from lib.copy_label import CopyLabel, copyable
 from lib.widget_base import Gdk, Gtk, VScroller, WidgetPopup
 
 from gi.repository import Gio, GLib, GObject
 
-from ui import KeyedList, button, entry, glyph_button, hbox, label, section, switch, vbox  # noqa: E402
+from ui import (KeyedList, button, entry, error_label, glyph_button, hbox, label,  # noqa: E402
+                section, switch, vbox)
 from editor import EDITABLE_TYPES, EapForm, EditPage  # noqa: E402
 from proxypage import ProxyPage  # noqa: E402
 import proxy as px  # noqa: E402
@@ -221,9 +222,7 @@ class PasswordForm(Gtk.Box):
         row.append(button("Connect", "net-btn-accent", on_click=self._submit))
         row.append(button("Cancel", on_click=on_cancel))
         self.append(row)
-        self.error = label("", "net-form-error", ellipsize=False)
-        self.error.set_wrap(True)
-        self.error.set_visible(False)
+        self.error = error_label()
         self.append(self.error)
         self._on_submit = on_submit
 
@@ -355,9 +354,7 @@ class EnterpriseForm(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.form = EapForm(lambda: None)
         self.append(self.form)
-        self.error = label("", "net-form-error")
-        self.error.set_wrap(True)
-        self.error.set_visible(False)
+        self.error = error_label()
         self.append(self.error)
         buttons = hbox(4)
         buttons.set_halign(Gtk.Align.END)
@@ -615,9 +612,7 @@ class HiddenForm(Gtk.Box):
         self.append(self.security)
         self.password = entry("Password", secret=True, on_activate=self._submit)
         self.append(self.password)
-        self.error = label("", "net-form-error")
-        self.error.set_wrap(True)
-        self.error.set_visible(False)
+        self.error = error_label()
         self.append(self.error)
         buttons = hbox(4)
         buttons.set_halign(Gtk.Align.END)
@@ -684,9 +679,7 @@ class HotspotForm(Gtk.Box):
         warn.set_wrap(True)
         warn.set_max_width_chars(40)
         self.append(warn)
-        self.error = label("", "net-form-error")
-        self.error.set_wrap(True)
-        self.error.set_visible(False)
+        self.error = error_label()
         self.append(self.error)
         buttons = hbox(4)
         buttons.set_halign(Gtk.Align.END)
@@ -795,9 +788,9 @@ class NetworkPopup(WidgetPopup):
         self._offline = vbox(4)
         self._offline.set_halign(Gtk.Align.CENTER)
         self._offline.append(label(ICON["offline"], "net-error-icon", xalign=0.5))
-        self._offline_msg = label("", "net-error-msg", xalign=0.5)
+        self._offline_msg = copyable(label("", "net-error-msg", xalign=0.5))
         self._offline.append(self._offline_msg)
-        self._offline_hint = label("", "net-error-hint", xalign=0.5)
+        self._offline_hint = copyable(label("", "net-error-hint", xalign=0.5))
         self._offline.append(self._offline_hint)
         self._offline.set_visible(False)
         page.append(self._offline)
@@ -879,6 +872,7 @@ class NetworkPopup(WidgetPopup):
     def set_status(self, text, error=False, ok=False):
         self._status.set_text(text or "")
         self._status.set_visible(bool(text))
+        copyable(self._status, error)
         for cls, on in (("net-status-err", error), ("net-status-ok", ok)):
             if on:
                 self._status.add_css_class(cls)

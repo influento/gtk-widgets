@@ -5,6 +5,7 @@ while Proxy rules is on, an Apply bar restarts sing-box with them."""
 
 import threading
 
+from lib.copy_label import copyable
 from lib.widget_base import Gtk, VScroller
 
 from gi.repository import GLib, Pango
@@ -13,7 +14,7 @@ import proxy as px
 import socks5
 from editor import Choice, edit_section, toggle
 from nmutil import ICON
-from ui import KeyedList, button, glyph_button, hbox, label, vbox
+from ui import KeyedList, button, error_label, glyph_button, hbox, label, vbox
 
 
 def check_line(res):
@@ -86,12 +87,16 @@ class ProxyRow(Gtk.Box):
         self.title.set_tooltip_text(f"{p['host']}:{p['port']}, "
                                     + (f"user {p['username']}" if p["username"] else "no login"))
         text, cls = check_line(res)
+        failed = cls == "net-status-err"
         self.subtitle.set_text(text)
-        self.subtitle.set_tooltip_text(text)
+        copyable(self.subtitle, failed, res["error"] if failed else None)
+        self.subtitle.set_tooltip_text(text + ("\nClick to copy" if failed else ""))
         self.subtitle.set_css_classes(["net-row-subtitle"] + ([cls] if cls else []))
         badge, bcls, tip = udp_badge(res)
+        bad = bcls == "net-udp-bad"
         self.udp.set_text(badge)
-        self.udp.set_tooltip_text(tip)
+        copyable(self.udp, bad, res["udp_error"] if bad else None)
+        self.udp.set_tooltip_text(tip and tip + ("\nClick to copy" if bad else ""))
         self.udp.set_css_classes(["net-row-subtitle"] + ([bcls] if bcls else []))
         self.check_btn.set_sensitive(res != "running")
         self.quic.handler_block(self._quic_handler)
@@ -213,9 +218,7 @@ class PasteForm(Gtk.Box):
                                  accepts_tab=False, height_request=72)
         self.view.add_css_class("net-paste")
         self.append(self.view)
-        self.error = label("", "net-form-error")
-        self.error.set_wrap(True)
-        self.error.set_visible(False)
+        self.error = error_label()
         self.append(self.error)
         buttons = hbox(4)
         buttons.set_halign(Gtk.Align.END)
@@ -374,6 +377,7 @@ class ProxyPage(Gtk.Box):
         self.msg.set_visible(bool(text))
         self.msg.set_css_classes(["net-edit-msg"] + (["net-status-err"] if error else [])
                                  + (["net-status-ok"] if ok else []))
+        copyable(self.msg, error)
 
     def changed(self):
         try:
