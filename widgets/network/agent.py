@@ -315,7 +315,7 @@ class Prompt:
         if req.setting_name == NM.SETTING_WIREGUARD_SETTING_NAME:
             title, glyph = "WireGuard key required", ICON["vpn"]
         elif wifi:
-            title, glyph = "Wi-Fi password required", ICON["wifi"][4]
+            title, glyph = "Wi-Fi password required", ICON["wifi"]
         else:
             title, glyph = "Password required", ICON["lock"]
         what = {NM.SETTING_WIREGUARD_SETTING_NAME: "its private key"}.get(

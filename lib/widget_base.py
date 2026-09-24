@@ -16,7 +16,7 @@ import gi
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gtk4LayerShell", "1.0")
-from gi.repository import Gdk, Gtk, Gtk4LayerShell  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk, Gtk4LayerShell  # noqa: E402
 
 _THEMES_DIR = os.path.join(os.path.dirname(__file__), "..", "themes")
 _CURRENT_THEME = os.path.join(_THEMES_DIR, "current.json")  # symlink set by install.sh
@@ -228,9 +228,14 @@ class WidgetPopup(Gtk.Application):
 
     CSS = ""  # optional override; by default style.css beside the subclass module is used
     MARGIN_TOP = 40
+    # False: build_ui() data arrives asynchronously and the widget calls
+    # show_ui() once it is in, so the popup opens at its final size
+    SHOW_ON_BUILD = True
+    SHOW_TIMEOUT_MS = 1000  # show anyway if show_ui() has not come by then
 
     def __init__(self, application_id):
         super().__init__(application_id=application_id)
+        self._unshown = None
 
     def _widget_css(self):
         """Rendered CSS for this widget: CSS if set, else style.css beside the subclass's module."""
@@ -246,7 +251,19 @@ class WidgetPopup(Gtk.Application):
             return  # re-activated by a second launch; the popup is already up
         install_css(render_css(BASE_CSS) + self._widget_css())
         win, overlay = popup_window(self, self.quit, self._on_key)
-        show_popup(win, overlay, self.build_ui(), self.MARGIN_TOP)
+        self._unshown = (win, overlay, self.build_ui())
+        if self.SHOW_ON_BUILD:
+            self.show_ui()
+        else:
+            GLib.timeout_add(self.SHOW_TIMEOUT_MS, self.show_ui)
+
+    def show_ui(self):
+        """Present the popup built by build_ui(); later calls do nothing."""
+        if self._unshown is not None:
+            win, overlay, container = self._unshown
+            self._unshown = None
+            show_popup(win, overlay, container, self.MARGIN_TOP)
+        return GLib.SOURCE_REMOVE
 
     def build_ui(self):
         """Override to build widget content. Must return the container widget."""

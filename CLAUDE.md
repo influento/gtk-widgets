@@ -36,6 +36,9 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
   beside the widget's `main.py` automatically (no per-widget CSS loading code)
 - The container returned by `build_ui()` gets the `.popup` class from the base class,
   which supplies the border, radius, background, text color and font
+- A widget whose data arrives asynchronously sets `SHOW_ON_BUILD = False` and calls
+  `show_ui()` once it is in (the base shows it anyway after 1 s), so the popup opens at its
+  final size instead of growing on screen (`network`)
 - `widget-toggle <name>` handles launch/dismiss via `flock` (prevents duplicates)
 - Close via Escape/q key or clicking outside the widget
 - Shared components live in `lib/` beside the base class: `CopyLabel` (`lib/copy_label.py`)

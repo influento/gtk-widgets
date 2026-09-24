@@ -14,8 +14,7 @@ VPN_TYPES = ("wireguard", "vpn")
 HOTSPOT_ID = "Hotspot"
 
 ICON = {
-    "wifi": ["\U000F092F", "\U000F091F", "\U000F0922", "\U000F0925", "\U000F0928"],  # nf-md-wifi_strength_*
-    "wifi_bar": "\U000F05A9",   # nf-md-wifi: the bar's one Wi-Fi glyph, colour marks a weak signal
+    "wifi": "\U000F05A9",       # nf-md-wifi: one glyph at any strength, colour marks a weak signal
     "wired": "\U000F0200",      # nf-md-ethernet
     "vpn": "\U000F0582",        # nf-md-vpn
     "hotspot": "\U000F0002",    # nf-md-access_point_network
@@ -172,8 +171,17 @@ def connectivity_problem(client):
     return CONNECTIVITY_PROBLEMS.get(client.get_connectivity())
 
 
-def signal_glyph(strength):
-    return ICON["wifi"][min(4, (strength + 19) // 20)]
+WEAK, VERY_WEAK = 30, 5  # nm-applet's lowest two signal thresholds
+
+
+def signal_class(strength):
+    """"weak" (6-30%), "very-weak" (0-5%) or None (stronger, or unknown): the
+    bar and the popup colour the one Wi-Fi glyph by it. NM's percentage comes
+    from the last scan and jumps by 20 points, so level glyphs said little."""
+    if strength is None or strength > WEAK:
+        return None
+    return "very-weak" if strength <= VERY_WEAK else "weak"
+
 
 
 def ap_security(ap):

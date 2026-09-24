@@ -31,12 +31,17 @@ from nmutil import (  # noqa: E402
     connection_ssid, connectivity_problem, device_reason_text, eap_connection, eap_problem,
     error_text, freq_band,
     hidden_connection, hotspot_connection, ip_lines, is_hotspot, link_connection,
-    password_problem, relative_time, signal_glyph, vpn_place, wifi_connection,
+    password_problem, relative_time, signal_class, vpn_place, wifi_connection,
     wireguard_conf, write_private,
 )
 
 SYNC_DELAY_MS = 150    # debounce for bursts of client signals
 TICK_S = 3             # refresh for values NM changes without signals we watch
+WIFI_LIST_H = 300      # fixed: networks a scan finds later never resize the popup
+ROW_SPACING = 4
+SCAN_MAX_S = 15        # placeholders give way even if a device never reports its scan
+INET_HOLD_S = 3        # a connectivity problem shows once it has lasted this long on one link:
+                       # Wi-Fi on/off and reconnects pass through "no internet" on the way
 WG_DIR = os.path.expanduser("~/Dropbox/wireguard")
 
 AC_STATE = NM.ActiveConnectionState
@@ -130,6 +135,18 @@ def connection_details(client, ac):
 
 
 # --- rows ---
+
+def skeleton_row(i):
+    """Placeholder row in the Wi-Fi list's free space while a scan runs."""
+    row = hbox(10, "net-row")
+    row.add_css_class("net-skeleton")
+    for width in (16, (120, 90, 150, 70, 110, 130, 80)[i % 7]):
+        bone = Gtk.Box(valign=Gtk.Align.CENTER)
+        bone.add_css_class("net-bone")
+        bone.set_size_request(width, -1)
+        row.append(bone)
+    return row
+
 
 class ExpandRow(Gtk.Box):
     """Rounded row: a header line plus a revealer for details or a form."""
@@ -264,10 +281,14 @@ class WifiRow(ExpandRow):
         self.item = item
         ap, ac = item["ap"], item["ac"]
         hotspot = item["hotspot"]
-        if hotspot:
-            self.icon.set_text(ICON["hotspot"])
-        else:
-            self.icon.set_text(signal_glyph(ap.get_strength()) if ap else ICON["wifi"][0])
+        strength = ap.get_strength() if ap and not hotspot else None
+        self.icon.set_text(ICON["hotspot"] if hotspot else ICON["wifi"])
+        weak = signal_class(strength)
+        for cls in ("weak", "very-weak"):
+            if cls == weak:
+                self.icon.add_css_class(f"net-signal-{cls}")
+            else:
+                self.icon.remove_css_class(f"net-signal-{cls}")
         self.pct.set_text(f"{ap.get_strength()}%" if ap and not hotspot else "")
         self.lock.set_visible(item["kind"] not in ("open", "owe"))
         self.lock.set_tooltip_text(item["security"])
@@ -725,6 +746,8 @@ class HotspotForm(Gtk.Box):
 # --- popup ---
 
 class NetworkPopup(WidgetPopup):
+    SHOW_ON_BUILD = False  # shown by _on_client with NM's state in: no empty first frame
+
     def __init__(self):
         super().__init__(application_id="dev.dotfiles.network")
         self.client = None
@@ -736,6 +759,12 @@ class NetworkPopup(WidgetPopup):
         self.proxy_watch = None
         self._proxy_busy = None   # "starting" / "stopping" while the helper runs
         self._scanning = False
+        self._scan_since = 0      # NM timestamp (ms) the running scan started at
+        self._scan_wait = set()   # Wi-Fi device paths whose scan has not come back yet
+        self._scan_timer = 0
+        self._wifi_was_on = None  # last shown Wi-Fi switch value: turning it on starts a scan
+        self._inet_key = None     # (link path, problem kind) seen by the last sync
+        self._inet_since = None   # when that key appeared; None before the first sync
 
     # --- UI ---
 
@@ -805,15 +834,19 @@ class NetworkPopup(WidgetPopup):
         self._body.append(self._wired)
 
         # Wi-Fi
-        self._scan_btn = glyph_button(ICON["rescan"], "Rescan", self._rescan)
+        self._scan_btn = glyph_button(ICON["rescan"], "Rescan", self._start_scan)
         self._wifi_switch = switch(self._set_wireless)
         self._wifi_section = section("Wi-Fi", self._scan_btn, self._wifi_switch)
         self._body.append(self._wifi_section)
+        # one fixed-height area for the list, its placeholders and its messages
         self._wifi_msg = label("", "net-empty")
-        self._body.append(self._wifi_msg)
-        self._wifi = KeyedList(lambda ssid: WifiRow(self, ssid))
-        scroller = VScroller(300)
-        scroller.set_child(self._wifi)
+        self._wifi = KeyedList(lambda ssid: WifiRow(self, ssid), ROW_SPACING)
+        self._wifi_skel = vbox(ROW_SPACING)
+        wifi_area = vbox(ROW_SPACING)
+        for w in (self._wifi_msg, self._wifi, self._wifi_skel):
+            wifi_area.append(w)
+        scroller = VScroller(WIFI_LIST_H, wifi_area)
+        scroller.set_min_content_height(WIFI_LIST_H)
         self._wifi_scroller = scroller
         self._body.append(scroller)
         self._wifi_extra = hbox(4)
@@ -896,6 +929,7 @@ class NetworkPopup(WidgetPopup):
             self.client = NM.Client.new_finish(res)
         except GLib.Error as e:
             self._show_offline("Cannot reach NetworkManager", error_text(e))
+            self.show_ui()
             return
         c = self.client
         for sig in ("device-added", "device-removed", "active-connection-added",
@@ -911,8 +945,9 @@ class NetworkPopup(WidgetPopup):
         for conn in c.get_connections():
             conn.connect("changed", lambda *_: self.queue_sync())
         self._tick_id = GLib.timeout_add_seconds(TICK_S, self._tick)
+        self.show_ui()  # rooted before the first sync measures rows; drawn after it
+        self._start_scan()
         self._sync()
-        self._rescan(quiet=True)
         if c.connectivity_check_get_enabled():  # fresh result, not up to 5 min old
             c.check_connectivity_async(None, self._on_checked)
 
@@ -935,22 +970,28 @@ class NetworkPopup(WidgetPopup):
     def _watch_device(self, dev):
         dev.connect("state-changed", lambda *_: self.queue_sync())
         if isinstance(dev, NM.DeviceWifi):
-            for sig in ("access-point-added", "access-point-removed", "notify::active-access-point"):
+            for sig in ("access-point-added", "access-point-removed", "notify::active-access-point",
+                        "notify::last-scan"):
                 dev.connect(sig, lambda *_: self.queue_sync())
 
-    def queue_sync(self):
+    def queue_sync(self, now=False):
+        """Debounced sync; now=True: on the next idle (a user flip shows at once)."""
+        if now and self._sync_id:
+            GLib.source_remove(self._sync_id)
+            self._sync_id = 0
         if not self._sync_id:
-            self._sync_id = GLib.timeout_add(SYNC_DELAY_MS, self._sync)
+            self._sync_id = (GLib.idle_add(self._sync) if now
+                             else GLib.timeout_add(SYNC_DELAY_MS, self._sync))
 
     def _tick(self):
         self.queue_sync()
         return GLib.SOURCE_CONTINUE
 
     def do_shutdown(self):
-        for sid in (self._sync_id, self._tick_id):
+        for sid in (self._sync_id, self._tick_id, self._scan_timer):
             if sid:
                 GLib.source_remove(sid)
-        self._sync_id = self._tick_id = 0
+        self._sync_id = self._tick_id = self._scan_timer = 0
         Gtk.Application.do_shutdown(self)
 
     # --- sync ---
@@ -975,9 +1016,8 @@ class NetworkPopup(WidgetPopup):
             self._net_switch.set_sensitive(False)
             self._show_offline("NetworkManager is not running", "systemctl start NetworkManager")
             return GLib.SOURCE_REMOVE
-        networking = c.networking_get_enabled()
         self._net_switch.set_sensitive(True)
-        self._net_switch.set_(networking)
+        networking = self._net_switch.set_(c.networking_get_enabled())
         if not networking:
             self._inet.set_visible(False)
             self._show_offline("Networking is disabled", "")
@@ -1002,13 +1042,30 @@ class NetworkPopup(WidgetPopup):
         return GLib.SOURCE_REMOVE
 
     def _sync_connectivity(self):
-        problem = connectivity_problem(self.client) if link_connection(self.client) else None
+        link = link_connection(self.client)
+        problem = None
+        if link is not None and link.get_state() == AC_STATE.ACTIVATED:
+            problem = connectivity_problem(self.client)
+        key = (link.get_path(), problem[0]) if problem else None
+        now = GLib.get_monotonic_time() / 1e6
+        if self._inet_since is None:  # at open NM's state has settled: a problem shows at once
+            self._inet_key, self._inet_since = key, now - INET_HOLD_S
+        elif key != self._inet_key:
+            self._inet_key, self._inet_since = key, now
+            if problem:
+                GLib.timeout_add(int(INET_HOLD_S * 1000) + 50, self._inet_hold_done)
+        if problem and now - self._inet_since < INET_HOLD_S:
+            problem = None
         self._inet.set_visible(problem is not None)
         if problem:
             kind, text = problem
             self._inet_icon.set_text(ICON["portal"] if kind == "portal" else ICON["limited"])
             self._inet_msg.set_text(text)
             self._portal_btn.set_visible(kind == "portal")
+
+    def _inet_hold_done(self):
+        self.queue_sync()
+        return GLib.SOURCE_REMOVE
 
     def _sync_wired(self):
         devs = self._devices(NM.DeviceEthernet)
@@ -1018,32 +1075,66 @@ class NetworkPopup(WidgetPopup):
     def _sync_wifi(self):
         c = self.client
         devs = self._devices(NM.DeviceWifi)
-        enabled, hw = c.wireless_get_enabled(), c.wireless_hardware_get_enabled()
+        hw = c.wireless_hardware_get_enabled()
+        # the user's flip shows before NM reports it: the list follows the switch
+        on = self._wifi_switch.set_(c.wireless_get_enabled() and hw)
         visible = bool(devs)
         for w in (self._wifi_section, self._wifi_scroller, self._wifi_extra):
             w.set_visible(visible)
-        self._wifi_switch.set_(enabled and hw)
         self._wifi_switch.set_sensitive(hw)
-        self._scan_btn.set_sensitive(enabled and hw and not self._scanning)
+        if on and self._wifi_was_on is False:
+            self._start_scan(request=False)  # NM scans once the radio is up
+        elif not on and self._scanning:
+            self._end_scan(sync=False)
+        self._wifi_was_on = on
+        if self._scanning:
+            self._scan_wait = {d.get_path() for d in devs if d.get_path() in self._scan_wait
+                               and d.get_last_scan() < self._scan_since}
+            if not self._scan_wait:
+                self._end_scan(sync=False)
+        self._scan_btn.set_sensitive(on and not self._scanning)
         if not visible:
             self._wifi_msg.set_visible(False)
             return
         if not hw:
             msg = "Wi-Fi is blocked by a hardware switch"
-        elif not enabled:
+        elif not on:
             msg = "Wi-Fi is off"
         else:
             msg = None
+        self._wifi_extra.set_sensitive(msg is None)
         if msg:
             self._wifi_msg.set_text(msg)
             self._wifi_msg.set_visible(True)
             self._wifi.sync([])
-            self._wifi_extra.set_visible(False)
+            self._sync_skeletons(False)
             return
         items = self._wifi_items(devs)
-        self._wifi_msg.set_text("No networks found" if not items else "")
-        self._wifi_msg.set_visible(not items)
+        self._wifi_msg.set_text("No networks found")
+        self._wifi_msg.set_visible(not items and not self._scanning)
         self._wifi.sync([(it["ssid"], it) for it in items])
+        self._sync_skeletons(self._scanning)
+
+    def _sync_skeletons(self, on):
+        """Fill the list's free space with placeholder rows while a scan runs."""
+        box = self._wifi_skel
+        if box.get_first_child() is None:
+            box.append(skeleton_row(0))  # kept: it measures the row height
+        row_h = box.get_first_child().measure(Gtk.Orientation.VERTICAL, -1)[1]
+        free = WIFI_LIST_H
+        if self._wifi.get_visible():
+            free -= self._wifi.measure(Gtk.Orientation.VERTICAL, -1)[1] + ROW_SPACING
+        n = max(0, (free + ROW_SPACING) // (row_h + ROW_SPACING)) if on and row_h else 0
+        rows = []
+        child = box.get_first_child()
+        while child is not None:
+            rows.append(child)
+            child = child.get_next_sibling()
+        for row in rows[max(n, 1):]:
+            box.remove(row)
+        for i in range(len(rows), n):
+            box.append(skeleton_row(i))
+        box.set_visible(n > 0)
 
     def _wifi_items(self, devs):
         """One item per SSID: strongest AP, saved profiles, active connection."""
@@ -1137,49 +1228,78 @@ class NetworkPopup(WidgetPopup):
 
     def _set_networking(self, on):
         self.set_status("Enabling networking…" if on else "Disabling networking…")
+        self.queue_sync(now=True)
 
         def done(c, res):
             try:
                 c.dbus_call_finish(res)
-                self.set_status(None)
             except GLib.Error as e:
-                self._fail("Networking", e)
+                # fast clicks: a request can find NM already where it asks
+                if not e.matches(NM.ManagerError.quark(), NM.ManagerError.ALREADYENABLEDORDISABLED):
+                    self._net_switch.done(False)
+                    self._fail("Networking", e)
+                    self.queue_sync()
+                    return
+            self._net_switch.done(True)
+            self.set_status(None)
             self.queue_sync()
         self.client.dbus_call(NM.DBUS_PATH, NM.DBUS_INTERFACE, "Enable",
                               GLib.Variant("(b)", (on,)), None, -1, None, done)
 
     def _set_wireless(self, on):
+        self.queue_sync(now=True)  # the list follows the switch at once
+
         def done(c, res):
             try:
                 c.dbus_set_property_finish(res)
+                self._wifi_switch.done(True)
             except GLib.Error as e:
+                self._wifi_switch.done(False)
                 self._fail("Wi-Fi", e)
             self.queue_sync()
         self.client.dbus_set_property(NM.DBUS_PATH, NM.DBUS_INTERFACE, "WirelessEnabled",
                                       GLib.Variant("b", on), -1, None, done)
 
-    def _rescan(self, quiet=False):
+    def _start_scan(self, request=True):
+        """Placeholders until every Wi-Fi device reports a scan newer than now.
+        request=False: NM scans by itself (the radio was just turned on)."""
         devs = self._devices(NM.DeviceWifi) if self.client else []
-        if not devs or not self.client.wireless_get_enabled():
+        if not devs:
             return
+        self._scan_since = NM.utils_get_timestamp_msec()
+        self._scan_wait = {d.get_path() for d in devs}
         self._scanning = True
         self._scan_btn.set_sensitive(False)
         self._scan_btn.add_css_class("net-scanning")
+        if self._scan_timer:
+            GLib.source_remove(self._scan_timer)
+        self._scan_timer = GLib.timeout_add_seconds(SCAN_MAX_S, self._scan_timed_out)
+        if request and self.client.wireless_get_enabled():
+            def done(dev, res):
+                try:
+                    dev.request_scan_finish(res)
+                except GLib.Error:
+                    # NM rate-limits scans: its list is fresh, nothing to wait for
+                    self._scan_wait.discard(dev.get_path())
+                    self.queue_sync()
+            for dev in devs:
+                dev.request_scan_async(None, done)
+        self.queue_sync()  # placeholders in the free space
 
-        def done(dev, res):
-            try:
-                dev.request_scan_finish(res)
-            except GLib.Error:
-                pass  # NM rate-limits scans; the list still follows its own scans
-        for dev in devs:
-            dev.request_scan_async(None, done)
+    def _scan_timed_out(self):
+        self._scan_timer = 0
+        self._end_scan()
+        return GLib.SOURCE_REMOVE
 
-        def finished():
-            self._scanning = False
-            self._scan_btn.remove_css_class("net-scanning")
+    def _end_scan(self, sync=True):
+        if self._scan_timer:
+            GLib.source_remove(self._scan_timer)
+            self._scan_timer = 0
+        self._scanning = False
+        self._scan_wait = set()
+        self._scan_btn.remove_css_class("net-scanning")
+        if sync:
             self.queue_sync()
-            return GLib.SOURCE_REMOVE
-        GLib.timeout_add_seconds(4, finished)
 
     def activate(self, conn, device, ap, name, on_activated=None, on_failed=None):
         """Activate a saved profile (conn None: NM picks one for the device)."""

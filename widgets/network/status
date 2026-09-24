@@ -24,13 +24,12 @@ _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, _DIR)
 
 from nmutil import (  # noqa: E402
-    GLib, ICON, NM, connectivity_problem, is_hotspot, is_vpn, link_connection,
+    GLib, ICON, NM, connectivity_problem, is_hotspot, is_vpn, link_connection, signal_class,
 )
 import proxy as px  # noqa: E402
 
 DEBOUNCE_MS = 200
 TICK_S = 10  # signal strength changes without a signal we follow
-WEAK, VERY_WEAK = 30, 5  # nm-applet's lowest two signal thresholds
 
 
 def link_info(ac):
@@ -41,10 +40,8 @@ def link_info(ac):
             return ["hotspot"], ICON["hotspot"]
         devs = ac.get_devices()
         ap = devs[0].get_active_access_point() if devs and isinstance(devs[0], NM.DeviceWifi) else None
-        strength = ap.get_strength() if ap else None
-        if strength is None or strength > WEAK:
-            return ["wifi"], ICON["wifi_bar"]
-        return ["wifi", "very-weak" if strength <= VERY_WEAK else "weak"], ICON["wifi_bar"]
+        weak = signal_class(ap.get_strength() if ap else None)
+        return ["wifi"] + ([weak] if weak else []), ICON["wifi"]
     if ctype == "802-3-ethernet":
         return ["wired"], ICON["wired"]
     return ["other"], ICON["wired"]

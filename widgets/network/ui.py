@@ -3,7 +3,9 @@
 from lib.copy_label import copyable
 from lib.widget_base import Gtk
 
-from gi.repository import Pango
+from gi.repository import GLib, Pango
+
+SWITCH_PENDING_S = 10  # a flip NM has not confirmed by then gives way to NM's value
 
 
 def label(text="", css_class=None, xalign=0, hexpand=False, ellipsize=False):
@@ -70,22 +72,41 @@ def entry(placeholder, secret=False, on_activate=None):
 
 def switch(on_toggle):
     """Gtk.Switch that reports user flips via on_toggle(active) and is
-    otherwise only moved by set(), so NM state stays the source of truth."""
+    otherwise moved by set_(NM's value). A flip shows at once; on_toggle sends
+    a request and calls done(ok) when it returns. set_() leaves the last flip
+    until every request has returned and NM reports the flipped value (fast
+    clicks: NM passes through the earlier values on the way), until the last
+    request failed, or for SWITCH_PENDING_S; set_() returns the value shown."""
     sw = Gtk.Switch(valign=Gtk.Align.CENTER)
     sw.add_css_class("net-switch")
+    pending = {"want": None, "since": 0, "busy": 0}
 
     def state_set(_sw, active):
+        pending["want"], pending["since"] = active, GLib.get_monotonic_time()
+        pending["busy"] += 1
         on_toggle(active)
-        return True  # keep the visual state until NM reports the change
+        return False  # show the flip now; syncs before NM catches up keep it
 
     handler = sw.connect("state-set", state_set)
 
     def set_(active):
+        want = pending["want"]
+        if want is not None:
+            waited = (GLib.get_monotonic_time() - pending["since"]) / 1e6
+            if (pending["busy"] or active != want) and waited < SWITCH_PENDING_S:
+                return want
+            pending["want"] = None
         sw.handler_block(handler)
         sw.set_active(active)
         sw.set_state(active)
         sw.handler_unblock(handler)
-    sw.set_ = set_
+        return active
+
+    def done(ok):
+        pending["busy"] = max(0, pending["busy"] - 1)
+        if not ok and not pending["busy"]:
+            pending["want"] = None  # follow NM again
+    sw.set_, sw.done = set_, done
     return sw
 
 
