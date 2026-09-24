@@ -1,6 +1,7 @@
 """Edit page of the network popup: settings of one saved Wi-Fi, Ethernet or
 WireGuard profile (general, Wi-Fi, security, MAC, Ethernet, IPv4/IPv6, routes,
 WireGuard interface and peers). Everything else stays in nm-connection-editor.
+The less common fields of a section sit in its collapsed More part.
 
 The page edits a clone of the saved profile and writes only the fields it
 shows, so every other setting survives a save. Save is enabled while the
@@ -13,7 +14,8 @@ the other PSKs), and re-applying its cached secrets fails once a peer that
 had a PSK is gone. Such updates must carry the complete set.
 """
 
-import base64, shutil, socket, subprocess
+import base64, os, pwd, re, shutil, socket, subprocess
+from types import SimpleNamespace
 
 from lib.widget_base import Gtk, VScroller, pass_wheel
 
@@ -22,7 +24,7 @@ from gi.repository import GLib
 from nmutil import (  # noqa: E402
     EAP_INNER, EAP_METHODS, NM, VPN_TYPES, apply_eap, connection_security, eap_problem,
     eap_values, error_text, freq_band, mac_problem, parse_cidr, parse_ip, password_problem,
-    connection_ssid, reapply_refusal_text, ssid_text, wg_key_problem,
+    connection_ssid, is_hotspot, reapply_refusal_text, ssid_text, wg_key_problem,
 )
 from ui import button, glyph_button, hbox, label, vbox  # noqa: E402
 
@@ -40,6 +42,23 @@ BANDS = [(None, "Automatic"), ("bg", "2.4 GHz"), ("a", "5 GHz")]
 MAC_MODES = [(None, "Default"), ("permanent", "Permanent"), ("random", "Random (new every connect)"),
              ("stable", "Stable (fixed per network)"), ("preserve", "Preserve"), ("custom", "Custom")]
 WOL = NM.SettingWiredWakeOnLan
+WOWL = NM.SettingWirelessWakeOnWLan
+POWERSAVE = [(int(NM.SettingWirelessPowersave.DEFAULT), "Default"),
+             (int(NM.SettingWirelessPowersave.DISABLE), "Off"),
+             (int(NM.SettingWirelessPowersave.ENABLE), "On")]
+WAKE_ON_WLAN = [(int(WOWL.DEFAULT), "Default"), (0, "Off"), (int(WOWL.MAGIC), "Magic packet"),
+                (int(WOWL.ANY), "Any")]
+# fixed link modes: half duplex only where it still exists in practice
+LINK_MODES = [(None, "Automatic")] + [
+    ((speed, duplex), f"{speed} Mb/s, {duplex} duplex")
+    for speed in (10, 100, 1000, 2500, 5000, 10000)
+    for duplex in (("full", "half") if speed <= 100 else ("full",))]
+CLIENT_IDS = [(None, "Default"), ("mac", "MAC address"), ("perm-mac", "Permanent MAC"),
+              ("stable", "Stable (per profile)"), ("duid", "DUID"), ("custom", "Custom")]
+IP6_PRIVACY = [(-1, "Default"), (0, "Off"), (1, "Prefer public"), (2, "Prefer temporary")]
+HEX_ID = re.compile(r"[0-9a-fA-F]{2}(:[0-9a-fA-F]{2})+")
+# NM refuses to reapply these to a connected device (see _reapply)
+ON_RECONNECT = "Takes effect on reconnect"
 LABEL_CHARS = 15
 
 
@@ -59,6 +78,17 @@ def split_list(text):
     return [x for x in (p.strip() for p in text.replace(";", ",").split(",")) if x]
 
 
+def on_reconnect(hint=None):
+    return f"{hint}. {ON_RECONNECT}" if hint else ON_RECONNECT
+
+
+def channels(band):
+    """Channels NM accepts for a band ('bg' or 'a'); which ones a hotspot may
+    really use is up to the regulatory domain."""
+    top = 14 if band == "bg" else 177  # 5 GHz: leave out the 4.9 GHz (Japan) block
+    return [c for c in range(1, top + 1) if NM.utils_wifi_is_channel_valid(c, band)]
+
+
 # --- input widgets (each reports edits through on_change) ---
 
 class Choice(Gtk.DropDown):
@@ -70,6 +100,13 @@ class Choice(Gtk.DropDown):
         self.add_css_class("net-choice")
         self.set_hexpand(True)
         self.connect("notify::selected", lambda *_: on_change())
+
+    def set_options(self, options, value):
+        """Replace the items, selecting `value` (the first item when it is gone)."""
+        self._values = [v for v, _ in options]
+        model = self.get_model()
+        model.splice(0, model.get_n_items(), [t for _, t in options])
+        self.set_selected(self._values.index(value) if value in self._values else 0)
 
     def set_value(self, value, unknown_label=None):
         if value not in self._values:
@@ -301,6 +338,7 @@ class FieldRow(Gtk.Box):
         line.append(key)
         line.append(widget)
         self.line, self.widget = line, widget
+        self.more = None  # the More part holding this row, if any
         self.append(line)
         self.hint = label(hint or "", "net-edit-hint")
         self.hint.set_wrap(True)
@@ -330,6 +368,30 @@ def edit_section(title):
     box.add_css_class("net-edit-section")
     box.append(label(title, "net-section"))
     return box
+
+
+class More(Gtk.Box):
+    """Collapsed tail of a section for the less common fields. Rows go into
+    `content`; it opens by itself when one of them holds a non-default value
+    or an error."""
+
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.toggle = button("More", "net-more-btn", on_click=lambda: self.set_open(not self.is_open()))
+        self.toggle.set_halign(Gtk.Align.START)
+        self.content = vbox(6)
+        self.content.more = self
+        self.append(self.toggle)
+        self.append(self.content)
+        self.set_open(False)
+
+    def is_open(self):
+        return self.content.get_visible()
+
+    def set_open(self, open_):
+        self.content.set_visible(open_)
+        # nf-md-chevron_down / nf-md-chevron_right
+        self.toggle.set_label(("\U000F0140" if open_ else "\U000F0142") + " More")
 
 
 # --- the page ---
@@ -411,10 +473,17 @@ class EditPage(Gtk.Box):
 
     def _row(self, section, key, name, widget, hint=None):
         row = field_row(name, widget, hint)
+        row.more = getattr(section, "more", None)
         if key:
             self._rows[key] = row
         section.append(row)
         return row
+
+    @staticmethod
+    def _more(section):
+        more = More()
+        section.append(more)
+        return more
 
     def _device(self, cls):
         """The profile's device: the active one, else the first managed one of `cls`."""
@@ -446,6 +515,19 @@ class EditPage(Gtk.Box):
         metered = Choice(METERED, self.changed)
         metered.set_value(shown_metered(s_con))
         self._row(sec, "connection.metered", "Metered", metered)
+        # connection.permissions only, like nm-connection-editor: secret flags stay
+        # as they are, so system-owned secrets stay stored and the save carries none
+        more = self._more(sec)
+        me = pwd.getpwuid(os.getuid()).pw_name
+        perms = list(s_con.get_property("permissions") or [])
+        everyone = toggle(self.changed)
+        everyone.set_active(not perms)
+        everyone.set_halign(Gtk.Align.START)
+        users = [p.split(":")[1] for p in perms if p.startswith("user:")]
+        hint = (f"Now only {', '.join(users) or 'nobody'}, while logged in"
+                if perms and users != [me] else f"Off: only {me}, and only while logged in")
+        self._row(more.content, "connection.permissions", "All users", everyone, on_reconnect(hint))
+        more.set_open(bool(perms))
         self.body.append(sec)
         uuid = s_con.get_uuid()
 
@@ -463,14 +545,38 @@ class EditPage(Gtk.Box):
             c.set_property("autoconnect-priority", prio.value())
             if metered.value() != shown_metered(c):  # keep guess-yes/-no unless changed
                 c.set_property("metered", metered.value())
+            if everyone.get_active():
+                c.set_property("permissions", [])
+            elif not perms:  # a stored user list stays as it is
+                c.set_property("permissions", [f"user:{me}:"])
         self._appliers.append(apply)
 
     def _build_wifi(self):
         s_wifi = self.base.get_setting_wireless()
         sec = edit_section("Wi-Fi")
+        hotspot = is_hotspot(self.base)
         band = Choice(BANDS, self.changed)
         band.set_value(s_wifi.get_band() or None)
-        self._row(sec, "802-11-wireless.band", "Band", band)
+        self._row(sec, "802-11-wireless.band", "Band", band, on_reconnect())
+        channel = None
+        if hotspot:  # a client follows the access point's channel
+            channel = Choice([(0, "Automatic")], self.changed)
+            chan_row = self._row(sec, "802-11-wireless.channel", "Channel", channel)
+            stored_band = s_wifi.get_band()
+
+            def sync_channels(keep):
+                b = band.value()
+                listed = channels(b) if b in ("bg", "a") else []
+                channel.set_options([(0, "Automatic")] + [(c, str(c)) for c in listed], keep)
+                if keep and channel.value() != keep and b == stored_band:
+                    channel.set_value(keep, f"{keep} (kept)")  # e.g. a 6 GHz channel
+                channel.set_sensitive(bool(listed) or channel.value() != 0)
+                chan_row.hint.set_text(on_reconnect(
+                    "Only channels your country allows will start" if listed
+                    else "Pick a band to choose a channel"))
+                chan_row.hint.set_visible(True)
+            sync_channels(s_wifi.get_channel())
+            band.connect("notify::selected", lambda *_: sync_channels(channel.value()))
 
         ssid = connection_ssid(self.base)
         cur_bssid = (s_wifi.get_bssid() or "").upper() or None
@@ -496,11 +602,24 @@ class EditPage(Gtk.Box):
         custom.set_visible(False)
         bssid.connect("notify::selected", lambda *_: custom.set_visible(bssid.value() == "custom"))
         self._row(sec, "802-11-wireless.bssid", "BSSID lock", box,
-                  "Locking to one access point stops roaming between them")
+                  on_reconnect("Locking to one access point stops roaming between them"))
         mtu = Spin(0, 9000, self.changed)
         mtu.set_value(s_wifi.get_mtu())
         mtu.set_halign(Gtk.Align.START)
         self._row(sec, "802-11-wireless.mtu", "MTU", mtu, "0 = automatic")
+        more = self._more(sec)
+        powersave = Choice(POWERSAVE, self.changed)
+        powersave.set_value(int(s_wifi.get_powersave()), "Not managed (kept)")
+        self._row(more.content, "802-11-wireless.powersave", "Power saving", powersave,
+                  on_reconnect("Default leaves it to the driver unless NetworkManager.conf sets it"))
+        wowl = None
+        if not hotspot:
+            wowl = Choice(WAKE_ON_WLAN, self.changed)
+            wowl.set_value(int(s_wifi.get_wake_on_wlan()), "Custom (kept)")
+            self._row(more.content, "802-11-wireless.wake-on-wlan", "Wake on WLAN", wowl,
+                      "Wake from suspend on a packet from the network; not every card can")
+        more.set_open(powersave.value() != POWERSAVE[0][0]
+                      or (wowl is not None and wowl.value() != WAKE_ON_WLAN[0][0]))
         self.body.append(sec)
 
         def apply(cand):
@@ -514,6 +633,11 @@ class EditPage(Gtk.Box):
             if (value or None) != ((w.get_bssid() or "").upper() or None):
                 w.set_property("bssid", value)
             w.set_property("mtu", mtu.value())
+            if channel is not None:
+                w.set_property("channel", channel.value())
+            w.set_property("powersave", powersave.value())
+            if wowl is not None:
+                w.set_property("wake-on-wlan", wowl.value())
         self._appliers.append(apply)
 
     def _build_security(self):
@@ -585,7 +709,7 @@ class EditPage(Gtk.Box):
             hint = f"Device {dev.get_iface()}: {perm or dev.get_hw_address()}"
             if perm and dev.get_hw_address() and dev.get_hw_address().upper() != perm.upper():
                 hint += f" (now {dev.get_hw_address()})"
-        self._row(sec, f"{setting_name}.cloned-mac-address", "Cloned MAC", box, hint)
+        self._row(sec, f"{setting_name}.cloned-mac-address", "Cloned MAC", box, on_reconnect(hint))
         self.body.append(sec)
 
         def apply(cand):
@@ -614,6 +738,25 @@ class EditPage(Gtk.Box):
         other = flags & ~(WOL.MAGIC | WOL.DEFAULT | WOL.IGNORE)
         hint = "Off: the system default" + (" (other wake flags stay as set)" if other else "")
         self._row(sec, "802-3-ethernet.wake-on-lan", "Wake on LAN", wol, hint)
+        more = self._more(sec)
+        mtu = Spin(0, 9000, self.changed)
+        mtu.set_value(s_wired.get_mtu() if s_wired else 0)
+        mtu.set_halign(Gtk.Align.START)
+        self._row(more.content, "802-3-ethernet.mtu", "MTU", mtu, "0 = automatic")
+        # A fixed mode keeps auto-negotiation on, advertising only that mode:
+        # forcing it without negotiation drops gigabit links. A stored forced
+        # mode is kept as it is until another one is picked.
+        speed = s_wired.get_speed() if s_wired else 0
+        duplex = s_wired.get_duplex() if s_wired else None
+        forced = bool(s_wired) and not s_wired.get_auto_negotiate() and bool(speed or duplex)
+        stored_mode = None if not (speed or duplex) else "kept" if forced else (speed, duplex)
+        link = Choice(LINK_MODES, self.changed)
+        link.set_value(stored_mode, f"{speed or '?'} Mb/s, {duplex or '?'} duplex, "
+                                    f"{'forced' if forced else 'negotiated'} (kept)")
+        self._row(more.content, "802-3-ethernet.speed", "Link speed", link,
+                  "Forced without negotiation; another choice turns negotiation back on" if forced
+                  else "A fixed speed is still negotiated: only that mode is offered")
+        more.set_open(mtu.value() != 0 or stored_mode is not None)
         self.body.append(sec)
 
         def apply(cand):
@@ -628,6 +771,23 @@ class EditPage(Gtk.Box):
             new = (flags & ~(WOL.DEFAULT | WOL.IGNORE)) | WOL.MAGIC if on else flags & ~WOL.MAGIC
             s.set_property("wake-on-lan", int(new) or int(WOL.DEFAULT))
         self._appliers.append(apply)
+
+        def apply_link(cand):
+            s = cand.get_setting_wired()
+            mode = link.value()
+            if s is None and not mtu.value() and mode is None:
+                return
+            if s is None:
+                s = NM.SettingWired.new()
+                cand.add_setting(s)
+            s.set_property("mtu", mtu.value())
+            if mode == stored_mode:
+                return  # leave speed, duplex and auto-negotiate exactly as stored
+            new_speed, new_duplex = mode or (0, None)
+            s.set_property("speed", new_speed)
+            s.set_property("duplex", new_duplex)
+            s.set_property("auto-negotiate", True)  # never false: see above
+        self._appliers.append(apply_link)
 
     def _runtime(self, key):
         """Active connection's IP config for placeholders, or None."""
@@ -667,6 +827,9 @@ class EditPage(Gtk.Box):
         search = text_entry(self.changed, rt_dom or "comma-separated")
         search.set_text(", ".join(s_ip.get_dns_search(i) for i in range(s_ip.get_num_dns_searches())))
         search_row = self._row(sec, f"{key}.dns-search", "Search domains", search)
+        more = self._more(sec)
+        extra = self._ip_extra(more.content, key, title, s_ip)
+        more.set_open(extra.nondefault)
         self.body.append(sec)
 
         def sync_visible():
@@ -677,6 +840,8 @@ class EditPage(Gtk.Box):
             gw_row.set_visible(manual)
             for row in (dns_row, ign_row, search_row):
                 row.set_visible(not off)
+            more.set_visible(not off)
+            extra.sync_visible(m)
         sync_visible()
         method.connect("notify::selected", lambda *_: sync_visible())
 
@@ -716,6 +881,105 @@ class EditPage(Gtk.Box):
             for d in domains:
                 s.add_dns_search(d)
         self._appliers.append(apply)
+        self._appliers.append(extra.apply)
+
+    def _ip_extra(self, box, key, title, s_ip):
+        """The More part of an IP section: required, DHCP, privacy, DNS priority, table."""
+        require = toggle(self.changed)
+        require.set_active(not s_ip.get_may_fail())
+        require.set_halign(Gtk.Align.START)
+        self._row(box, f"{key}.may-fail", f"Require {title}", require,
+                  f"Off: the connection comes up without {title} when it gets none")
+        # NM 1.52 made this a ternary; "default" falls back to NetworkManager.conf,
+        # then to the deprecated boolean, which must match any explicit value
+        stored_send = s_ip.get_property("dhcp-send-hostname-v2")
+        old_no = stored_send == -1 and not s_ip.get_property("dhcp-send-hostname")
+        send = Choice([(-1, f"Default ({'no' if old_no else 'yes'})"), (1, "Yes"), (0, "No")],
+                      self.changed)
+        send.set_value(stored_send)
+        send_row = self._row(box, f"{key}.dhcp-send-hostname", "Send hostname", send,
+                             "Some DHCP servers put it in local DNS")
+        hostname = text_entry(self.changed, socket.gethostname())
+        hostname.set_text(s_ip.get_dhcp_hostname() or "")
+        host_row = self._row(box, f"{key}.dhcp-hostname", "DHCP hostname", hostname,
+                             "Empty: this computer's hostname")
+        client_id = custom_id = cid_row = privacy = privacy_row = None
+        stored_cid = s_ip.get_dhcp_client_id() if key == "ipv4" else None
+        if key == "ipv4":
+            client_id = Choice(CLIENT_IDS, self.changed)
+            custom_id = text_entry(self.changed, "01:aa:bb:cc:dd:ee:ff")
+            special = [v for v, _ in CLIENT_IDS if v not in (None, "custom")]
+            if stored_cid in ("ipv6-duid", "none"):
+                client_id.set_value(stored_cid, f"{stored_cid} (kept)")
+            elif stored_cid and stored_cid not in special:
+                client_id.set_value("custom")
+                custom_id.set_text(stored_cid)
+            else:
+                client_id.set_value(stored_cid)
+            cid_box = vbox(4)
+            cid_box.set_hexpand(True)
+            cid_box.append(client_id)
+            cid_box.append(custom_id)
+            custom_id.set_visible(client_id.value() == "custom")
+            client_id.connect("notify::selected",
+                              lambda *_: custom_id.set_visible(client_id.value() == "custom"))
+            cid_row = self._row(box, f"{key}.dhcp-client-id", "DHCP client ID", cid_box,
+                                "What the DHCP server keys the lease on")
+        else:
+            privacy = Choice(IP6_PRIVACY, self.changed)
+            privacy.set_value(int(s_ip.get_ip6_privacy()))
+            privacy_row = self._row(box, f"{key}.ip6-privacy", "IPv6 privacy", privacy,
+                                    "Temporary addresses for outgoing connections (SLAAC)")
+        dns_prio = Spin(-2147483648, 2147483647, self.changed)
+        dns_prio.set_value(s_ip.get_dns_priority())
+        dns_prio.set_halign(Gtk.Align.START)
+        self._row(box, f"{key}.dns-priority", "DNS priority", dns_prio,
+                  "Lower wins; 0 = default (100, VPNs 50). Negative, with systemd-resolved here: "
+                  "while it is up, lookups in its search domains go only to its DNS servers, "
+                  "and all lookups do if it has the default route")
+        table = Spin(0, 4294967295, self.changed)
+        table.set_value(s_ip.get_route_table())
+        table.set_halign(Gtk.Align.START)
+        self._row(box, f"{key}.route-table", "Route table", table,
+                  "0 = main. Another table turns on policy routing: its routes go there")
+        nondefault = bool(
+            not s_ip.get_may_fail() or stored_send != -1 or s_ip.get_dhcp_hostname() or stored_cid
+            or (privacy is not None and privacy.value() != -1)
+            or s_ip.get_dns_priority() or s_ip.get_route_table())
+
+        def sync_visible(method):
+            dhcp = method in (("auto",) if key == "ipv4" else ("auto", "dhcp"))
+            send_row.set_visible(dhcp)
+            host_row.set_visible(dhcp and send.value() != 0)
+            if cid_row:
+                cid_row.set_visible(dhcp)
+            if privacy_row:
+                privacy_row.set_visible(method == "auto")
+        send.connect("notify::selected", lambda *_: host_row.set_visible(
+            send_row.get_visible() and send.value() != 0))
+
+        def apply(cand):
+            s = cand.get_setting_by_name(key)
+            s.set_property("may-fail", not require.get_active())
+            if send.value() != stored_send:
+                s.set_property("dhcp-send-hostname-v2", send.value())
+                s.set_property("dhcp-send-hostname", send.value() != 0)
+            s.set_property("dhcp-hostname", hostname.get_text().strip() or None)
+            if client_id is not None:
+                value = client_id.value()
+                if value == "custom":
+                    value = custom_id.get_text().strip()
+                    if not value:
+                        raise FieldError(f"{key}.dhcp-client-id", "Enter the client ID")
+                    if value != stored_cid and not HEX_ID.fullmatch(value):
+                        raise FieldError(f"{key}.dhcp-client-id",
+                                         "Hex bytes, e.g. 01:aa:bb:cc:dd:ee:ff (01 = Ethernet MAC)")
+                s.set_property("dhcp-client-id", value)
+            if privacy is not None:
+                s.set_property("ip6-privacy", privacy.value())
+            s.set_property("dns-priority", dns_prio.value())
+            s.set_property("route-table", table.value())
+        return SimpleNamespace(nondefault=nondefault, sync_visible=sync_visible, apply=apply)
 
     def _build_routes(self, ctype):
         sec = edit_section("Routes")
@@ -945,6 +1209,8 @@ class EditPage(Gtk.Box):
         for key, msg in errors:
             if key in self._rows:
                 self._rows[key].show_error(msg)
+                if self._rows[key].more:
+                    self._rows[key].more.set_open(True)
         if loose:
             self._show_msg("; ".join(loose), error=True)
         elif self._msg_error:
@@ -1028,9 +1294,10 @@ class EditPage(Gtk.Box):
 
     def _reapply(self, dev, name):
         """Apply the saved profile to the connected device without a disconnect.
-        NM refuses changes it cannot make live (SSID, security, band, BSSID,
-        MAC, some MTUs): those wait for the user's Reconnect now, since a
-        reconnect drops open sessions."""
+        NM refuses changes it cannot make live (SSID, security, band, channel,
+        BSSID, power saving, MAC, user permissions, some MTUs): those wait for
+        the user's Reconnect now, since a reconnect drops open sessions. Their
+        fields say so (ON_RECONNECT)."""
         remote = self.remote
         self._show_msg(f"Saved {name}; applying…")
 
