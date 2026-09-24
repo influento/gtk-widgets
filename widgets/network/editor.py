@@ -377,6 +377,7 @@ class More(Gtk.Box):
 
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.add_css_class("net-more")
         self.toggle = button("More", "net-more-btn", on_click=lambda: self.set_open(not self.is_open()))
         self.toggle.set_halign(Gtk.Align.START)
         self.content = vbox(6)

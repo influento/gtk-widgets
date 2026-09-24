@@ -554,16 +554,27 @@ list.net-app-list > row:hover {
   color: @@BLUE@@;
 }
 
+/* the More toggle of an Edit page section: reads as a control, not a hint */
+.net-more {
+  border-top: 1px solid @@SURFACE0@@;
+  padding-top: 2px;
+}
+
 .net-more-btn {
-  font-size: 10px;
+  font-size: 12px;
   background: transparent;
-  color: @@SUBTEXT0@@;
+  color: @@BLUE@@;
   border: none;
+  border-radius: 4px;
   box-shadow: none;
-  padding: 0;
-  min-height: 0;
+  padding: 4px 8px 4px 0;
+  min-height: 24px;
 }
 
 .net-more-btn:hover {
-  color: @@BLUE@@;
+  color: @@SAPPHIRE@@;
+}
+
+.net-more-btn:hover label {
+  text-decoration-line: underline;
 }
