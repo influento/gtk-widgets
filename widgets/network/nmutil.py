@@ -321,7 +321,7 @@ _EAP_CERTS = ("ca-cert", "ca-path", "client-cert", "phase2-ca-cert", "phase2-ca-
 def eap_values(s_8021x):
     """{method, inner, identity, anonymous, domain, ask} of a PEAP/TTLS
     password setting without certificates, or None when it is anything else
-    (TLS, several methods, certificate files: those stay in nm-connection-editor)."""
+    (TLS, several methods, certificate files: not supported here)."""
     if s_8021x is None:
         return None
     eap = [s_8021x.get_eap_method(i) for i in range(s_8021x.get_num_eap_methods())]

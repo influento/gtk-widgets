@@ -11,7 +11,7 @@ group of VPNs and Proxy rules), the saved-connections list (delete, hidden
 Wi-Fi, WireGuard import/export), the Edit page and the Proxy rules page.
 """
 
-import os, secrets, socket, subprocess, sys
+import os, secrets, socket, sys
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
@@ -37,7 +37,6 @@ from nmutil import (  # noqa: E402
 SYNC_DELAY_MS = 150    # debounce for bursts of client signals
 TICK_S = 3             # refresh for values NM changes without signals we watch
 WG_DIR = os.path.expanduser("~/Dropbox/wireguard")
-EDITOR = "nm-connection-editor"
 
 AC_STATE = NM.ActiveConnectionState
 PROXY = "proxy-rules"  # the Proxy rules chip's key (VPN chips use profile UUIDs)
@@ -88,7 +87,8 @@ class Details(Gtk.Box):
         for value, (_k, text) in zip(self._values, pairs):
             value.set_content(text)
         self._conn = conn
-        self.edit_btn.set_visible(conn is not None and self.on_edit is not None)
+        self.edit_btn.set_visible(conn is not None and self.on_edit is not None
+                                  and conn.get_connection_type() in EDITABLE_TYPES)
 
 
 def connection_details(client, ac):
@@ -317,7 +317,7 @@ class WifiRow(ExpandRow):
                 self.reveal(self.eap_form)
                 self.eap_form.form.identity.grab_focus()
         else:
-            self.app.set_status(f"{item['security']} networks need {EDITOR}: use Advanced…", error=True)
+            self.app.set_status(f"{item['security']} networks aren't supported", error=True)
 
     def _on_enterprise(self, values, password):
         problem = eap_problem(values, password, False)
@@ -590,7 +590,8 @@ class ConnRow(Gtk.Box):
         self.subtitle.set_text(f"{iface} · {used}")
         self.export.set_visible(self.conn.get_connection_type() == "wireguard")
         editable = self.conn.get_connection_type() in EDITABLE_TYPES
-        self.edit_btn.set_tooltip_text("Edit" if editable else f"Edit in {EDITOR}")
+        self.edit_btn.set_sensitive(editable)
+        self.edit_btn.set_tooltip_text("Edit" if editable else "Not editable here (nmcli)")
 
     def _delete(self):
         self.stack.set_visible_child_name("actions")
@@ -838,9 +839,6 @@ class NetworkPopup(WidgetPopup):
         footer = hbox(4)
         footer.add_css_class("net-footer")
         footer.append(button("Connections", on_click=lambda: self._show_page("connections")))
-        spacer = Gtk.Box(hexpand=True)
-        footer.append(spacer)
-        footer.append(button("Advanced…", tooltip=f"Open {EDITOR}", on_click=lambda: self.edit(None)))
         page.append(footer)
         return page
 
@@ -1535,26 +1533,15 @@ class NetworkPopup(WidgetPopup):
         conn.delete_async(None, done)
 
     def open_editor(self, conn):
-        """The Edit page for Wi-Fi, Ethernet and WireGuard; nm-connection-editor otherwise."""
+        """The Edit page for Wi-Fi, Ethernet and WireGuard profiles. Other types
+        (plugin VPNs, bridges, PPPoE, …) aren't editable here: no Edit is offered."""
         if conn is None or conn.get_connection_type() not in EDITABLE_TYPES:
-            self.edit(conn)
             return
         page = self._stack.get_visible_child_name()
         self._editor_back = page if page != "edit" else self._editor_back
         self._editor.open(conn)
         self._stack.set_visible_child_name("edit")
         self.set_status(None)
-
-    def edit(self, conn):
-        """Hand over to nm-connection-editor (settings the Edit page lacks) and close."""
-        args = [EDITOR] + ([f"--edit={conn.get_uuid()}"] if conn else [])
-        try:
-            subprocess.Popen(args, start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError as e:
-            self._fail(f"Cannot start {EDITOR}", e)
-            return
-        self.quit()
 
     def _open_portal(self):
         """Any plain-http page gets redirected to the portal's login; NM's check

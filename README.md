@@ -24,10 +24,10 @@ Requires Python 3, GTK4, and [gtk4-layer-shell](https://github.com/wmww/gtk4-lay
 its Python bindings ([pulsectl](https://github.com/mk-fg/python-pulse-control)) are vendored
 in `lib/pulsectl/`.
 `network` needs NetworkManager's `libnm` (GObject introspection data, `NM-1.0.typelib`) and
-`notify-send` for `network-agent`'s notifications; `Advanced…` opens `nm-connection-editor`
-for the settings the Edit page doesn't cover. The Edit page shows WireGuard public keys with
-`wg` (wireguard-tools) when it is installed. Proxy rules needs `sing-box` (Arch `extra`,
-1.14 or later) and `nftables` for its optional kill switch.
+`notify-send` for `network-agent`'s notifications. It doesn't use `nm-connection-editor`:
+settings the Edit page doesn't cover aren't editable from the widget. The Edit page shows
+WireGuard public keys with `wg` (wireguard-tools) when it is installed. Proxy rules needs
+`sing-box` (Arch `extra`, 1.14 or later) and `nftables` for its optional kill switch.
 
 ```bash
 ./install.sh                          # default theme (catppuccin-mocha)

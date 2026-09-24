@@ -218,13 +218,21 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 
 ### network — phase 2 and notes
 
-- Phase 2 Edit page (`editor.py`) covers Wi-Fi, Ethernet and WireGuard profiles: General
-  (name, autoconnect, priority, metered; no autoconnect switch for VPNs), Wi-Fi (band, BSSID
-  lock, MTU), Security (PSK; PEAP/TTLS without certificates), MAC (cloned address), Ethernet
-  (Wake-on-LAN magic), IPv4/IPv6, routes, WireGuard interface and peers. Other types and
-  everything else (TLS/certificates, channel, proxy, …) stay behind `Advanced…`
-  (`nm-connection-editor`); a later review decides what else moves in
-- Mobile broadband is out of scope for now (a separate phase later)
+- The Edit page (`editor.py`) covers Wi-Fi, Ethernet and WireGuard profiles: General
+  (name, autoconnect, priority, metered; no autoconnect switch for VPNs), Wi-Fi (band, hotspot
+  channel, BSSID lock, MTU), Security (PSK; PEAP/TTLS without certificates), MAC (cloned
+  address), Ethernet (Wake-on-LAN magic), IPv4/IPv6, routes, WireGuard interface and peers.
+  Less common fields sit in a collapsed More per section: all users (connection.permissions),
+  power saving, Wake on WLAN, Ethernet MTU and link speed (auto-negotiate never set false),
+  require IPv4/IPv6, send hostname, DHCP hostname, DHCP client ID, IPv6 privacy, DNS priority,
+  route table. Fields NM refuses to reapply say "Takes effect on reconnect"
+- No `nm-connection-editor` fallback (the user removed it, 2026-09-24): other profile types get
+  no Edit (connect, disconnect and delete still work), other security types are kept as stored
+  on save, WEP networks can't be joined. Dropped for good: plugin VPNs, 802.1X certificates
+  (TLS, CA certificates for PEAP/TTLS), WEP/LEAP, wired 802.1X, virtual devices, PPPoE,
+  InfiniBand, DCB, Bluetooth PAN/DUN, firewall zone, PAC, adhoc/mesh. A feature is added only
+  when the user needs it
+- Mobile broadband is a postponed phase (see Backlog)
 - Saving secrets: NM keeps stored secrets when an update carries none, but an update with any
   secret replaces them all, and re-applying its cached secrets fails once a peer with a PSK is
   removed. The editor therefore fetches every secret before a save that carries one or
@@ -273,3 +281,9 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   popup a few hundred ms per step (the sysfs backlight path is instant). Fix: worker
   thread with a latest-value-wins queue so drags coalesce; verify with the fake DDC
   backend that the main loop no longer stalls and the final value matches the last drag.
+- **network: mobile broadband (USB modems)** — postponed by the user on 2026-09-24, its
+  own phase. First add `modemmanager` to arch-install; NetworkManager can't use modems
+  without it (`mobile-broadband-provider-info` is already installed). Scope: a new-modem
+  wizard (country → provider → APN from the provider database), SIM PIN/PUK unlock through
+  `network-agent`, signal/operator/roaming state, an on/off switch in the popup, and a
+  data-usage/metered hint. Hard; the user has USB modems to test with.

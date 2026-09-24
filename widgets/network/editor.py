@@ -1,7 +1,9 @@
 """Edit page of the network popup: settings of one saved Wi-Fi, Ethernet or
 WireGuard profile (general, Wi-Fi, security, MAC, Ethernet, IPv4/IPv6, routes,
-WireGuard interface and peers). Everything else stays in nm-connection-editor.
-The less common fields of a section sit in its collapsed More part.
+WireGuard interface and peers). Other profile types, security types other than
+WPA/WPA3 Personal and PEAP/TTLS without certificates, and every setting not shown
+aren't editable here; a save keeps them as stored. The less common fields of a
+section sit in its collapsed More part.
 
 The page edits a clone of the saved profile and writes only the fields it
 shows, so every other setting survives a save. Save is enabled while the
@@ -425,8 +427,6 @@ class EditPage(Gtk.Box):
         self.append(self.apply_bar)
         footer = hbox(4)
         footer.add_css_class("net-footer")
-        footer.append(button("Advanced…", tooltip="Open nm-connection-editor for everything else",
-                             on_click=lambda: self.app.edit(self.remote)))
         footer.append(Gtk.Box(hexpand=True))
         footer.append(button("Cancel", on_click=self._cancel))
         self.save_btn = button("Save", "net-btn-accent", on_click=self._save)
@@ -516,8 +516,8 @@ class EditPage(Gtk.Box):
         metered = Choice(METERED, self.changed)
         metered.set_value(shown_metered(s_con))
         self._row(sec, "connection.metered", "Metered", metered)
-        # connection.permissions only, like nm-connection-editor: secret flags stay
-        # as they are, so system-owned secrets stay stored and the save carries none
+        # connection.permissions only: secret flags stay as they are, so
+        # system-owned secrets stay stored and the save carries none
         more = self._more(sec)
         me = pwd.getpwuid(os.getuid()).pw_name
         perms = list(s_con.get_property("permissions") or [])
@@ -680,7 +680,9 @@ class EditPage(Gtk.Box):
                 apply_eap(cand.get_setting_802_1x(), values, password)
             self._appliers.append(apply)
         elif km:
-            hint = label("This security type is edited in Advanced…", "net-edit-hint")
+            # nothing of it is shown, so a save carries none of its secrets and
+            # NM keeps the stored ones (see the module docstring)
+            hint = label("This security type isn't editable here; it is kept as is.", "net-edit-hint")
             hint.set_wrap(True)
             sec.append(hint)
         self.body.append(sec)
