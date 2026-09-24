@@ -12,7 +12,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect   |
 | `power`        | Power menu: lock, sleep, reboot, shut down                 |
 | `translate`    | ezpick text tool: translate, fix English, dictionary (via `claude` CLI) |
-| `usb`          | USB device manager: list, format, write ISO (root helper via polkit) |
+| `usb`          | USB device manager: list, mount/unmount, Mac/Windows type fix, format, write ISO (root helper via polkit) |
 | `timer`        | Timer + stopwatch with alarm on expiry                     |
 | `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events) |
 | `network`      | nm-applet replacement via libnm: Wi-Fi/wired, mutually exclusive VPN and Proxy sections (WireGuard/VPN profile chips, or Proxy rules: per-app SOCKS5 routing through sing-box; clicking the active chip turns it off), hidden and Enterprise (PEAP/TTLS) networks, hotspot, connection list, WireGuard import/export, per-profile Edit page (Wi-Fi/Ethernet/WireGuard); `network-agent` for notifications + password prompts |

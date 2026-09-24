@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""USB device manager popup — list, format, write ISO."""
+"""USB device manager popup — list, mount, format, write ISO."""
 
 import json, os, re, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 
 from lib.widget_base import Gtk, WidgetPopup
+from lib.copy_label import CopyLabel
 
 from gi.repository import GLib, Gio, Pango
 
 FS_TYPES = ["exfat", "vfat", "ext4", "ntfs"]
 _LABEL_RE = re.compile(r'^[A-Za-z0-9_-]+$')
 HELPER = "/usr/lib/gtk-widgets/usb-helper"
+# Partition-table types macOS/Windows need to open each filesystem (mirrors
+# usb-helper's fix-type). Linux ignores them, so a wrong one only shows elsewhere.
+_MBR_OK = {"vfat": {0x6, 0xb, 0xc, 0xe}, "exfat": {0x7}, "ntfs": {0x7}}
+_GPT_BASIC_DATA = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
 _BUSY_DIR = os.path.join(
     os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "gtk-widgets-usb")
 
@@ -95,7 +100,7 @@ def lsblk():
     try:
         result = subprocess.run(
             ["lsblk", "-J", "-o",
-             "NAME,SIZE,TYPE,MOUNTPOINT,RM,TRAN,VENDOR,MODEL,FSTYPE,LABEL"],
+             "NAME,SIZE,TYPE,MOUNTPOINT,RM,TRAN,VENDOR,MODEL,FSTYPE,LABEL,PARTTYPE,PTTYPE"],
             capture_output=True, text=True,
         )
         data = json.loads(result.stdout)
@@ -103,6 +108,19 @@ def lsblk():
         return []
     return [d for d in data.get("blockdevices", [])
             if d.get("tran") == "usb" and d.get("rm")]
+
+
+def wrong_type(part):
+    """True if Mac/Windows won't open this partition because of its table type."""
+    fstype, have = part.get("fstype"), (part.get("parttype") or "").lower()
+    if fstype not in _MBR_OK or not have:
+        return False
+    if part.get("pttype") == "dos":
+        try:
+            return int(have, 16) not in _MBR_OK[fstype]
+        except ValueError:
+            return False
+    return part.get("pttype") == "gpt" and have != _GPT_BASIC_DATA
 
 
 # --- Operations (privileged steps run via the root-owned usb-helper, never a
@@ -120,6 +138,22 @@ def format_device(dev_name, fstype, label=None):
     if result.returncode == 0:
         return True, "Format complete"
     return False, result.stderr.strip() or "Format failed"
+
+
+def mount_toggle(dev_name, mount):
+    cmd = ["pkexec", HELPER, "mount" if mount else "unmount", f"/dev/{dev_name}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return True, "Done"
+    return False, result.stderr.strip() or "Mount failed"
+
+
+def fix_type(dev_name):
+    result = subprocess.run(["pkexec", HELPER, "fix-type", f"/dev/{dev_name}"],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        return True, "Done"
+    return False, result.stderr.strip() or "Fix failed"
 
 
 def write_iso(iso_path, dev_name):
@@ -155,6 +189,7 @@ class UsbPopup(WidgetPopup):
         self._busy = {}
         self._busy_meta = {}   # dev_name -> (total, start_sectors)
         self._busy_labels = {} # dev_name -> Gtk.Label
+        self._error = None     # last failed task's message, shown until next rebuild
 
     def build_ui(self):
         self._container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -197,6 +232,14 @@ class UsbPopup(WidgetPopup):
         title_row.append(refresh_btn)
         self._container.append(title_row)
 
+        if self._error:
+            err = CopyLabel("usb-warning")
+            err.set_content(self._error)
+            err.set_ellipsize(Pango.EllipsizeMode.NONE)
+            err.set_wrap(True)
+            self._container.append(err)
+            self._error = None
+
         if not devices:
             empty = Gtk.Label(label="No USB devices detected")
             empty.add_css_class("usb-empty")
@@ -223,10 +266,8 @@ class UsbPopup(WidgetPopup):
 
         info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         info_box.set_hexpand(True)
-        name_label = Gtk.Label(label=display_name)
-        name_label.add_css_class("usb-device-name")
-        name_label.set_halign(Gtk.Align.START)
-        name_label.set_ellipsize(Pango.EllipsizeMode.END)
+        name_label = CopyLabel("usb-device-name")
+        name_label.set_content(display_name)
         info_box.append(name_label)
 
         detail = Gtk.Label(label=f"/dev/{dev_name}  {size}")
@@ -261,12 +302,37 @@ class UsbPopup(WidgetPopup):
                     pl.add_css_class("usb-partition-info")
                     pl.set_halign(Gtk.Align.START)
                     info_box.append(pl)
+                if wrong_type(p):
+                    wl = Gtk.Label(label="Linux partition type: won't open on Mac/Windows")
+                    wl.add_css_class("usb-partition-warning")
+                    wl.set_halign(Gtk.Align.START)
+                    info_box.append(wl)
+                if p.get("mountpoint"):
+                    mp = CopyLabel("usb-mountpoint")
+                    mp.set_content(p["mountpoint"])
+                    info_box.append(mp)
 
         header.append(info_box)
         self._container.append(header)
 
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         btn_row.add_css_class("usb-action-row")
+
+        mounted = any(p.get("mountpoint") for p in parts)
+        mount_btn = Gtk.Button(label="Unmount" if mounted else "Mount")
+        mount_btn.add_css_class("usb-action-btn")
+        mount_btn.set_sensitive(not busy and (mounted or any(p.get("fstype") for p in parts)))
+        mount_btn.connect("clicked", lambda _, n=dev_name, m=not mounted:
+                          self._run_task(lambda: mount_toggle(n, m)))
+        btn_row.append(mount_btn)
+
+        if any(wrong_type(p) for p in parts):
+            fix_btn = Gtk.Button(label="Fix for Mac/Win")
+            fix_btn.add_css_class("usb-action-btn")
+            fix_btn.set_tooltip_text("Retag the partition type only; files are kept")
+            fix_btn.set_sensitive(not busy)
+            fix_btn.connect("clicked", lambda _, n=dev_name: self._run_task(lambda: fix_type(n)))
+            btn_row.append(fix_btn)
 
         format_btn = Gtk.Button(label="Format")
         format_btn.add_css_class("usb-action-btn")
@@ -295,6 +361,8 @@ class UsbPopup(WidgetPopup):
         def worker():
             ok, msg = task_fn()
             def done():
+                if not ok:
+                    self._error = msg
                 if dev_name:
                     self._busy.pop(dev_name, None)
                     self._busy_meta.pop(dev_name, None)

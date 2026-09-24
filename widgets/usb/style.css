@@ -54,6 +54,16 @@
   color: @@OVERLAY0@@;
 }
 
+.usb-partition-warning {
+  font-size: 10px;
+  color: @@PEACH@@;
+}
+
+.usb-mountpoint {
+  font-size: 10px;
+  color: @@BLUE@@;
+}
+
 .usb-device-busy {
   font-size: 10px;
   color: @@PEACH@@;

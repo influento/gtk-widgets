@@ -4,7 +4,8 @@
 Intended to be run ONLY via pkexec, authorised by the bundled polkit rule
 (50-gtk-widgets-usb.rules), which permits exactly this root-owned binary.
 
-It performs format / write-iso / unmount on REMOVABLE USB whole-disk devices.
+It performs format / write-iso / mount / unmount / fix-type on REMOVABLE USB
+whole-disk devices.
 Security model:
   - Trust is re-derived from the kernel (sysfs `removable` + udev transport),
     NOT from the caller's arguments, so it cannot be tricked into writing to an
@@ -17,7 +18,9 @@ Security model:
     exits without touching anything — used for non-destructive verification.
 """
 
+import json
 import os
+import pwd
 import re
 import stat
 import subprocess
@@ -27,10 +30,20 @@ ALLOWED_FS = ("exfat", "vfat", "ext4", "ntfs")
 # USB mass-storage whole disks are sd[a-z]+ (a trailing digit = a partition).
 NAME_RE = re.compile(r"^sd[a-z]+$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+# `mount` only accepts these, always passed explicitly as -t (never auto-detected).
+MOUNT_FS = ALLOWED_FS + ("iso9660",)
+MEDIA_ROOT = "/run/media"
+# No Unix ownership on these, so the caller gets uid/gid to be able to write.
+OWNER_OPTS_FS = ("vfat", "exfat", "ntfs")
 
 # MBR partition type per filesystem. Windows only mounts partitions whose type
 # it recognises: 0x07 (exFAT/NTFS) and 0x0c (FAT32 LBA); 0x83 is Linux-only.
 PART_TYPE = {"vfat": "c", "exfat": "7", "ntfs": "7", "ext4": "83"}
+# fix-type: MBR codes macOS/Windows accept per filesystem, and the GPT equivalent
+# (Microsoft basic data). Linux ignores these, so a stick formatted elsewhere
+# with the Linux type (0x83) mounts here but is "not readable" on a Mac.
+MBR_OK = {"vfat": {0x6, 0xb, 0xc, 0xe}, "exfat": {0x7}, "ntfs": {0x7}}
+GPT_BASIC_DATA = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
 
 MKFS = {
     "vfat": ["mkfs.vfat", "-F", "32"],
@@ -72,20 +85,39 @@ def validate_usb_disk(dev):
     return name
 
 
+def volumes(name):
+    """The disk and its partitions as lsblk dicts. JSON, so an empty column
+    (e.g. no label) can't shift the fields the way raw output would."""
+    out = subprocess.run(["lsblk", "-J", "-o",
+                          "NAME,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,PTTYPE",
+                          f"/dev/{name}"], capture_output=True, text=True).stdout
+    try:
+        disk = json.loads(out)["blockdevices"][0]
+    except (ValueError, KeyError, IndexError):
+        return []
+    return [disk] + disk.get("children", [])
+
+
 def mounted_partitions(name):
-    out = subprocess.run(["lsblk", "-nro", "NAME,MOUNTPOINT", f"/dev/{name}"],
-                         capture_output=True, text=True).stdout
-    mounted = []
-    for line in out.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) == 2 and parts[1].strip():
-            mounted.append(f"/dev/{parts[0]}")
-    return mounted
+    return [f"/dev/{v['name']}" for v in volumes(name) if v.get("mountpoint")]
 
 
 def unmount(name):
-    for part in mounted_partitions(name):
-        subprocess.run(["umount", part], capture_output=True)
+    """Unmount every mounted volume of the disk; return the ones that failed.
+    Mountpoints we created under MEDIA_ROOT are removed once empty."""
+    failed = []
+    for v in volumes(name):
+        mp = v.get("mountpoint")
+        if not mp:
+            continue
+        if subprocess.run(["umount", f"/dev/{v['name']}"], capture_output=True).returncode:
+            failed.append(f"/dev/{v['name']}")
+        elif mp.startswith(MEDIA_ROOT + "/"):
+            try:
+                os.rmdir(mp)
+            except OSError:
+                pass
+    return failed
 
 
 def cmd_unmount(dev, check):
@@ -93,7 +125,65 @@ def cmd_unmount(dev, check):
     if check:
         print("WOULD UNMOUNT:", mounted_partitions(name) or "(none)")
         return 0
-    unmount(name)
+    failed = unmount(name)
+    if failed:
+        die(f"could not unmount {', '.join(failed)} (in use?)")
+    return 0
+
+
+def caller():
+    """The unprivileged user behind pkexec (PKEXEC_UID is set by pkexec)."""
+    uid = os.environ.get("PKEXEC_UID", "")
+    if not uid.isdigit():
+        die("must be run via pkexec")
+    try:
+        return pwd.getpwuid(int(uid))
+    except KeyError:
+        die(f"unknown uid {uid}")
+
+
+def cmd_mount(dev, check):
+    """Mount each unmounted volume with a known filesystem at
+    /run/media/<user>/<label or partition name>; print the mountpoints."""
+    name = validate_usb_disk(dev)
+    user = caller()
+    base = os.path.join(MEDIA_ROOT, user.pw_name)
+    errors = []
+    for v in volumes(name):
+        fstype = v.get("fstype")
+        if v.get("mountpoint") or fstype not in MOUNT_FS:
+            continue
+        label = v.get("label") or ""
+        target = os.path.join(base, label if LABEL_RE.match(label) else v["name"])
+        if os.path.lexists(target):
+            target = os.path.join(base, v["name"])  # label taken by another stick
+        opts = ["nosuid", "nodev"]
+        if fstype in OWNER_OPTS_FS:
+            opts += [f"uid={user.pw_uid}", f"gid={user.pw_gid}", "umask=022"]
+        if fstype == "iso9660":
+            opts.append("ro")
+        argv = ["mount", "-t", fstype, "-o", ",".join(opts), f"/dev/{v['name']}", target]
+        if check:
+            print("WOULD RUN:", " ".join(argv))
+            continue
+        os.makedirs(base, mode=0o755, exist_ok=True)
+        try:
+            os.mkdir(target, 0o755)
+        except FileExistsError:
+            if os.path.islink(target) or not os.path.isdir(target):
+                errors.append(f"{target}: exists and is not a directory")
+                continue
+        r = subprocess.run(argv, capture_output=True, text=True)
+        if r.returncode:
+            try:
+                os.rmdir(target)
+            except OSError:
+                pass
+            errors.append(r.stderr.strip() or f"mount /dev/{v['name']} failed")
+        else:
+            print(target)
+    if errors:
+        die("; ".join(errors))
     return 0
 
 
@@ -129,6 +219,53 @@ def cmd_format(dev, fstype, label, check):
     return 0
 
 
+def wrong_types(name):
+    """(partition number, wanted type) for each Mac/Windows filesystem whose
+    partition-table type doesn't match it."""
+    fixes = []
+    for v in volumes(name)[1:]:
+        fstype, have = v.get("fstype"), (v.get("parttype") or "").lower()
+        num = re.fullmatch(rf"{re.escape(name)}(\d+)", v["name"])
+        if fstype not in MBR_OK or not num or not have:
+            continue
+        if v.get("pttype") == "dos":
+            try:
+                ok = int(have, 16) in MBR_OK[fstype]
+            except ValueError:
+                continue
+            want = PART_TYPE[fstype]
+        elif v.get("pttype") == "gpt":
+            ok, want = have == GPT_BASIC_DATA, GPT_BASIC_DATA
+        else:
+            continue
+        if not ok:
+            fixes.append((num.group(1), want))
+    return fixes
+
+
+def cmd_fix_type(dev, check):
+    """Retag partitions so macOS/Windows will open them. Only the partition
+    table entry changes; the filesystem and its files are untouched."""
+    name = validate_usb_disk(dev)
+    argvs = [["sfdisk", "--part-type", f"/dev/{name}", n, t]
+             for n, t in wrong_types(name)]
+    if check:
+        for argv in argvs:
+            print("WOULD RUN:", " ".join(argv))
+        return 0
+    if not argvs:
+        return 0
+    failed = unmount(name)
+    if failed:
+        die(f"could not unmount {', '.join(failed)} (in use?)")
+    for argv in argvs:
+        r = subprocess.run(argv, capture_output=True, text=True)
+        if r.returncode:
+            die("sfdisk failed: " + r.stderr.strip())
+    subprocess.run(["udevadm", "settle"], capture_output=True)
+    return 0
+
+
 def cmd_write_iso(dev, check):
     name = validate_usb_disk(dev)
     disk = f"/dev/{name}"
@@ -148,8 +285,12 @@ def main():
     if args and args[0] == "--check":
         check, args = True, args[1:]
     if not args:
-        die("usage: usb-helper [--check] {unmount|format|write-iso} <device> [args]")
+        die("usage: usb-helper [--check] {mount|unmount|fix-type|format|write-iso} <device> [args]")
     sub, rest = args[0], args[1:]
+    if sub == "mount" and len(rest) == 1:
+        sys.exit(cmd_mount(rest[0], check))
+    if sub == "fix-type" and len(rest) == 1:
+        sys.exit(cmd_fix_type(rest[0], check))
     if sub == "unmount" and len(rest) == 1:
         sys.exit(cmd_unmount(rest[0], check))
     if sub == "format" and len(rest) in (2, 3):
