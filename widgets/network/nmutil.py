@@ -15,6 +15,7 @@ HOTSPOT_ID = "Hotspot"
 
 ICON = {
     "wifi": ["\U000F092F", "\U000F091F", "\U000F0922", "\U000F0925", "\U000F0928"],  # nf-md-wifi_strength_*
+    "wifi_bar": "\U000F05A9",   # nf-md-wifi: the bar's one Wi-Fi glyph, colour marks a weak signal
     "wired": "\U000F0200",      # nf-md-ethernet
     "vpn": "\U000F0582",        # nf-md-vpn
     "hotspot": "\U000F0002",    # nf-md-access_point_network

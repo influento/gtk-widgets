@@ -3,10 +3,16 @@
 active VPN, Proxy rules (per-app routing through sing-box) and
 NetworkManager's connectivity check (captive portal, limited).
 
-Outputs JSON: { "text": "...", "tooltip": "...", "class": [...] }
+Outputs JSON: { "text": "...", "class": [...] }. No tooltip: the popup shows
+the detail, and the other bar modules have none either.
   class: wifi | wired | hotspot | other | disconnected | disabled | error,
+         plus weak (6-30%) | very-weak (0-5%) for a Wi-Fi signal,
          plus portal | limited | none on a connectivity problem, plus vpn,
          plus proxy while Proxy rules is on (proxy-down when sing-box failed)
+
+Wi-Fi is one glyph at any strength; the colour of weak | very-weak is the only
+signal indicator. NetworkManager's percentage comes from the last scan and
+jumps by 20 points between scans, so the bar doesn't show it.
 
 Long-running by default: follows libnm signals and prints a line whenever the
 output changes, so waybar runs it without an interval. --once prints the
@@ -18,84 +24,69 @@ _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, _DIR)
 
 from nmutil import (  # noqa: E402
-    GLib, ICON, NM, connection_ssid, connectivity_problem, is_hotspot, is_vpn,
-    link_connection, signal_glyph, vpn_place,
+    GLib, ICON, NM, connectivity_problem, is_hotspot, is_vpn, link_connection,
 )
 import proxy as px  # noqa: E402
 
 DEBOUNCE_MS = 200
 TICK_S = 10  # signal strength changes without a signal we follow
+WEAK, VERY_WEAK = 30, 5  # nm-applet's lowest two signal thresholds
 
 
 def link_info(ac):
-    """(class, glyph, tooltip line) for the connection carrying traffic."""
+    """(classes, glyph) for the connection carrying traffic."""
     ctype, conn = ac.get_connection_type(), ac.get_connection()
     if ctype == "802-11-wireless":
-        name = (connection_ssid(conn) if conn else None) or ac.get_id()
         if conn and is_hotspot(conn):
-            return "hotspot", ICON["hotspot"], f"Hotspot: {name}"
+            return ["hotspot"], ICON["hotspot"]
         devs = ac.get_devices()
         ap = devs[0].get_active_access_point() if devs and isinstance(devs[0], NM.DeviceWifi) else None
-        if ap is None:
-            return "wifi", signal_glyph(0), f"Wi-Fi: {name}"
-        return "wifi", signal_glyph(ap.get_strength()), f"Wi-Fi: {name} · {ap.get_strength()}%"
-    devs = ac.get_devices()
-    iface = devs[0].get_iface() if devs else None
-    detail = f"{ac.get_id()} ({iface})" if iface and iface != ac.get_id() else ac.get_id()
+        strength = ap.get_strength() if ap else None
+        if strength is None or strength > WEAK:
+            return ["wifi"], ICON["wifi_bar"]
+        return ["wifi", "very-weak" if strength <= VERY_WEAK else "weak"], ICON["wifi_bar"]
     if ctype == "802-3-ethernet":
-        return "wired", ICON["wired"], f"Wired: {detail}"
-    return "other", ICON["wired"], f"Connected: {detail}"
+        return ["wired"], ICON["wired"]
+    return ["other"], ICON["wired"]
 
 
 def proxy_part(svc):
-    """(class, bar text, tooltip lines) for Proxy rules, or None when off."""
+    """(class, bar text) for Proxy rules, or None when off."""
     if svc is None or not (svc.active or svc.starting or svc.crashed):
         return None
-    st = px.load_state()
     if svc.crashed:
-        why = "restarting" if svc.sub_state == "auto-restart" else "failed"
-        lines = [f"Proxy rules: sing-box stopped ({why})"]
-        lines.append("Kill switch: internet blocked until you pick another exit"
-                     if st["kill_switch"] else "Traffic goes direct")
-        return "proxy-down", f"{ICON['proxy']} !", lines
-    apps = sum(r["exit"] != px.DIRECT for r in st["rules"])
-    head = "Proxy rules: " + (px.summary(st) if svc.active else "starting…")
-    return "proxy", f"{ICON['proxy']} {apps}", [head] + ["  " + line for line in px.rule_lines(st)]
+        return "proxy-down", f"{ICON['proxy']} !"
+    apps = sum(r["exit"] != px.DIRECT for r in px.load_state()["rules"])
+    return "proxy", f"{ICON['proxy']} {apps}"
 
 
 def status(client, svc=None):
     if not client.get_nm_running():
-        return {"text": ICON["offline"], "class": ["error"],
-                "tooltip": "NetworkManager is not running"}
+        return {"text": ICON["offline"], "class": ["error"]}
     if not client.networking_get_enabled():
-        return {"text": ICON["offline"], "class": ["disabled"], "tooltip": "Networking is disabled"}
+        return {"text": ICON["offline"], "class": ["disabled"]}
 
     link = link_connection(client)
     if link is None:
-        cls, parts, lines = ["disconnected"], [ICON["offline"]], ["Disconnected"]
+        cls, parts = ["disconnected"], [ICON["offline"]]
     else:
-        kind, glyph, line = link_info(link)
-        cls, parts, lines = [kind], [glyph], [line]
+        cls, glyph = link_info(link)
+        parts = [glyph]
         problem = connectivity_problem(client)
         if problem:
             cls.append(problem[0])
             parts.append(ICON["portal"] if problem[0] == "portal" else ICON["limited"])
-            lines.append(problem[1])
 
     vpns = [ac for ac in client.get_active_connections()
             if is_vpn(ac) and ac.get_state() == NM.ActiveConnectionState.ACTIVATED]
     if vpns:
         cls.append("vpn")
         parts.append(f"{ICON['vpn']} " + ", ".join(ac.get_id() for ac in vpns))
-        for ac in vpns:
-            place = vpn_place(ac.get_id())
-            lines.append(f"VPN: {ac.get_id()}" + (f" ({place})" if place else ""))
     proxy = proxy_part(svc)
     if proxy:
         cls.append(proxy[0])
         parts.append(proxy[1])
-        lines += proxy[2]
-    return {"text": "  ".join(parts), "class": cls, "tooltip": "\n".join(lines)}
+    return {"text": "  ".join(parts), "class": cls}
 
 
 def emit(line):
@@ -146,8 +137,8 @@ def main():
     try:
         client = NM.Client.new(None)
     except GLib.Error as e:
-        emit(json.dumps({"text": ICON["offline"], "class": ["error"],
-                         "tooltip": f"Cannot reach NetworkManager: {e.message}"}, ensure_ascii=False))
+        print(f"network-status: cannot reach NetworkManager: {e.message}", file=sys.stderr)
+        emit(json.dumps({"text": ICON["offline"], "class": ["error"]}, ensure_ascii=False))
         return 1
     if "--once" in sys.argv[1:]:
         emit(json.dumps(status(client, px.ServiceState()), ensure_ascii=False))

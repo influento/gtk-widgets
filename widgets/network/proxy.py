@@ -120,15 +120,6 @@ def summary(state):
     return text
 
 
-def rule_lines(state):
-    """Tooltip/detail lines: 'firefox → p1 (NL)'."""
-    lines = []
-    for r in state["rules"]:
-        lines.append(f"{r['app']} → {exit_label(state, r['exit'])}")
-    lines.append(f"everything else → {exit_label(state, state['default'])}")
-    return lines
-
-
 def exit_label(state, exit_):
     name = exit_name(state, exit_)
     country = (state["checks"].get(exit_) or {}).get("country")
