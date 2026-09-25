@@ -22,7 +22,8 @@ _MEMORY_FORMATS = {
 
 # wl_output.transform -> (flip around the vertical axis first, then turn the
 # picture this many degrees counter-clockwise): the inverse of the transform,
-# which turns the buffer into the picture on screen (checked against grim)
+# which turns the buffer into the picture on screen (checked on a headless
+# sway in all eight transforms)
 _UPRIGHT = {
     0: (False, 0), 1: (False, 270), 2: (False, 180), 3: (False, 90),
     4: (True, 0), 5: (True, 90), 6: (True, 180), 7: (True, 270),

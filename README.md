@@ -17,7 +17,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events) |
 | `launcher`     | App launcher (drun) and dmenu picker, a wofi replacement: resident instance, ranked fuzzy search with usage history, ЙЦУКЕН keys map to Latin |
 | `network`      | nm-applet replacement via libnm: Wi-Fi/wired, mutually exclusive VPN and Proxy sections (WireGuard/VPN profile chips, or Proxy rules: per-app SOCKS5 routing through sing-box; clicking the active chip turns it off), hidden and Enterprise (PEAP/TTLS) networks, hotspot, connection list, WireGuard import/export, per-profile Edit page (Wi-Fi/Ethernet/WireGuard); `network-agent` for notifications + password prompts |
-| `capture`      | Screenshots at the output's own pixels (a grim + slurp replacement): freezes every output, drag a region, saved without any resampling at fractional scales |
+| `capture`      | Screenshots at the output's own pixels: freezes every output, drag a region, saved without any resampling at fractional scales |
 
 ## Installation
 
@@ -146,8 +146,8 @@ bindsym $mod+Shift+p exec sh -c 'f=$(capture region --dir ~/pictures/screenshots
 
 `--copy` puts `file://<path>` on the clipboard as `text/uri-list` (needs `wl-copy`). `--dir`
 defaults to `$XDG_PICTURES_DIR/screenshots`. The PNG is cut from the raw buffer in physical
-pixels, so it stays sharp at any fractional scale: grim composites a 3840x1600 output at 1.3
-into 3840x1599 and resamples every pixel. The scale comes from sway's IPC (`GetOutputs`);
+pixels and never resampled, so it stays sharp at any fractional scale (a full 3840x1600 output
+at 1.3 saves as 3840x1600). The scale comes from sway's IPC (`GetOutputs`);
 without sway, from the surface's fractional scale. A drag stays on the output it started on.
 The last physical column/row that a fractional scale leaves outside the logical layout (black)
 is out of reach. Set `CAPTURE_T0=$(date +%s%N)` to print the grab and first-paint times.
