@@ -212,14 +212,20 @@ def popup_window(app, on_dismiss, on_key):
     return win, overlay
 
 
-def show_popup(win, overlay, container, margin_top):
-    """Place the .popup container top-centre on the overlay and present."""
+def place_popup(win, overlay, container, margin_top):
+    """Place the .popup container top-centre on the overlay, not yet shown
+    (a resident app builds its window once and presents it on demand)."""
     container.add_css_class("popup")
     container.set_halign(Gtk.Align.CENTER)
     container.set_valign(Gtk.Align.START)
     container.set_margin_top(margin_top)
     overlay.add_overlay(container)
     win.set_child(overlay)
+
+
+def show_popup(win, overlay, container, margin_top):
+    """Place the .popup container top-centre on the overlay and present."""
+    place_popup(win, overlay, container, margin_top)
     win.present()
 
 

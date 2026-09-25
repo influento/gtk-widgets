@@ -46,7 +46,9 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
   `copyable(label, on)` gives a plain label the same click-to-copy. Every error line
   shown in a widget is copyable (status labels switch it on only while showing an error).
   `popup_window()`/`show_popup()`/`install_css()` in `lib/widget_base.py` build the same
-  layer-shell overlay for long-running apps that open popups on demand (`network-agent`)
+  layer-shell overlay for long-running apps that open popups on demand (`network-agent`);
+  `place_popup()` places the container without presenting, for an app that builds its
+  window once and shows/hides it (`launcher`)
 - Widgets with a `status` script (bash or Python) output JSON (`text`, `tooltip`, `class`) for status bars
 - Extra executable `<widget>/<name>.py` files are symlinked as `<widget>-<name>` CLI entry points (e.g. `display-brightness`, bound to XF86MonBrightness keys in dotfiles)
 
@@ -63,6 +65,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `usb`          | USB device manager: list, mount/unmount (click path to copy), fix partition type for Mac/Windows, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
+| `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab]` (stdin lines, prints the pick byte-exact, Esc = exit 1). The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
 | `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
 
 ## Theming System
@@ -184,6 +187,13 @@ gtk-widgets/
 │   │   ├── main.py        # pulsectl: event thread + main-thread command connection, rows updated in place
 │   │   ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
 │   │   ├── recorder.py    # Input test recording: parec into memory (30 s cap), pacat playback, discard
+│   │   └── style.css
+│   ├── launcher/
+│   │   ├── main.py        # CLI: stdlib fast path to the instance; else detach, preload layer-shell, start it
+│   │   ├── app.py         # Picker popup (ListView, built once), resident Launcher + socket server, one-shot dmenu
+│   │   ├── apps.py        # Desktop entries, usage decay (atomic JSON), launch (terminal wrap, no LD_PRELOAD leak)
+│   │   ├── match.py       # Match tiers, secondary fields, ru->us key mapping (no GTK)
+│   │   ├── protocol.py    # CLI <-> instance wire format (stdlib)
 │   │   └── style.css
 │   └── network/
 │       ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page

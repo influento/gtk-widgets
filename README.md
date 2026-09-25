@@ -15,6 +15,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `usb`          | USB device manager: list, mount/unmount, Mac/Windows type fix, format, write ISO (root helper via polkit) |
 | `timer`        | Timer + stopwatch with alarm on expiry                     |
 | `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events) |
+| `launcher`     | App launcher (drun) and dmenu picker, a wofi replacement: resident instance, ranked fuzzy search with usage history, ЙЦУКЕН keys map to Latin |
 | `network`      | nm-applet replacement via libnm: Wi-Fi/wired, mutually exclusive VPN and Proxy sections (WireGuard/VPN profile chips, or Proxy rules: per-app SOCKS5 routing through sing-box; clicking the active chip turns it off), hidden and Enterprise (PEAP/TTLS) networks, hotspot, connection list, WireGuard import/export, per-profile Edit page (Wi-Fi/Ethernet/WireGuard); `network-agent` for notifications + password prompts |
 
 ## Installation
@@ -101,6 +102,33 @@ while Proxy rules is on or `proxy-down` when sing-box failed) for styling.
 Proxy rules on/off/crashed and proxies that stop answering, and a
 NetworkManager secret agent that prompts for passwords); start it once from the compositor
 (e.g. `exec network-agent` in sway) instead of nm-applet.
+
+## Launcher
+
+`launcher` stays resident (one GTK application, `dev.dotfiles.launcher`) so it shows in a
+frame or two instead of paying the Python + GTK start-up on every key press. Start it hidden
+from the compositor and bind the toggle; `launcher --dmenu` reads lines on stdin and prints
+the chosen one exactly as read (Esc prints nothing and exits 1):
+
+```
+exec launcher --daemon
+bindsym $mod+d exec launcher
+bindsym $mod+v exec sh -c 'sel=$(cliphist list | launcher --dmenu --prompt Clipboard --after-tab) && printf "%s\n" "$sel" | cliphist decode | wl-copy'
+```
+
+(A plain `… | launcher --dmenu | cliphist decode | wl-copy` pipe would still run `wl-copy`
+after Esc, on empty input.) `--after-tab` shows and searches only what follows a line's first
+tab, so cliphist's ids stay hidden but still reach `cliphist decode`.
+
+Without a running instance, `launcher` starts one and shows it, and `--dmenu` runs as a
+one-shot process (slower, ~200 ms). The CLI talks to the instance over
+`$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock`. Search matches names, then generic names,
+keywords and executables (exact > prefix > word start > substring > fuzzy), breaks ties
+by launch counts that halve every two weeks (`~/.cache/launcher/usage.json`), and maps keys
+typed on the ru layout to the us letters in the same place. `Terminal=true` entries run
+in `ghostty -e`. Only Esc closes it (q is typeable); ↑/↓, Tab/Shift+Tab, Ctrl+j/k,
+Ctrl+n/p and PgUp/PgDn move the selection. Set `LAUNCHER_T0=$(date +%s%N)` on a call to
+have the instance print the time to its first frame on stderr.
 
 > **Privacy:** `translate` sends the current text selection to Anthropic (via the `claude` CLI)
 > each time it runs. Avoid triggering it on sensitive text.
