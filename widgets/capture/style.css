@@ -1,0 +1,9 @@
+/* The selection frame (drawn in the canvas's text colour) */
+.capture-canvas {
+  color: @@ACCENT@@;
+}
+
+/* The shade over everything outside the selection; only its colour is read */
+.capture-shade {
+  color: alpha(@@CRUST@@, 0.5);
+}

@@ -67,6 +67,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
 | `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab]` (stdin lines, prints the pick byte-exact, Esc = exit 1). The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
 | `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
+| `capture`      | grim + slurp replacement: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes) |
 
 ## Theming System
 
@@ -195,6 +196,14 @@ gtk-widgets/
 │   │   ├── match.py       # Match tiers, secondary fields, ru->us key mapping (no GTK)
 │   │   ├── protocol.py    # CLI <-> instance wire format (stdlib)
 │   │   └── style.css
+│   ├── capture/
+│   │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy
+│   │   ├── screencopy.py  # Wayland wire client: wlr-screencopy of every output into one memfd (stdlib)
+│   │   ├── swayipc.py     # Exact output scales from sway IPC (stdlib)
+│   │   ├── geometry.py    # Logical -> physical selection maths (no GTK)
+│   │   ├── image.py       # Upright frames (lossless flips/turns), row-slice crops, PNG save
+│   │   ├── app.py         # Overlay per output: frozen frame drawn 1:1, shade, selection frame
+│   │   └── style.css
 │   └── network/
 │       ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page
 │       ├── editor.py      # Edit page: per-profile settings on a clone, verify(), full-secret saves, reapply on save (Reconnect now when refused)
@@ -284,6 +293,15 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   loopback and LAN; it stays when sing-box dies and goes when Proxy rules is turned off. It cannot tell apps apart once
   sing-box is gone, so it blocks direct apps too
 - The unit is never enabled; after a reboot Proxy rules is off, like VPNs
+
+### capture — notes and later
+
+- GTK 4.22 resamples a texture drawn into a rect of the logical size at a fractional scale;
+  drawing it at its own size under `snapshot.scale(1/s)` keeps the preview pixel-exact
+- At 1.3 on 3840x1600 the last physical column/row lies outside the 2953x1230 logical layout
+  (sway leaves it black): the raw grab has it, a region can't reach it
+- Planned: window/output picking, drawing and annotation, GIF recording, selection handles,
+  magnifier, delay timer (new subcommands beside `region`)
 
 ### audio — deferred features
 
