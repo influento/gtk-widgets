@@ -23,7 +23,9 @@ def get_current_scale():
         outputs = json.loads(result.stdout)
         for output in outputs:
             if output.get("active"):
-                return output.get("scale", 1.0)
+                # sway stores scale as a float32: 1.3 reads back 1.2999999523,
+                # which the label truncates to 129%
+                return round(output.get("scale", 1.0), 1)
     except Exception:
         pass
     return 1.0
