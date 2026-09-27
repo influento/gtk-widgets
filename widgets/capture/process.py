@@ -176,7 +176,23 @@ def pick(times, cuts=(), min_gap=MIN_GAP, max_tiles=MAX_TILES):
             spaced.append(i)
     if spaced[-1] != n - 1:
         spaced.append(n - 1)
-    before = {}  # frame just before a switch -> its peak area
+    before, inside = _around(times, cuts)
+    anchors = {0, n - 1} | set(before)
+    if len(anchors | set(spaced)) <= max_tiles:
+        return sorted(anchors | set(spaced))
+    if len(anchors) > max_tiles:
+        ranked = sorted(before, key=lambda i: (-before[i], i))
+        return sorted({0, n - 1} | set(ranked[:max_tiles - 2]))
+    return sorted(_fill(times, sorted(anchors), [i for i in spaced if i not in inside],
+                        max_tiles, min_gap))
+
+
+def _around(times, cuts):
+    """The frames just before a switch in cuts (see switches()), each with
+    the switch's peak area, and the frames inside a switch no longer than
+    SWITCH_LONGEST (mid-fade), as indices into the distinct frames' times."""
+    n = len(times)
+    before = {}
     inside = set()
     j = 0
     for start, end, peak in cuts:
@@ -187,14 +203,7 @@ def pick(times, cuts=(), min_gap=MIN_GAP, max_tiles=MAX_TILES):
             before[j - 1] = max(before.get(j - 1, 0), peak)
         if end - start <= SWITCH_LONGEST:
             inside.update(i for i in range(j, n) if times[i] < end - _EPS)
-    anchors = {0, n - 1} | set(before)
-    if len(anchors | set(spaced)) <= max_tiles:
-        return sorted(anchors | set(spaced))
-    if len(anchors) > max_tiles:
-        ranked = sorted(before, key=lambda i: (-before[i], i))
-        return sorted({0, n - 1} | set(ranked[:max_tiles - 2]))
-    return sorted(_fill(times, sorted(anchors), [i for i in spaced if i not in inside],
-                        max_tiles, min_gap))
+    return before, inside
 
 
 def _fill(times, anchors, pool, max_tiles, min_gap):
@@ -226,6 +235,21 @@ def _fill(times, anchors, pool, max_tiles, min_gap):
     return set(anchors).union(*(set(c) for _, _, c in gaps))
 
 
+def label(t):
+    return f"{t:06.3f}s"
+
+
+BEFORE_SWITCH = "before switch"
+
+
+def tile_label(index, count, t, before_switch=False):
+    """A tile's label: its place among all the sheets' tiles (so the sheets
+    need no legend, and a missing one shows), its time, and whether the
+    screen switches right after it (the pointer shows what was clicked)."""
+    parts = [f"{index}/{count}", label(t)] + ([BEFORE_SWITCH] if before_switch else [])
+    return " · ".join(parts)
+
+
 class Layout:
     """One sheet's geometry for count frames of w x h: cols x rows cells of
     cell_w x cell_h (the frame shrunk by scale to tile_w x tile_h, outlined,
@@ -237,7 +261,8 @@ class Layout:
     font = LABEL_PX
     strip = math.ceil(LABEL_PX * 1.5)
     gap = GAP_PX
-    label_w = math.ceil(LABEL_PX * 0.62 * 8)  # "60.000s" in a monospace font, with room
+    # "30/30 · 60.000s · before switch" in a monospace font, with room
+    label_w = math.ceil(LABEL_PX * 0.62 * (len(tile_label(MAX_TILES, MAX_TILES, 60, True)) + 1))
 
     def __init__(self, count, w, h, max_edge=SHEET_MAX_EDGE):
         best = None
@@ -282,10 +307,6 @@ def sheet_names(n):
     return [f"{stem}-{i}{ext}" for i in range(1, n + 1)]
 
 
-def label(t):
-    return f"{t:06.3f}s"
-
-
 def frame_name(index, t):
     """frames/ file name: 1-based index and time, e.g. 0001-00.000s.png."""
     return f"{index:04d}-{label(t)}.png"
@@ -327,7 +348,9 @@ def process(folder, scale=1, colors=None):
     times = [t - t0 for t in _framemd5_times(listing)]
     if not times:
         raise ProcessError("the recording has no frames")
-    kept = pick(times, switches(changes))
+    cuts = switches(changes)
+    kept = pick(times, cuts)
+    before = _around(times, cuts)[0]
 
     # 2: the GIF, and the sheets' frames
     frames = os.path.join(folder, FRAMES)
@@ -343,11 +366,12 @@ def process(folder, scale=1, colors=None):
              os.path.join(frames, "%04d.png")],
             "writing the GIF")
     set_duration(os.path.join(folder, GIF), end - t0)
-    names = []
+    names, tiles = [], []
     for n, i in enumerate(kept, 1):
         name = frame_name(n, times[i])
         os.rename(os.path.join(frames, f"{n:04d}.png"), os.path.join(frames, name))
         names.append((name, times[i]))
+        tiles.append((name, tile_label(n, len(kept), times[i], i in before)))
 
     # 3: the sheets
     w, h = _size(os.path.join(frames, names[0][0]))
@@ -355,7 +379,7 @@ def process(folder, scale=1, colors=None):
     sheets, first = [], 0
     for name, count in zip(sheet_names(len(counts)), counts):
         sheets.append(os.path.join(folder, name))
-        sheet(frames, names[first:first + count], (w, h), sheets[-1], colors)
+        sheet(frames, tiles[first:first + count], (w, h), sheets[-1], colors)
         first += count
     os.remove(os.path.join(folder, _PALETTE))
     os.remove(raw)
@@ -363,23 +387,24 @@ def process(folder, scale=1, colors=None):
             "sheets": sheets}
 
 
-def sheet(frames, names, size, path, colors):
-    """Tile frames/<names>, each w x h (size), into the sheet at path: each
-    shrunk by the Layout's scale (area average), outlined (a recording of a
-    themed app has the sheet's background) and under a strip with its time."""
-    lay = Layout(len(names), *size)
-    base, text, line = ("0x" + colors[k] for k in ("BASE", "TEXT", "SURFACE1"))
+def sheet(frames, tiles, size, path, colors):
+    """Tile frames/<name> for each (name, label) in tiles, each w x h (size),
+    into the sheet at path: each shrunk by the Layout's scale (area average),
+    outlined (a recording of a themed app has the sheet's background) and
+    under a strip with its label (see tile_label())."""
+    lay = Layout(len(tiles), *size)
+    base, fg, line = ("0x" + colors[k] for k in ("BASE", "TEXT", "SURFACE1"))
     shrink = (f"scale={lay.tile_w}:{lay.tile_h}:flags=area,"
               if (lay.tile_w, lay.tile_h) != tuple(size) else "")
     inputs, chains = [], []
-    for k, (name, t) in enumerate(names):
+    for k, (name, text) in enumerate(tiles):
         inputs += ["-i", os.path.join(frames, name)]
         chains.append(f"[{k}:v]format=rgb24,{shrink}pad=iw+2:ih+2:1:1:color={line},"
                       f"pad={lay.cell_w}:{lay.cell_h}:0:{lay.strip}:color={base},"
-                      f"drawtext=font='{FONT}':text='{label(t)}':fontcolor={text}:"
+                      f"drawtext=font='{FONT}':text='{text}':fontcolor={fg}:"
                       f"fontsize={lay.font}:x=0:y=({lay.strip}-th)/2[v{k}]")
-    graph = ";".join(chains) + ";" + "".join(f"[v{k}]" for k in range(len(names)))
-    graph += (f"concat=n={len(names)}:v=1:a=0,"
+    graph = ";".join(chains) + ";" + "".join(f"[v{k}]" for k in range(len(tiles)))
+    graph += (f"concat=n={len(tiles)}:v=1:a=0,"
               f"tile={lay.cols}x{lay.rows}:padding={lay.gap}:margin={lay.gap}:color={base}")
     _ffmpeg([*inputs, "-filter_complex", graph, *_BITEXACT, "-frames:v", "1", "-update", "1",
              path], "making the sheet")

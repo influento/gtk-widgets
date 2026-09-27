@@ -161,15 +161,18 @@ away (exit 1 when none is going). Then `ffmpeg` writes `DIR/recording-%Y%m%d-%H%
 - `recording.gif` — every frame, physical size, palette made for the clip, loops forever;
   only exact duplicates are merged (into the previous frame's delay)
 - `sheet.png` — the frames that differ, at least 0.2 s apart, 30 at most (the first and last
-  always), tiled with each frame's time above it, for an AI to read (chat AIs read only the
-  first frame of a GIF). Each screen switch (a dialog, menu or page: 10% or more of the
+  always), tiled for an AI to read (chat AIs read only the first frame of a GIF). Each
+  tile's label gives its place, its time and whether the screen switches right after it
+  (`3/30 · 02.100s · before switch`), so the sheets need no legend. Each screen switch (a dialog, menu or page: 10% or more of the
   region changing at once) keeps the frame just before it, which shows what was clicked;
   beyond 30 frames, the rest are spread over the time between those, skipping mid-fade
   frames (a run of big changes over 1 s, like scrolling or video, counts as motion). A sheet is at most 2000x2000 px, the most Claude shows of an image,
   and shrinks a frame at most to 0.65 px per logical px, so 10 px UI text stays readable
   (tested on random codes: exact at 6.5 px, half at 4.4 px). Frames that don't fit one
   sheet that way go on `sheet-1.png`, `sheet-2.png`, ... (a full 4K screen at 1.3: two a
-  sheet); tiles run left to right, top to bottom, on from one sheet to the next
+  sheet); tiles run left to right, top to bottom, on from one sheet to the next. The sheets
+  cost an AI about the same tokens as those frames one by one (text must stay as big):
+  they save images to paste, not tokens; the frame choice is what saves
 - `frames/` — those frames at full size, named `NNNN-SS.sssS.png`
 
 It prints the folder's path. `--copy` puts `file://<path>` of the GIF and then of the sheets
