@@ -67,7 +67,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
 | `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab]` (stdin lines, prints the pick byte-exact, Esc = exit 1). The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
 | `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
-| `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes). `capture gif [--dir DIR] [--copy]`: same picker, then wf-recorder (lossless RGB, 30 fps, 60 s cap) with a click-through indicator outside the region; a second `capture gif` stops it (pid file + SIGUSR1), `--cancel` discards it (SIGUSR2); ffmpeg makes `DIR/recording-STAMP/` = `recording.gif` (every frame, exact duplicates merged), `sheet.png` (distinct frames >= 0.2 s apart, max 30, tiled under `N/30 · time · before switch` labels (no legend needed), for AI; `sheet-N.png` when they need several) and `frames/`; `--copy` = `text/uri-list` of the GIF, then of the sheets in one list (on top) |
+| `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes). `capture gif [--dir DIR] [--copy]`: same picker, then wf-recorder (lossless RGB, 30 fps, 60 s cap) with a click-through indicator outside the region; a second `capture gif` stops it (pid file + SIGUSR1), `--cancel` discards it (SIGUSR2); the indicator goes at once; ffmpeg makes `DIR/recording-STAMP/` = `recording.gif` first (every frame, exact duplicates merged; `--copy` copies it right away), then `sheet.png` (frames showing a new state, no cap, tiled under `N/M · time · before switch` labels, for AI; `sheet-N.png` when they need several) and `frames/`; `--copy` then copies the sheets in one list (on top); a notification when done or failed |
 
 ## Theming System
 
@@ -336,13 +336,25 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   here?", read unlabelled and labelled sheets alike (every step, every value), so no
   skill or legend is needed. Tile labels carry `N/M` and `before switch` anyway: a reader
   inside this repo took the before-switch tiles for wasted near-duplicates
-- gif, which frames: a third branch of the first decode prints each frame's changed area
-  (quarter size, |diff| > 10) to a file in a temp dir that ffmpeg runs in (a relative name,
-  no filtergraph escaping). On UI and game footage switches are single frames of 20-99%,
-  everything else (cursor, animation, small text) under ~1%: `SWITCH_AREA` 10%. The frame
-  before each switch is always kept; evenly spread tiles missed 3 of 22 states in a 47 s
-  game clip and 2 of 5 short dialogs in a synthetic one, with no fewer distinct small-change
-  states. The two listings round times differently (ms vs 1/30 s), hence `_EPS`
+- gif, which frames (`Picker`, streamed: ffmpeg sends the distinct frames at a quarter size,
+  gray, on stdout and their framemd5 times on a second pipe, each drained by a thread; the
+  listing needs `-flush_packets 1` or it arrives only at the end). Pixels are quantised to
+  16 levels and compared as Python ints (XOR, count zero bytes: C speed, stdlib). On UI and
+  game footage switches are single frames of 20-99%: `SWITCH_AREA` 10%; the frame before
+  each is always kept (evenly spread tiles missed 3 of 22 states in a 47 s game clip).
+  The rest (A/B-tested 2026-09-27, blind `claude -p` readers, a synthetic 40 s clip with 16
+  codes: moving and resting pointer, 0.3 s flash, 0.4 s toast, 1.5 s status line, typing,
+  dialog, 8 s of motion): the old even spread, capped at 30, got 15/16 (missed the flash);
+  the Picker 16/16 with 44 tiles, and 28 vs 30 / 23 vs 30 tiles on two real clips with
+  equal or better stories. `STATE_AREA` 30x30 logical px since the last kept frame: 60x60
+  and 40x40 lost the 1.5 s status line, 20x20 made every pointer rest a tile (91). Holding
+  is judged at `BUSY_AREA` 60x60: at the same threshold a moving pointer made the screen
+  "busy" and a 0.4 s toast was lost. Motion tiles only after 1 s of change, or a fade gets
+  a mid-fade tile. Typing shows as its result, not word by word. No tile cap (the user's
+  call: the filter decides); a 60 s all-motion full-screen clip is ~60 tiles, ~30 sheets
+- gif, order: the indicator hides on the stop signal; the GIF (palette + GIF passes) is
+  written and copied first, the sheets after (two more decodes: ~20 s + ~25 s for a 20 s
+  full-screen game clip, vs ~35 s for everything before)
 - Planned: window/output picking, drawing and annotation, selection handles, magnifier,
   delay timer (new subcommands beside `region` and `gif`)
 

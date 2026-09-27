@@ -13,11 +13,7 @@
   color: @@RED@@;
 }
 
-.capture-frame.processing {
-  color: @@YELLOW@@;
-}
-
-/* capture gif: elapsed / limit, then "Processing…", beside the frame */
+/* capture gif: elapsed / limit, beside the frame */
 .capture-badge {
   background-color: @@BASE@@;
   color: @@TEXT@@;

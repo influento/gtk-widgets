@@ -293,23 +293,20 @@ def label_position(rect, size, label, frame):
 
 class Recording(Gtk.Application):
     """The indicator while recorder runs. SIGUSR1 or the MAX_SECONDS cap
-    stop it and run work() in a thread with "Processing…" shown; SIGUSR2,
-    SIGINT and SIGTERM cancel. outcome: "stopped" (result is work()'s),
-    "cancelled", or "failed" (wf-recorder exited by itself)."""
+    stop it; SIGUSR2, SIGINT and SIGTERM cancel. Either way the indicator
+    goes at once, and the recorder is stopped in a thread. outcome:
+    "stopped", "cancelled", or "failed" (wf-recorder exited by itself)."""
 
-    def __init__(self, output, rect, scale, recorder, max_seconds, work, on_started,
-                 on_stopped):
+    def __init__(self, output, rect, scale, recorder, max_seconds, on_started, on_stopped):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.output = output
         self.rect = rect
         self.scale = scale
         self.recorder = recorder
         self.max_seconds = max_seconds
-        self.work = work
         self.on_started = on_started
         self.on_stopped = on_stopped
         self.outcome = None
-        self.result = None
         self.win = None
         self._state = "recording"
         self._t0 = None
@@ -402,28 +399,19 @@ class Recording(Gtk.Application):
     def _stop(self, cancel):
         if self._state != "recording":
             return
-        self._state = "cancelled" if cancel else "processing"
+        self._state = "cancelled" if cancel else "stopped"
         self.on_stopped()
-        if cancel:
-            self.win.set_visible(False)
-        else:
-            self.frame.add_css_class("processing")
-            self._set_label("Processing…")
-        threading.Thread(target=self._finish, args=(cancel,), daemon=True).start()
+        self.win.set_visible(False)
+        threading.Thread(target=self._finish, daemon=True).start()
 
-    def _finish(self, cancel):
-        result = None
+    def _finish(self):
         try:
             self.recorder.stop()
-            if not cancel:
-                result = self.work()
-        except Exception as e:  # the indicator must go away whatever happens
-            result = e
-        GLib.idle_add(self._done, "cancelled" if cancel else "stopped", result)
+        finally:  # the app must end whatever happens
+            GLib.idle_add(self._done)
 
-    def _done(self, outcome, result):
-        self.outcome = outcome
-        self.result = result
+    def _done(self):
+        self.outcome = self._state
         self.quit()
         return False
 
@@ -433,12 +421,12 @@ def _clock(seconds):
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def record(output, rect, scale, recorder, max_seconds, work, on_started, on_stopped):
-    """Run the indicator (see Recording). Returns (outcome, work()'s result);
-    the indicator is off the screen when it returns."""
-    app = Recording(output, rect, scale, recorder, max_seconds, work, on_started, on_stopped)
+def record(output, rect, scale, recorder, max_seconds, on_started, on_stopped):
+    """Run the indicator (see Recording) until the recorder has stopped.
+    Returns the outcome; the indicator is off the screen when it returns."""
+    app = Recording(output, rect, scale, recorder, max_seconds, on_started, on_stopped)
     app.run([sys.argv[0]])
     if app.win is not None:
         app.win.set_visible(False)
     Gdk.Display.get_default().sync()
-    return app.outcome, app.result
+    return app.outcome

@@ -12,13 +12,14 @@
   capture gif [--dir DIR] [--copy]
         pick a region the same way, record it (30 fps, 60 s at most) until
         `capture gif` runs again, then write DIR/recording-%Y%m%d-%H%M%S/
-        with recording.gif (every frame), sheet.png (the frames that differ,
-        tiled and timed, for an AI; sheet-1.png, sheet-2.png, ... when they
-        need several) and frames/ (those frames at full size), and print the
-        folder's path. --copy puts file://<path> of the GIF and then of the
-        sheets (one list) on the clipboard (text/uri-list), so the sheets are
-        on top and the GIF is next in the history. Exit codes as for region.
-        DIR defaults to $XDG_PICTURES_DIR/recordings.
+        with recording.gif (every frame), then sheet.png (the frames that
+        show something new, tiled and labelled, for an AI; sheet-1.png,
+        sheet-2.png, ... when they need several) and frames/ (those frames at
+        full size), print the folder's path and send a notification. --copy
+        puts file://<path> of the GIF on the clipboard (text/uri-list) as
+        soon as it is written, then of the sheets (one list), so the sheets
+        are on top and the GIF is next in the history. Exit codes as for
+        region. DIR defaults to $XDG_PICTURES_DIR/recordings.
   capture gif --cancel
         stop a recording and throw it away (exit 1 with none going).
 
@@ -160,20 +161,24 @@ def copy_uri(*paths):
     return True
 
 
-def copy_paths(gif, sheets):
-    """file://<path> of the GIF, then of the sheets in one list (text/uri-list,
-    as for region), so the sheets are the newest clipboard item and the GIF
-    the one below it. The history (cliphist) only keeps the GIF if it has
-    stored it before the sheets replace it (`wl-paste --watch` skips an item
-    replaced before it read it): wait for it, 2 s at most. Without cliphist
-    the wait times out and the sheets are still copied."""
+def copy_gif(gif):
+    """file://<path> of the GIF (text/uri-list, as for region), as soon as it
+    is written. Returns what copy_sheets() needs: cliphist's newest entry
+    from before (None without cliphist or when the copy failed)."""
     before = _cliphist_top()
-    if copy_uri(gif) and before is not None:
+    return before if copy_uri(gif) else None
+
+
+def copy_sheets(sheets, before):
+    """file://<path> of the sheets in one list, so they are the newest
+    clipboard item and the GIF the one below it. The history (cliphist) only
+    keeps the GIF if it has stored it before the sheets replace it
+    (`wl-paste --watch` skips an item replaced before it read it): it has
+    had the whole processing time, and gets 2 s more at most."""
+    if before is not None:
         deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
+        while _cliphist_top() == before and time.monotonic() < deadline:
             time.sleep(0.05)
-            if _cliphist_top() != before:
-                break
     copy_uri(*sheets)
 
 
@@ -231,6 +236,15 @@ def signal_recorder(cancel):
 def fail(message):
     print(f"capture: {message}", file=sys.stderr)
     return 2
+
+
+def notify(summary, body, urgency="normal"):
+    try:
+        subprocess.Popen(["notify-send", "-a", "capture", "-u", urgency, summary, body],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
 
 
 def main_region(directory, copy):
@@ -324,19 +338,10 @@ def main_gif(directory, copy, cancel):
     rec = record.Recorder(record.command(name, out.rect[:2], plan,
                                          os.path.join(folder, process.RAW)))
 
-    def work():
-        error = rec.region_error()
-        if error:
-            return process.ProcessError(error)
-        try:
-            return process.process(folder, out.scale)
-        except (process.ProcessError, OSError) as e:
-            return e
-
     try:
         rec.start()
-        outcome, result = app.record(name, plan.rect, out.scale, rec, record.MAX_SECONDS,
-                                     work, write_pid, remove_pid)
+        outcome = app.record(name, plan.rect, out.scale, rec, record.MAX_SECONDS,
+                             write_pid, remove_pid)
     except BaseException as e:
         remove_pid()
         if rec.proc is not None:
@@ -354,13 +359,27 @@ def main_gif(directory, copy, cancel):
         shutil.rmtree(folder, ignore_errors=True)
         log = rec.output().strip().splitlines()[-5:]
         return fail("wf-recorder stopped by itself: " + " / ".join(log))
-    if isinstance(result, Exception):
-        fail(result)
-        return fail(f"the recording is kept in {folder}; retry with"
-                    f" python3 {os.path.join(_DIR, 'process.py')} {folder} {out.scale}")
+    # The GIF first, on the clipboard as soon as it is written; then the sheets
+    retry = f"python3 {os.path.join(_DIR, 'process.py')} {folder} {out.scale}"
+    try:
+        error = rec.region_error()
+        if error:
+            raise process.ProcessError(error)
+        gif = process.make_gif(folder)
+        before = copy_gif(gif) if copy else None
+        result = process.make_sheets(folder, out.scale)
+    except (process.ProcessError, OSError) as e:
+        notify("Recording failed", str(e), "critical")
+        fail(e)
+        return fail(f"the recording is kept in {folder}; retry with {retry}")
     print(folder, flush=True)
+    frames, sheets = len(result["frames"]), len(result["sheets"])
+    summary = f"{frames} frame{'s' * (frames != 1)} on {sheets} sheet{'s' * (sheets != 1)}"
     if copy:
-        copy_paths(os.path.join(folder, process.GIF), result["sheets"])
+        copy_sheets(result["sheets"], before)
+        notify("Recording ready", f"{summary}, copied")
+    else:
+        notify("Recording ready", f"{summary} in {folder}")
     return 0
 
 
