@@ -1,8 +1,6 @@
 """Shared base class for GTK4 layer-shell popup widgets."""
 
-import json
 import os
-import re
 import sys
 
 # gtk4-layer-shell must be loaded before libwayland-client. A bare soname is
@@ -18,9 +16,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gtk4LayerShell", "1.0")
 from gi.repository import Gdk, GLib, Gtk, Gtk4LayerShell  # noqa: E402
 
-_THEMES_DIR = os.path.join(os.path.dirname(__file__), "..", "themes")
-_CURRENT_THEME = os.path.join(_THEMES_DIR, "current.json")  # symlink set by install.sh
-_FALLBACK_THEME = os.path.join(_THEMES_DIR, "catppuccin-mocha.json")
+from lib.theme import render_css  # noqa: E402,F401  (re-exported for the widgets)
 
 BASE_CSS = """
 window {
@@ -100,33 +96,6 @@ tooltip {
   font-size: 13px;
 }
 """
-
-
-def _theme_path():
-    """$GTK_WIDGETS_THEME, else the install.sh symlink, else the bundled default."""
-    override = os.environ.get("GTK_WIDGETS_THEME")
-    if override:
-        return override
-    if os.path.exists(_CURRENT_THEME):
-        return _CURRENT_THEME
-    return _FALLBACK_THEME
-
-
-def _load_theme():
-    """Load theme colors from JSON. Returns dict of {NAME: hex_value}."""
-    with open(_theme_path()) as f:
-        return json.load(f)["colors"]
-
-
-def render_css(css):
-    """Replace @@TOKEN@@ placeholders in a CSS string with theme colors."""
-    colors = _load_theme()
-    def replace_token(m):
-        name = m.group(1)
-        if name.endswith("_RAW"):
-            return colors.get(name[:-4], m.group(0))
-        return f"#{colors[name]}" if name in colors else m.group(0)
-    return re.sub(r"@@([A-Z][A-Z0-9_]*)@@", replace_token, css)
 
 
 def load_css(css_path):

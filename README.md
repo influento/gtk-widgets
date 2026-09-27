@@ -17,7 +17,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events) |
 | `launcher`     | App launcher (drun) and dmenu picker, a wofi replacement: resident instance, ranked fuzzy search with usage history, ЙЦУКЕН keys map to Latin |
 | `network`      | nm-applet replacement via libnm: Wi-Fi/wired, mutually exclusive VPN and Proxy sections (WireGuard/VPN profile chips, or Proxy rules: per-app SOCKS5 routing through sing-box; clicking the active chip turns it off), hidden and Enterprise (PEAP/TTLS) networks, hotspot, connection list, WireGuard import/export, per-profile Edit page (Wi-Fi/Ethernet/WireGuard); `network-agent` for notifications + password prompts |
-| `capture`      | Screenshots at the output's own pixels: freezes every output, drag a region, saved without any resampling at fractional scales |
+| `capture`      | Screenshots and short screen recordings at the output's own pixels: freezes every output, drag a region, saved without any resampling at fractional scales; `gif` records it as a GIF plus a contact sheet for AI |
 
 ## Installation
 
@@ -151,6 +151,39 @@ at 1.3 saves as 3840x1600). The scale comes from sway's IPC (`GetOutputs`);
 without sway, from the surface's fractional scale. A drag stays on the output it started on.
 The last physical column/row that a fractional scale leaves outside the logical layout (black)
 is out of reach. Set `CAPTURE_T0=$(date +%s%N)` to print the grab and first-paint times.
+
+`capture gif` picks a region the same way and records it with `wf-recorder` (30 fps,
+lossless RGB) until `capture gif` runs again, or for 60 s at most. While it records, a red
+frame and an elapsed-time label sit just outside the region; they take no clicks and no
+keyboard, and are not in the recording. `capture gif --cancel` stops a recording and throws it
+away (exit 1 when none is going). Then `ffmpeg` writes `DIR/recording-%Y%m%d-%H%M%S/`:
+
+- `recording.gif` — every frame, physical size, palette made for the clip, loops forever;
+  only exact duplicates are merged (into the previous frame's delay)
+- `sheet.png` — the frames that differ, at least 0.2 s apart, 30 at most (the first and last
+  always), tiled with each frame's time above it, for an AI to read (chat AIs read only the
+  first frame of a GIF). Each screen switch (a dialog, menu or page: 10% or more of the
+  region changing at once) keeps the frame just before it, which shows what was clicked;
+  beyond 30 frames, the rest are spread over the time between those, skipping mid-fade
+  frames (a run of big changes over 1 s, like scrolling or video, counts as motion). A sheet is at most 2000x2000 px, the most Claude shows of an image,
+  and shrinks a frame at most to 0.65 px per logical px, so 10 px UI text stays readable
+  (tested on random codes: exact at 6.5 px, half at 4.4 px). Frames that don't fit one
+  sheet that way go on `sheet-1.png`, `sheet-2.png`, ... (a full 4K screen at 1.3: two a
+  sheet); tiles run left to right, top to bottom, on from one sheet to the next
+- `frames/` — those frames at full size, named `NNNN-SS.sssS.png`
+
+It prints the folder's path. `--copy` puts `file://<path>` of the GIF and then of the sheets
+(one list) on the clipboard (`text/uri-list`, as for screenshots), so a plain paste gives the
+sheets and the GIF is next in the clipboard history (it waits up to 2 s for `cliphist` to
+store the GIF first). `--dir` defaults to
+`$XDG_PICTURES_DIR/recordings`. If processing fails, the folder keeps `raw.mkv`;
+`python3 widgets/capture/process.py <folder> <scale>` runs it again (the command is printed). Needs `wf-recorder`, `ffmpeg` and, for
+`--copy`, `wl-clipboard` and `cliphist`. Rotated or flipped outputs aren't supported.
+
+```
+bindsym $mod+Shift+g exec capture gif --dir ~/pictures/recordings --copy
+bindsym $mod+Ctrl+g exec capture gif --cancel
+```
 
 > **Privacy:** `translate` sends the current text selection to Anthropic (via the `claude` CLI)
 > each time it runs. Avoid triggering it on sensitive text.

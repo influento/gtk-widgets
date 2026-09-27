@@ -22,8 +22,8 @@ setup, transparent backdrop, Esc/q dismiss, and CSS loading with theme token rep
 
 ### Theming
 
-Theme colors are defined in `themes/<name>.json`. At runtime, `render_css()` reads the
-theme file and replaces `@@TOKEN@@` placeholders in CSS with actual color values. The
+Theme colors are defined in `themes/<name>.json`. At runtime, `render_css()` (`lib/theme.py`,
+stdlib, re-exported by `lib/widget_base.py`) reads the theme file and replaces `@@TOKEN@@` placeholders in CSS with actual color values. The
 theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 `themes/current.json` symlink created by `install.sh --theme <name>`, then the bundled
 `themes/catppuccin-mocha.json`.
@@ -67,7 +67,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
 | `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab]` (stdin lines, prints the pick byte-exact, Esc = exit 1). The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
 | `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
-| `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes) |
+| `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes). `capture gif [--dir DIR] [--copy]`: same picker, then wf-recorder (lossless RGB, 30 fps, 60 s cap) with a click-through indicator outside the region; a second `capture gif` stops it (pid file + SIGUSR1), `--cancel` discards it (SIGUSR2); ffmpeg makes `DIR/recording-STAMP/` = `recording.gif` (every frame, exact duplicates merged), `sheet.png` (distinct frames >= 0.2 s apart, max 30, tiled with times, for AI; `sheet-N.png` when they need several) and `frames/`; `--copy` = `text/uri-list` of the GIF, then of the sheets in one list (on top) |
 
 ## Theming System
 
@@ -140,7 +140,8 @@ gtk-widgets/
 ├── install.sh             # Symlinks widgets + scripts into ~/.local/bin; installs root helpers, polkit rules, proxy unit (sudo)
 ├── widget-toggle          # Generic toggle for GTK4 popups (flock-based)
 ├── lib/
-│   ├── widget_base.py     # Shared GTK4 popup base class + theme loader
+│   ├── widget_base.py     # Shared GTK4 popup base class
+│   ├── theme.py           # Theme file lookup, colours, @@TOKEN@@ rendering (stdlib, no GTK)
 │   ├── copy_label.py      # CopyLabel + copyable(): click copies text via wl-copy, flashes "Copied"
 │   └── pulsectl/          # Vendored libpulse ctypes bindings (upstream commit + changes in README.md)
 ├── polkit/
@@ -197,12 +198,14 @@ gtk-widgets/
 │   │   ├── protocol.py    # CLI <-> instance wire format (stdlib)
 │   │   └── style.css
 │   ├── capture/
-│   │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy
+│   │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy; gif flow, stop/cancel signals, clipboard order
 │   │   ├── screencopy.py  # Wayland wire client: wlr-screencopy of every output into one memfd (stdlib)
-│   │   ├── swayipc.py     # Exact output scales from sway IPC (stdlib)
+│   │   ├── swayipc.py     # Exact output scales and logical rects from sway IPC (stdlib)
 │   │   ├── geometry.py    # Logical -> physical selection maths (no GTK)
 │   │   ├── image.py       # Upright frames (lossless flips/turns), row-slice crops, PNG save
-│   │   ├── app.py         # Overlay per output: frozen frame drawn 1:1, shade, selection frame
+│   │   ├── record.py      # gif: logical region + crop that record the exact physical pixels, wf-recorder start/stop (no GTK)
+│   │   ├── process.py     # gif: ffmpeg GIF, sheet frames, contact sheets; `python3 process.py DIR SCALE` reruns a failed one (no GTK)
+│   │   ├── app.py         # Overlay per output: frozen frame drawn 1:1, shade, selection frame; gif's recording indicator
 │   │   └── style.css
 │   └── network/
 │       ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page
@@ -300,8 +303,42 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   drawing it at its own size under `snapshot.scale(1/s)` keeps the preview pixel-exact
 - At 1.3 on 3840x1600 the last physical column/row lies outside the 2953x1230 logical layout
   (sway leaves it black): the raw grab has it, a region can't reach it
-- Planned: window/output picking, drawing and annotation, GIF recording, selection handles,
-  magnifier, delay timer (new subcommands beside `region`)
+- gif, region: wlroots turns `-g`'s logical x, y, w, h into buffer pixels each as
+  `(int)(v * scale)` in single precision (2900 * 1.3f = 3769, not 3770), and wf-recorder then
+  drops an odd last column/row. `record.plan()` computes the enclosing logical rect and the
+  crop the same way (checked exact at 1, 1.25, 1.3, 4/3, 1.75). A region wf-recorder finds
+  invalid silently becomes the whole output, so `region_error()` checks its log. Far-edge
+  pixels past the last whole logical pixel can't be recorded (1 column at 1.3, stderr note)
+- gif, wf-recorder: without `-D` it looks at SIGINT only after the next damaged frame, so on a
+  still screen it never stops (and never records a first frame); `-D` fixes both. It runs
+  under `setpriv --pdeathsig INT`, so a SIGKILLed `capture` still stops it (raw.mkv stays)
+- gif, ffmpeg: mpdecimate compares 8x8 blocks from x = 8 in steps of 4, so edge changes
+  count as none; frames are padded (8 left/right, 8 below) around it and cropped back. The
+  gif muxer gives the last frame one frame's time; `set_duration()` patches its delay so a
+  still end isn't cut. Delays otherwise add up without drift (6000 cs for 60 s). Dither
+  `none`: best PSNR on UI text and gradients of those tried. Worst case (60 s of 1080p where
+  every frame changes): ~30 s processing, ~160 MB GIF
+- gif, clipboard: paths, not image bytes (the files are on disk; cliphist 0.7.0 also drops
+  items over 5,000,000 bytes without a word). The GIF goes first and the sheets (one
+  uri-list) only once cliphist has stored it, or `wl-paste --watch` would skip the GIF
+- gif, sheets (A/B-tested 2026-09-27: Claude subagents transcribing random codes from
+  sheets vs the same frames one by one, headless sway at 1.3): Claude Code shows an image at
+  most 2000 px on its long edge (a 4096 sheet was shown at 2000x1736, so it was resampled
+  twice). Codes read exactly at >= 6.5 px shown, 73% at 5.6, 46% at 4.4, 0% at 3.4; time
+  labels read fine at ~10 px. Frames one by one: 100% everywhere; the old 4096 sheet of a full
+  4K screen: 0% of 10 px and 46% of 13 px text. Hence `SHEET_MAX_EDGE` 2000 (each edge),
+  `MIN_TEXT_SCALE` 0.65 shown px per logical px (from the output's scale, passed to
+  `process()`), `LABEL_PX` 14, and splitting into `sheet-N.png` over dropping below it.
+  Other viewers (claude.ai, other AIs) may downscale more
+- gif, which frames: a third branch of the first decode prints each frame's changed area
+  (quarter size, |diff| > 10) to a file in a temp dir that ffmpeg runs in (a relative name,
+  no filtergraph escaping). On UI and game footage switches are single frames of 20-99%,
+  everything else (cursor, animation, small text) under ~1%: `SWITCH_AREA` 10%. The frame
+  before each switch is always kept; evenly spread tiles missed 3 of 22 states in a 47 s
+  game clip and 2 of 5 short dialogs in a synthetic one, with no fewer distinct small-change
+  states. The two listings round times differently (ms vs 1/30 s), hence `_EPS`
+- Planned: window/output picking, drawing and annotation, selection handles, magnifier,
+  delay timer (new subcommands beside `region` and `gif`)
 
 ### audio — deferred features
 

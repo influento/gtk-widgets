@@ -17,6 +17,23 @@ _GET_OUTPUTS = 3
 
 def output_scales():
     """{output name: scale} of the active outputs, or {} without sway."""
+    return {name: o.scale for name, o in outputs().items()}
+
+
+class Output:
+    """An active output as sway lays it out: rect is (x, y, w, h) in logical
+    (layout) pixels, transform sway's name for it ("normal", "90", ...)."""
+
+    def __init__(self, raw):
+        self.name = raw["name"]
+        self.scale = exact_scale(float(raw["scale"]))
+        r = raw["rect"]
+        self.rect = (r["x"], r["y"], r["width"], r["height"])
+        self.transform = raw.get("transform", "normal")
+
+
+def outputs():
+    """{output name: Output} of the active outputs, or {} without sway."""
     path = os.environ.get("SWAYSOCK")
     if not path:
         return {}
@@ -27,11 +44,10 @@ def output_scales():
             sock.sendall(_MAGIC + struct.pack("=II", 0, _GET_OUTPUTS))
             header = _recv(sock, 14)
             (length,) = struct.unpack_from("=I", header, 6)
-            outputs = json.loads(_recv(sock, length))
+            raw = json.loads(_recv(sock, length))
     except (OSError, ValueError):
         return {}
-    return {o["name"]: exact_scale(float(o["scale"])) for o in outputs
-            if o.get("active") and o.get("scale", 0) > 0}
+    return {o["name"]: Output(o) for o in raw if o.get("active") and o.get("scale", 0) > 0}
 
 
 def exact_scale(scale):

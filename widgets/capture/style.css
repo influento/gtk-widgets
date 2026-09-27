@@ -7,3 +7,23 @@
 .capture-shade {
   color: alpha(@@CRUST@@, 0.5);
 }
+
+/* capture gif: the frame around the recorded region (its colour is read) */
+.capture-frame {
+  color: @@RED@@;
+}
+
+.capture-frame.processing {
+  color: @@YELLOW@@;
+}
+
+/* capture gif: elapsed / limit, then "Processing…", beside the frame */
+.capture-badge {
+  background-color: @@BASE@@;
+  color: @@TEXT@@;
+  border: 1px solid @@SURFACE1@@;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 13px;
+}
