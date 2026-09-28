@@ -137,7 +137,11 @@ have the instance print the time to its first frame on stderr.
 Wayland client, before GTK is loaded), then shows those frozen frames in an overlay per
 output. Drag a rectangle; releasing saves it to `DIR/screenshot-%Y%m%d-%H%M%S.png` and prints
 the absolute path. Esc or a right click cancels (exit 1, no file, clipboard untouched); a
-second `capture` while one is open exits 1 at once.
+second `capture` while one is open exits 1 at once. Z (the key, in any layout) turns a
+magnifier on and off while picking: a loupe beside the pointer shows the 13x13 physical
+pixels around it, unsmoothed, with the one a corner would land on outlined (and the
+selection's edges while dragging) and its position and colour below. It starts off each
+time and is never in the saved image.
 
 ```
 bindsym $mod+p exec capture region --dir ~/pictures/screenshots --copy

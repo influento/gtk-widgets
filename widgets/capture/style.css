@@ -13,7 +13,8 @@
   color: @@RED@@;
 }
 
-/* capture gif: elapsed / limit, beside the frame */
+/* capture gif: elapsed / limit, beside the frame; the picker: the magnifier's
+   position and colour, under the loupe (its ring is the canvas colour) */
 .capture-badge {
   background-color: @@BASE@@;
   color: @@TEXT@@;

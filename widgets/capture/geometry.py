@@ -42,3 +42,17 @@ def selection(start, end, scale, surface_size, buffer_size):
 def to_logical(rect, scale):
     """A physical rectangle in logical coordinates (fractional), for drawing."""
     return tuple(v / scale for v in rect)
+
+
+def loupe_place(pointer, size, surface, gap):
+    """Top-left (logical) of a box of size (w, h) beside pointer: gap below
+    and right of it, on the other side of the pointer on an axis where it
+    would leave the surface, then kept inside it. It never covers the
+    pointer unless the surface is too small to hold it anywhere else."""
+    place = []
+    for p, s, total in zip(pointer, size, surface):
+        v = p + gap
+        if v + s > total:
+            v = p - gap - s
+        place.append(min(max(v, 0), max(total - s, 0)))
+    return tuple(place)

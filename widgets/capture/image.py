@@ -56,6 +56,12 @@ class Picture:
                 self.width, self.height, self.format, GLib.Bytes.new(self.data), self.stride)
         return self._texture
 
+    def pixel(self, x, y):
+        """(r, g, b) of the pixel at (x, y)."""
+        i = y * self.stride + x * self.bpp
+        a, b, c = self.data[i:i + 3]
+        return (c, b, a) if self.format == Gdk.MemoryFormat.B8G8R8X8 else (a, b, c)
+
     def crop(self, x, y, w, h):
         """The w x h rectangle at (x, y) as a texture of its own. It shares the
         rows' stride, so it is one contiguous slice of the frame's bytes."""

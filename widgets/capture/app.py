@@ -5,7 +5,10 @@ Each output gets a layer-shell surface on the OVERLAY layer, covering the
 whole output (bars too) and taking the keyboard, that shows the frame
 grabbed before anything of ours mapped, dimmed outside the selection. A drag
 selects and releasing commits; Esc or a right click cancels. The selection
-stays on the output the drag started on (outputs can differ in scale).
+stays on the output the drag started on (outputs can differ in scale). The
+Z key (the key, whatever the layout) turns a magnifier on and off: a loupe
+beside the pointer with the physical pixels around it, the one under the
+pointer outlined, and its position and colour below. It starts off.
 
 The indicator is another OVERLAY surface over the recorded output that takes
 no keyboard and no pointer (empty input region), so the app being recorded
@@ -34,7 +37,11 @@ import image  # noqa: E402
 
 APP_ID = "dev.dotfiles.capture"
 FRAME_WIDTH = 2  # logical px, drawn outside the selected pixels
-LABEL_GAP = 6  # logical px between the indicator's frame and its label
+LABEL_GAP = 6  # logical px between the indicator's frame (or the loupe) and its label
+LOUPE_PIXELS = 13  # physical px across the loupe (odd: one in the middle)
+LOUPE_CELL = 11  # logical px per physical px in the loupe, rounded to device px
+LOUPE_GAP = 24  # logical px between the pointer and the loupe
+LOUPE_RADIUS = 8
 _CSS = """
 window {
   background-color: transparent;
@@ -43,16 +50,59 @@ window {
 
 
 class Canvas(Gtk.Widget):
-    """The frozen frame, the shade and the selection frame, in one snapshot."""
+    """The frozen frame, the shade, the selection frame and the loupe, in one
+    snapshot. readout is the label under the loupe (a sibling overlay)."""
 
-    def __init__(self, picture, scale, shade_probe):
+    def __init__(self, picture, scale, shade_probe, readout):
         super().__init__()
         self.picture = picture
         self._scale = scale
         self.rect = None  # the selection in physical pixels
         self._shade_probe = shade_probe
+        self.readout = readout
+        self.magnify = False
+        self.pointer = None  # logical (x, y) while over this output
+        self._loupe = None  # (x, y) of the middle pixel, (x, y) logical of the loupe
+        self._slice = (None, None)  # (source rect, texture): one crop per pixel moved to
         self.add_css_class("capture-canvas")
         self.set_cursor(Gdk.Cursor.new_from_name("crosshair"))
+
+    def set_pointer(self, pos):
+        self.pointer = pos
+        if self.magnify:
+            self.update_loupe()
+
+    def set_magnify(self, on):
+        self.magnify = on
+        self.update_loupe()
+
+    def _cell(self):
+        """Device px per physical px in the loupe: whole, so the grid is sharp."""
+        return max(1, round(LOUPE_CELL * self.scale))
+
+    def update_loupe(self):
+        """Place the loupe and its readout for the pointer, or hide them."""
+        if not self.magnify or self.pointer is None:
+            self._loupe = None
+            self.readout.set_visible(False)
+            self.queue_draw()
+            return
+        s, pic = self.scale, self.picture
+        x = min(max(geometry.pixel_at(self.pointer[0], s), 0), pic.width - 1)
+        y = min(max(geometry.pixel_at(self.pointer[1], s), 0), pic.height - 1)
+        self.readout.set_label("{}, {}  #{:02X}{:02X}{:02X}".format(x, y, *pic.pixel(x, y)))
+        self.readout.set_visible(True)
+        # measure() counts the margins that place the label
+        lw = self.readout.measure(Gtk.Orientation.HORIZONTAL, -1)[1] - self.readout.get_margin_start()
+        lh = self.readout.measure(Gtk.Orientation.VERTICAL, -1)[1] - self.readout.get_margin_top()
+        size = LOUPE_PIXELS * self._cell() / s
+        lx, ly = geometry.loupe_place(self.pointer, (max(size, lw), size + LABEL_GAP + lh),
+                                      (self.get_width(), self.get_height()), LOUPE_GAP)
+        lx, ly = math.floor(lx), math.floor(ly)
+        self.readout.set_margin_start(lx)
+        self.readout.set_margin_top(math.ceil(ly + size + LABEL_GAP))
+        self._loupe = ((x, y), (lx, ly))
+        self.queue_draw()
 
     @property
     def scale(self):
@@ -84,17 +134,68 @@ class Canvas(Gtk.Widget):
         shade = self._shade_probe.get_color()
         if self.rect is None:
             snapshot.append_color(shade, _rect(0, 0, w, h))
-            return
-        x, y, sw, sh = geometry.to_logical(self.rect, self.scale)
-        for r in ((0, 0, w, y), (0, y + sh, w, h - y - sh),
-                  (0, y, x, sh), (x + sw, y, w - x - sw, sh)):
-            if r[2] > 0 and r[3] > 0:
-                snapshot.append_color(shade, _rect(*r))
-        f = FRAME_WIDTH
-        outline = Gsk.RoundedRect()
-        outline.init_from_rect(_rect(x - f, y - f, sw + 2 * f, sh + 2 * f), 0)
-        color = self.get_color()
-        snapshot.append_border(outline, [f] * 4, [color] * 4)
+        else:
+            x, y, sw, sh = geometry.to_logical(self.rect, self.scale)
+            for r in ((0, 0, w, y), (0, y + sh, w, h - y - sh),
+                      (0, y, x, sh), (x + sw, y, w - x - sw, sh)):
+                if r[2] > 0 and r[3] > 0:
+                    snapshot.append_color(shade, _rect(*r))
+            f = FRAME_WIDTH
+            outline = Gsk.RoundedRect()
+            outline.init_from_rect(_rect(x - f, y - f, sw + 2 * f, sh + 2 * f), 0)
+            color = self.get_color()
+            snapshot.append_border(outline, [f] * 4, [color] * 4)
+        if self._loupe is not None:
+            self._snapshot_loupe(snapshot, shade)
+
+    def _snapshot_loupe(self, snapshot, shade):
+        """The loupe, in device pixels: LOUPE_PIXELS physical px each side
+        drawn as whole cells (NEAREST, never smoothed), a grid between them,
+        the middle one outlined in the text colour, the selection's edges
+        in the accent while there is one."""
+        (mx, my), (lx, ly) = self._loupe
+        s, pic, cell, n = self.scale, self.picture, self._cell(), LOUPE_PIXELS
+        size = n * cell
+        sx, sy = mx - n // 2, my - n // 2  # the physical px in the top-left cell
+        snapshot.save()
+        snapshot.scale(1 / s, 1 / s)
+        ox, oy = round(lx * s), round(ly * s)
+        box = Gsk.RoundedRect()
+        box.init_from_rect(_rect(ox, oy, size, size), LOUPE_RADIUS * s)
+        snapshot.push_rounded_clip(box)
+        # Past an output edge there is nothing: opaque shade colour
+        empty = shade.copy()
+        empty.alpha = 1
+        snapshot.append_color(empty, _rect(ox, oy, size, size))
+        x0, y0 = max(sx, 0), max(sy, 0)
+        x1, y1 = min(sx + n, pic.width), min(sy + n, pic.height)
+        if x1 > x0 and y1 > y0:
+            src = (x0, y0, x1 - x0, y1 - y0)
+            if self._slice[0] != src:
+                self._slice = (src, pic.crop(*src))
+            snapshot.append_scaled_texture(
+                self._slice[1], Gsk.ScalingFilter.NEAREST,
+                _rect(ox + (x0 - sx) * cell, oy + (y0 - sy) * cell,
+                      (x1 - x0) * cell, (y1 - y0) * cell))
+        for k in range(1, n):
+            snapshot.append_color(shade, _rect(ox + k * cell, oy, 1, size))
+            snapshot.append_color(shade, _rect(ox, oy + k * cell, size, 1))
+        line = max(1, round(s))
+        if self.rect is not None:
+            rx, ry, rw, rh = self.rect
+            edges = Gsk.RoundedRect()
+            edges.init_from_rect(_rect(ox + (rx - sx) * cell - line, oy + (ry - sy) * cell - line,
+                                       rw * cell + 2 * line, rh * cell + 2 * line), 0)
+            snapshot.append_border(edges, [line] * 4, [self.get_color()] * 4)
+        middle = Gsk.RoundedRect()
+        middle.init_from_rect(_rect(ox + (mx - sx) * cell, oy + (my - sy) * cell, cell, cell), 0)
+        snapshot.append_border(middle, [line] * 4, [self.readout.get_color()] * 4)
+        snapshot.pop()
+        f = max(1, round(FRAME_WIDTH * s))
+        ring = Gsk.RoundedRect()
+        ring.init_from_rect(_rect(ox - f, oy - f, size + 2 * f, size + 2 * f), LOUPE_RADIUS * s + f)
+        snapshot.append_border(ring, [f] * 4, [self.get_color()] * 4)
+        snapshot.restore()
 
 
 def _rect(x, y, w, h):
@@ -112,14 +213,19 @@ class Picker(Gtk.Application):
         self.t0 = t0
         self.result = None
         self.windows = []
+        self.canvases = []
         self._active = None  # the Canvas a drag started on
         self._start = None
+        self._magnify = False
+        self._z_keys = set()  # hardware keycodes of Z in any layout (us: z, ru: я)
 
     def do_activate(self):
         if self.windows:
             return
         install_css(render_css(_CSS) + load_css(os.path.join(_DIR, "style.css")))
         display = Gdk.Display.get_default()
+        found, keys = display.map_keyval(Gdk.KEY_z)
+        self._z_keys = {k.keycode for k in keys} if found else set()
         monitors = display.get_monitors()
         by_name = {monitors.get_item(i).get_connector(): monitors.get_item(i)
                    for i in range(monitors.get_n_items())}
@@ -158,11 +264,21 @@ class Picker(Gtk.Application):
         shade_probe = Gtk.Box(can_target=False, halign=Gtk.Align.START,
                               valign=Gtk.Align.START)
         shade_probe.add_css_class("capture-shade")
-        canvas = Canvas(picture, scale, shade_probe)
+        readout = Gtk.Label(halign=Gtk.Align.START, valign=Gtk.Align.START,
+                            can_target=False, visible=False)
+        readout.add_css_class("capture-badge")
+        canvas = Canvas(picture, scale, shade_probe, readout)
         overlay = Gtk.Overlay(child=canvas)
         overlay.add_overlay(shade_probe)
+        overlay.add_overlay(readout)
         win.set_child(overlay)
+        self.canvases.append(canvas)
 
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", lambda _c, x, y: canvas.set_pointer((x, y)))
+        motion.connect("motion", lambda _c, x, y: canvas.set_pointer((x, y)))
+        motion.connect("leave", lambda _c: canvas.set_pointer(None))
+        canvas.add_controller(motion)
         drag = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
         drag.connect("drag-begin", self._drag_begin, canvas)
         drag.connect("drag-update", self._drag_update, canvas)
@@ -176,9 +292,14 @@ class Picker(Gtk.Application):
         win.add_controller(keys)
         return win
 
-    def _on_key(self, _ctrl, keyval, _keycode, _state):
+    def _on_key(self, _ctrl, keyval, keycode, _state):
         if keyval == Gdk.KEY_Escape:
             self.quit()
+            return True
+        if keycode in self._z_keys or keyval in (Gdk.KEY_z, Gdk.KEY_Z):
+            self._magnify = not self._magnify
+            for canvas in self.canvases:
+                canvas.set_magnify(self._magnify)
             return True
         return False
 
@@ -187,6 +308,7 @@ class Picker(Gtk.Application):
         canvas.rect = geometry.selection(self._start, end, canvas.scale,
                                          (canvas.get_width(), canvas.get_height()),
                                          (pic.width, pic.height))
+        canvas.set_pointer(end)
         canvas.queue_draw()
 
     def _drag_begin(self, _gesture, x, y, canvas):
