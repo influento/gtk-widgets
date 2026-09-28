@@ -2,7 +2,8 @@
 """capture — screenshots and screen clips at the output's own pixels.
 
   capture region [--dir DIR] [--copy]
-        freeze every output, drag a rectangle, save it as
+        freeze every output, drag a rectangle (or click a window, or the
+        bar or wallpaper for the whole output), save it as
         DIR/screenshot-%Y%m%d-%H%M%S.png and print the file's absolute path;
         --copy also puts file://<path> on the clipboard (text/uri-list).
         Exit 0 on save; 1 when cancelled (Esc, right click) or when another
@@ -10,7 +11,7 @@
         DIR defaults to $XDG_PICTURES_DIR/screenshots.
 
   capture gif [--dir DIR] [--copy]
-        pick a region the same way, record it (30 fps, 60 s at most) until
+        pick a region, window or output the same way, record it (30 fps, 60 s at most) until
         `capture gif` runs again, then write DIR/recording-%Y%m%d-%H%M%S/
         with recording.gif (every frame), then sheet.png (the frames that
         show something new, tiled and labelled, for an AI; sheet-1.png,
@@ -259,13 +260,14 @@ def main_region(directory, copy):
     except (screencopy.CaptureError, OSError) as e:
         return fail(e)
     scales = swayipc.output_scales()
+    windows = swayipc.windows()  # as the frames show them
     if t0:
         t0 = int(t0)
         print(f"capture: {len(frames)} output(s) grabbed {(time.time_ns() - t0) / 1e6:.1f} ms"
               " after launch", file=sys.stderr, flush=True)
 
     app = load_gtk()
-    result = app.pick_region(frames, scales, t0)
+    result = app.pick_region(frames, scales, t0, windows)
     if result is None:
         return 1
     picture, rect = result
@@ -298,9 +300,11 @@ def main_gif(directory, copy, cancel):
     except (screencopy.CaptureError, OSError) as e:
         return fail(e)
     outputs = swayipc.outputs()
+    windows = swayipc.windows()
 
     app = load_gtk()
-    result = app.pick_region(frames, {name: o.scale for name, o in outputs.items()})
+    result = app.pick_region(frames, {name: o.scale for name, o in outputs.items()},
+                             windows=windows)
     if result is None:
         return 1
     picture, rect = result

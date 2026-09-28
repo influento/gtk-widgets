@@ -67,7 +67,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
 | `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab]` (stdin lines, prints the pick byte-exact, Esc = exit 1). The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
 | `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
-| `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; Z (by keycode, so also in the ru layout) toggles a magnifier while picking (loupe of 13x13 physical px, pixel position and colour; off at start); `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes). `capture gif [--dir DIR] [--copy]`: same picker, then wf-recorder (lossless RGB, 30 fps, 60 s cap) with a click-through indicator outside the region; a second `capture gif` stops it (pid file + SIGUSR1), `--cancel` discards it (SIGUSR2); the indicator goes at once; ffmpeg makes `DIR/recording-STAMP/` = `recording.gif` first (every frame, exact duplicates merged; `--copy` copies it right away), then `sheet.png` (frames showing a new state, no cap, tiled under `N/M · time · before switch` labels, for AI; `sheet-N.png` when they need several) and `frames/`; `--copy` then copies the sheets in one list (on top); a notification when done or failed |
+| `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; before a drag the window under the pointer gets the frame (the shade stays until a drag; the frame is pulled inside at the output's edges) and a click (moved < 3 px) takes it (sway GET_TREE read with the frames: content without border/title bar, topmost first) or, over the bar/wallpaper, the whole output (region and gif alike); Z (by keycode, so also in the ru layout) toggles a magnifier while picking (loupe of 13x13 physical px, pixel position and colour; off at start); `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes). `capture gif [--dir DIR] [--copy]`: same picker, then wf-recorder (lossless RGB, 30 fps, 60 s cap) with a click-through indicator outside the region; a second `capture gif` stops it (pid file + SIGUSR1), `--cancel` discards it (SIGUSR2); the indicator goes at once; ffmpeg makes `DIR/recording-STAMP/` = `recording.gif` first (every frame, exact duplicates merged; `--copy` copies it right away), then `sheet.png` (frames showing a new state, no cap, tiled under `N/M · time · before switch` labels, for AI; `sheet-N.png` when they need several) and `frames/`; `--copy` then copies the sheets in one list (on top); a notification when done or failed |
 
 ## Theming System
 
@@ -200,8 +200,8 @@ gtk-widgets/
 │   ├── capture/
 │   │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy; gif flow, stop/cancel signals, clipboard order
 │   │   ├── screencopy.py  # Wayland wire client: wlr-screencopy of every output into one memfd (stdlib)
-│   │   ├── swayipc.py     # Exact output scales and logical rects from sway IPC (stdlib)
-│   │   ├── geometry.py    # Logical -> physical selection maths (no GTK)
+│   │   ├── swayipc.py     # Exact output scales, logical rects and shown windows from sway IPC (stdlib)
+│   │   ├── geometry.py    # Logical -> physical selection and window placement maths (no GTK)
 │   │   ├── image.py       # Upright frames (lossless flips/turns), row-slice crops, PNG save
 │   │   ├── record.py      # gif: logical region + crop that record the exact physical pixels, wf-recorder start/stop (no GTK)
 │   │   ├── process.py     # gif: ffmpeg GIF, sheet frames, contact sheets; `python3 process.py DIR SCALE` reruns a failed one (no GTK)
@@ -359,8 +359,22 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   NEAREST), so its grid is sharp at 1.3. Z is matched by hardware keycode as well as keyval:
   in the ru layout the key sends `я`. The toggle lives in the picker, not in a sway mode
   (a mode would eat Esc before the overlay sees it and needs a way out when capture exits)
-- Planned: window/output picking, drawing and annotation, selection handles,
-  delay timer (new subcommands beside `region` and `gif`)
+- Window picking: wlroots' scene puts a logical rect on the output with `scale_box()`: both
+  edges `round(v * scale)` in single precision, so neighbours share no pixel
+  (`geometry.placed()`). Checked pixel-exact on headless sway at 1, 1.25, 4/3, 1.3, 1.5,
+  1.75, 2 (tiled, split, floating, floating past the edge, tabbed with title bars,
+  fullscreen). The last column/row inside is often the client's own partly covered pixel
+  (GTK draws w * 1.3 = 393.9 px): it belongs to the window. Windows are not clipped in
+  logical px: one past the output's edge also covers the strip past the last whole logical
+  pixel. Tree workspaces carry no `visible`: the output's `current_workspace` names it;
+  views carry `visible` (hidden tabs). A click replaced "click = start over". Hover
+  keeps the shade (the user's pick of four mock-ups, 2026-09-28: lifting it over the
+  hovered window made it go on, off, on as the pointer moved and a drag began)
+- Dropped for now (2026-09-28): selection handles (the user: Esc and redo is enough),
+  delay timer (the grab happens before the overlay maps and sway eats the binding, so
+  menus and tooltips are already in the frozen frame), annotation (Alt+Shift+P runs
+  `drawdesk --image` after the shot). `capture window`/`capture output` subcommands (no
+  picker) not built: the picker's click covers them
 
 ### audio — deferred features
 

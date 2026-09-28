@@ -5,7 +5,11 @@ Each output gets a layer-shell surface on the OVERLAY layer, covering the
 whole output (bars too) and taking the keyboard, that shows the frame
 grabbed before anything of ours mapped, dimmed outside the selection. A drag
 selects and releasing commits; Esc or a right click cancels. The selection
-stays on the output the drag started on (outputs can differ in scale). The
+stays on the output the drag started on (outputs can differ in scale).
+Before a drag the window under the pointer (sway's tree, fetched with the
+frames) gets the selection frame, or the whole output where there is none
+(the bar, the wallpaper), and the shade stays over everything: only a drag
+cuts it away. A click (a press that moves less than CLICK_SLOP) takes it. The
 Z key (the key, whatever the layout) turns a magnifier on and off: a loupe
 beside the pointer with the physical pixels around it, the one under the
 pointer outlined, and its position and colour below. It starts off.
@@ -42,6 +46,7 @@ LOUPE_PIXELS = 13  # physical px across the loupe (odd: one in the middle)
 LOUPE_CELL = 11  # logical px per physical px in the loupe, rounded to device px
 LOUPE_GAP = 24  # logical px between the pointer and the loupe
 LOUPE_RADIUS = 8
+CLICK_SLOP = 3  # logical px a press may move and still be a click
 _CSS = """
 window {
   background-color: transparent;
@@ -58,6 +63,8 @@ class Canvas(Gtk.Widget):
         self.picture = picture
         self._scale = scale
         self.rect = None  # the selection in physical pixels
+        self.targets = []  # windows in physical pixels, topmost first
+        self.hover = None  # the target under the pointer, before a drag
         self._shade_probe = shade_probe
         self.readout = readout
         self.magnify = False
@@ -71,6 +78,24 @@ class Canvas(Gtk.Widget):
         self.pointer = pos
         if self.magnify:
             self.update_loupe()
+
+    def target_at(self, pos):
+        """The window under logical pos, else the whole output (physical)."""
+        x, y = geometry.pixel_at(pos[0], self.scale), geometry.pixel_at(pos[1], self.scale)
+        for rect in self.targets:
+            if rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]:
+                return rect
+        return (0, 0, self.picture.width, self.picture.height)
+
+    def set_hover(self, rect):
+        if rect != self.hover:
+            self.hover = rect
+            self.queue_draw()
+
+    @property
+    def shown(self):
+        """The rectangle the loupe outlines: the drag's, else the hover."""
+        return self.rect if self.rect is not None else self.hover
 
     def set_magnify(self, on):
         self.magnify = on
@@ -132,27 +157,34 @@ class Canvas(Gtk.Widget):
         snapshot.restore()
 
         shade = self._shade_probe.get_color()
+        f = FRAME_WIDTH
+        outline = Gsk.RoundedRect()
         if self.rect is None:
+            # The shade stays until a drag: a hovered window only gets the
+            # frame, pulled inside where it would fall past the output's edge
             snapshot.append_color(shade, _rect(0, 0, w, h))
+            if self.hover is not None:
+                x, y, sw, sh = geometry.to_logical(self.hover, self.scale)
+                x0, y0 = max(x - f, 0), max(y - f, 0)
+                x1, y1 = min(x + sw + f, w), min(y + sh + f, h)
+                outline.init_from_rect(_rect(x0, y0, x1 - x0, y1 - y0), 0)
+                snapshot.append_border(outline, [f] * 4, [self.get_color()] * 4)
         else:
             x, y, sw, sh = geometry.to_logical(self.rect, self.scale)
             for r in ((0, 0, w, y), (0, y + sh, w, h - y - sh),
                       (0, y, x, sh), (x + sw, y, w - x - sw, sh)):
                 if r[2] > 0 and r[3] > 0:
                     snapshot.append_color(shade, _rect(*r))
-            f = FRAME_WIDTH
-            outline = Gsk.RoundedRect()
             outline.init_from_rect(_rect(x - f, y - f, sw + 2 * f, sh + 2 * f), 0)
-            color = self.get_color()
-            snapshot.append_border(outline, [f] * 4, [color] * 4)
+            snapshot.append_border(outline, [f] * 4, [self.get_color()] * 4)
         if self._loupe is not None:
             self._snapshot_loupe(snapshot, shade)
 
     def _snapshot_loupe(self, snapshot, shade):
         """The loupe, in device pixels: LOUPE_PIXELS physical px each side
         drawn as whole cells (NEAREST, never smoothed), a grid between them,
-        the middle one outlined in the text colour, the selection's edges
-        in the accent while there is one."""
+        the middle one outlined in the text colour, the selection's (or the
+        hovered window's) edges in the accent while there is one."""
         (mx, my), (lx, ly) = self._loupe
         s, pic, cell, n = self.scale, self.picture, self._cell(), LOUPE_PIXELS
         size = n * cell
@@ -181,8 +213,8 @@ class Canvas(Gtk.Widget):
             snapshot.append_color(shade, _rect(ox + k * cell, oy, 1, size))
             snapshot.append_color(shade, _rect(ox, oy + k * cell, size, 1))
         line = max(1, round(s))
-        if self.rect is not None:
-            rx, ry, rw, rh = self.rect
+        if self.shown is not None:
+            rx, ry, rw, rh = self.shown
             edges = Gsk.RoundedRect()
             edges.init_from_rect(_rect(ox + (rx - sx) * cell - line, oy + (ry - sy) * cell - line,
                                        rw * cell + 2 * line, rh * cell + 2 * line), 0)
@@ -203,19 +235,22 @@ def _rect(x, y, w, h):
 
 
 class Picker(Gtk.Application):
-    """Shows one overlay per frame; result is (Picture, (x, y, w, h)) or None."""
+    """Shows one overlay per frame; result is (Picture, (x, y, w, h)) or None.
+    windows: swayipc.windows(), the click targets."""
 
-    def __init__(self, frames, scales, t0=None):
+    def __init__(self, frames, scales, t0=None, windows=None):
         # One at a time is main.py's lock; no D-Bus name to wait for
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.frames = frames
         self.scales = scales
+        self.windows_by_output = windows or {}
         self.t0 = t0
         self.result = None
         self.windows = []
         self.canvases = []
         self._active = None  # the Canvas a drag started on
         self._start = None
+        self._dragging = False  # the press has moved CLICK_SLOP: a region
         self._magnify = False
         self._z_keys = set()  # hardware keycodes of Z in any layout (us: z, ru: я)
 
@@ -268,6 +303,11 @@ class Picker(Gtk.Application):
                             can_target=False, visible=False)
         readout.add_css_class("capture-badge")
         canvas = Canvas(picture, scale, shade_probe, readout)
+        if scale:
+            size = (picture.width, picture.height)
+            placed = (geometry.placed(r, scale, size)
+                      for r in self.windows_by_output.get(frame.output.name, []))
+            canvas.targets = [r for r in placed if r is not None]
         overlay = Gtk.Overlay(child=canvas)
         overlay.add_overlay(shade_probe)
         overlay.add_overlay(readout)
@@ -275,9 +315,9 @@ class Picker(Gtk.Application):
         self.canvases.append(canvas)
 
         motion = Gtk.EventControllerMotion()
-        motion.connect("enter", lambda _c, x, y: canvas.set_pointer((x, y)))
-        motion.connect("motion", lambda _c, x, y: canvas.set_pointer((x, y)))
-        motion.connect("leave", lambda _c: canvas.set_pointer(None))
+        motion.connect("enter", lambda _c, x, y: self._motion(canvas, (x, y)))
+        motion.connect("motion", lambda _c, x, y: self._motion(canvas, (x, y)))
+        motion.connect("leave", lambda _c: self._motion(canvas, None))
         canvas.add_controller(motion)
         drag = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
         drag.connect("drag-begin", self._drag_begin, canvas)
@@ -303,6 +343,11 @@ class Picker(Gtk.Application):
             return True
         return False
 
+    def _motion(self, canvas, pos):
+        canvas.set_pointer(pos)
+        if self._active is None:  # no press going: light the target
+            canvas.set_hover(canvas.target_at(pos) if pos is not None else None)
+
     def _select(self, canvas, end):
         pic = canvas.picture
         canvas.rect = geometry.selection(self._start, end, canvas.scale,
@@ -316,21 +361,27 @@ class Picker(Gtk.Application):
             return
         self._active = canvas
         self._start = (x, y)
-        self._select(canvas, (x, y))
+        self._dragging = False
 
     def _drag_update(self, _gesture, dx, dy, canvas):
-        if self._active is canvas:
-            self._select(canvas, (self._start[0] + dx, self._start[1] + dy))
+        if self._active is not canvas:
+            return
+        if not self._dragging:
+            if max(abs(dx), abs(dy)) < CLICK_SLOP:
+                return
+            self._dragging = True
+            canvas.hover = None
+        self._select(canvas, (self._start[0] + dx, self._start[1] + dy))
 
     def _drag_end(self, _gesture, dx, dy, canvas):
         if self._active is not canvas:
             return
-        if dx == 0 and dy == 0:  # a click, not a drag: start over
-            self._active = canvas.rect = None
-            canvas.queue_draw()
-            return
-        self._select(canvas, (self._start[0] + dx, self._start[1] + dy))
-        self.result = (canvas.picture, canvas.rect)
+        if self._dragging:
+            self._select(canvas, (self._start[0] + dx, self._start[1] + dy))
+            rect = canvas.rect
+        else:  # a click: the window (or output) under the press
+            rect = canvas.target_at(self._start)
+        self.result = (canvas.picture, rect)
         # Off the screen now: the PNG is written after the overlays are gone
         for win in self.windows:
             win.set_visible(False)
@@ -351,9 +402,10 @@ class Picker(Gtk.Application):
         win.connect("realize", realized)
 
 
-def pick_region(frames, scales, t0=None):
-    """Run the picker. Returns (Picture, (x, y, w, h)) or None if cancelled."""
-    app = Picker(frames, scales, t0)
+def pick_region(frames, scales, t0=None, windows=None):
+    """Run the picker. Returns (Picture, (x, y, w, h)) or None if cancelled.
+    windows (swayipc.windows()) are what a click takes."""
+    app = Picker(frames, scales, t0, windows)
     app.run([sys.argv[0]])
     Gdk.Display.get_default().flush()  # the unmap goes out before the save
     return app.result

@@ -136,7 +136,14 @@ have the instance print the time to its first frame on stderr.
 `capture region` grabs every output's framebuffer with wlr-screencopy (a small stdlib
 Wayland client, before GTK is loaded), then shows those frozen frames in an overlay per
 output. Drag a rectangle; releasing saves it to `DIR/screenshot-%Y%m%d-%H%M%S.png` and prints
-the absolute path. Esc or a right click cancels (exit 1, no file, clipboard untouched); a
+the absolute path. Or click: before a drag, the window under the pointer gets the selection frame (the dim
+stays over everything until a drag) and a click takes it, exactly its content without sway's
+border or title bar; over the bar or the wallpaper the frame goes round the whole output and
+a click takes all of it (the full
+buffer, the black far edge too). A press that moves less than 3 px is a click. Windows come
+from sway's tree (`GetTree`) read with the frames, so the frozen screen and the windows agree;
+menus and tooltips are not windows there, so one sticking out of its window is cut (drag for
+it). Esc or a right click cancels (exit 1, no file, clipboard untouched); a
 second `capture` while one is open exits 1 at once. Z (the key, in any layout) turns a
 magnifier on and off while picking: a loupe beside the pointer shows the 13x13 physical
 pixels around it, unsmoothed, with the one a corner would land on outlined (and the
@@ -156,7 +163,7 @@ without sway, from the surface's fractional scale. A drag stays on the output it
 The last physical column/row that a fractional scale leaves outside the logical layout (black)
 is out of reach. Set `CAPTURE_T0=$(date +%s%N)` to print the grab and first-paint times.
 
-`capture gif` picks a region the same way and records it with `wf-recorder` (30 fps,
+`capture gif` picks a region, window or output the same way and records it with `wf-recorder` (30 fps,
 lossless RGB) until `capture gif` runs again, or for 60 s at most. While it records, a red
 frame and an elapsed-time label sit just outside the region; they take no clicks and no
 keyboard, and are not in the recording; they go the moment it stops. `capture gif --cancel`
