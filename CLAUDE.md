@@ -370,11 +370,14 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   views carry `visible` (hidden tabs). A click replaced "click = start over". Hover
   keeps the shade (the user's pick of four mock-ups, 2026-09-28: lifting it over the
   hovered window made it go on, off, on as the pointer moved and a drag began)
-- Dropped for now (2026-09-28): selection handles (the user: Esc and redo is enough),
-  delay timer (the grab happens before the overlay maps and sway eats the binding, so
-  menus and tooltips are already in the frozen frame), annotation (Alt+Shift+P runs
-  `drawdesk --image` after the shot). `capture window`/`capture output` subcommands (no
-  picker) not built: the picker's click covers them
+- Dropped for good (2026-09-28): delay timer (the grab happens before the overlay maps
+  and sway eats the binding, so menus and tooltips are already in the frozen frame),
+  annotation incl. blur (Alt+Shift+P runs `drawdesk --image` after the shot), a bar
+  "recording" module for whole-output gifs (it would be recorded too; 60 s cap and the
+  done notification suffice), keeping popups on a window click (sway's tree has no
+  popups; drag for those), `capture window`/`capture output` subcommands (focused, no
+  picker: the picker's click covers them, and it previews what it takes), selection
+  handles (the user: Esc and redo is enough; the magnifier makes the first drag exact)
 
 ### audio — deferred features
 
