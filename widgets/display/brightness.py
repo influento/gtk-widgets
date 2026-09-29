@@ -5,6 +5,10 @@ Backends, tried in order: laptop backlight (brightnessctl), then external
 monitor via DDC/CI (ddcutil). Stdlib only so the CLI path stays fast enough
 for a keybinding — no GTK import.
 
+ddcutil spends ~3 s scanning every I2C bus on each call; with `--bus N` a call
+takes ~0.1 s. The monitor's bus is found once and cached; a cached bus that
+stops answering (replug, renumbered after a reboot) triggers one rescan.
+
 CLI usage (symlinked as `display-brightness`):
   display-brightness up [STEP]     raise by STEP percent (default 5)
   display-brightness down [STEP]   lower by STEP percent (default 5)
@@ -12,11 +16,13 @@ CLI usage (symlinked as `display-brightness`):
   display-brightness get           print current percent
 """
 
+import os
 import subprocess
 import sys
 
 STEP = 5
 _TAG = "gtk-widgets-brightness"
+_bus = None  # DDC bus number as a string, loaded from the cache on first use
 
 
 def _run(cmd):
@@ -35,13 +41,75 @@ def _read_backlight():
         return None
 
 
-def _read_ddc():
-    """DDC/CI percent from one `getvcp` round-trip, or None if no display answers."""
+def _bus_file():
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(cache, "display", "ddc-bus")
+
+
+def _cached_bus():
+    global _bus
+    if _bus is None:
+        try:
+            with open(_bus_file()) as f:
+                _bus = f.read().strip() or None
+        except OSError:
+            pass
+    return _bus
+
+
+def _detect_bus():
+    """Scan for the first DDC display (ddcutil's default display), cache its bus."""
+    global _bus
     try:
-        result = _run(["ddcutil", "getvcp", "10"])
+        result = _run(["ddcutil", "detect", "--terse"])
     except OSError:
         return None
-    if result.returncode != 0:
+    in_display = False
+    for line in result.stdout.splitlines():
+        if not line.startswith(" "):
+            in_display = line.startswith("Display ")
+        elif in_display and line.strip().startswith("I2C bus:"):
+            dev = line.split(":", 1)[1].strip()  # /dev/i2c-N
+            _bus = dev.rsplit("-", 1)[-1]
+            break
+    else:
+        return None
+    path = _bus_file()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write(_bus + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return _bus
+
+
+def _ddc(*args):
+    """Run ddcutil on the cached bus; rescan and retry once if that fails.
+
+    Returns the CompletedProcess, or None if no DDC display answers.
+    """
+    bus = _cached_bus()
+    try:
+        if bus is not None:
+            result = _run(["ddcutil", "--bus", bus, *args])
+            if result.returncode == 0:
+                return result
+        bus = _detect_bus()
+        if bus is None:
+            return None
+        result = _run(["ddcutil", "--bus", bus, *args])
+    except OSError:
+        return None
+    return result if result.returncode == 0 else None
+
+
+def _read_ddc():
+    """DDC/CI percent from one `getvcp` round-trip, or None if no display answers."""
+    result = _ddc("getvcp", "10")
+    if result is None:
         return None
     for part in result.stdout.split(","):
         if "current value" in part:
@@ -55,8 +123,8 @@ def _read_ddc():
 def probe():
     """Detect the backend and read its level in one pass: (backend, percent) or (None, None).
 
-    DDC round-trips take seconds, so callers should use the percent returned
-    here rather than calling get() again.
+    The first DDC probe (or one after the bus changed) takes seconds, so
+    callers should use the percent returned here rather than calling get() again.
     """
     pct = _read_backlight()
     if pct is not None:
@@ -83,7 +151,7 @@ def set_pct(backend, pct):
     if backend == "backlight":
         _run(["brightnessctl", "-c", "backlight", "set", f"{pct}%"])
     else:
-        _run(["ddcutil", "setvcp", "10", str(pct)])
+        _ddc("setvcp", "10", str(pct))
     return pct
 
 

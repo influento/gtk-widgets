@@ -166,7 +166,7 @@ gtk-widgets/
 │   │   └── status         # JSON: usage percentages, reset times
 │   ├── display/
 │   │   ├── main.py
-│   │   ├── brightness.py  # Backend (backlight/DDC) + CLI: display-brightness up|down|set|get
+│   │   ├── brightness.py  # Backend (backlight/DDC on a cached bus) + CLI: display-brightness up|down|set|get
 │   │   ├── style.css
 │   │   └── status         # JSON: display icon
 │   ├── power/
@@ -379,17 +379,21 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   picker: the picker's click covers them, and it previews what it takes), selection
   handles (the user: Esc and redo is enough; the magnifier makes the first drag exact)
 
+### display — notes
+
+- ddcutil scans every I2C bus on each call (~3.2 s here); `--bus N` takes ~0.07 s. The bus
+  of the first display `ddcutil detect` lists (ddcutil's own default) is cached in
+  `~/.cache/display/ddc-bus`; a call that fails on it rescans once and retries
+- The popup's brightness writes run on a `LatestWriter` thread (newest value wins), never on
+  the GTK main thread; a change still in its debounce and the writer's last value are
+  flushed on close (Esc, backdrop, or widget-toggle's SIGTERM)
+
 ### audio — deferred features
 
 - Passthrough formats (AC-3/DTS/… over HDMI/S/PDIF): skipped, no receiver here; `pactl set-sink-formats` covers it if one appears
 
 ### Backlog
 
-- **display: DDC writes off the main thread** — `set_pct` still runs `ddcutil setvcp`
-  on the GTK main thread, so dragging the slider on an external DDC monitor stalls the
-  popup a few hundred ms per step (the sysfs backlight path is instant). Fix: worker
-  thread with a latest-value-wins queue so drags coalesce; verify with the fake DDC
-  backend that the main loop no longer stalls and the final value matches the last drag.
 - **network: mobile broadband (USB modems)** — postponed by the user on 2026-09-24, its
   own phase. First add `modemmanager` to arch-install; NetworkManager can't use modems
   without it (`mobile-broadband-provider-info` is already installed). Scope: a new-modem

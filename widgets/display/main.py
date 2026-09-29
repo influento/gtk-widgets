@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Display settings popup — scale, brightness, night light temperature."""
 
-import json, os, subprocess, sys, threading
+import json, os, signal, subprocess, sys, threading
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
@@ -13,6 +13,7 @@ from gi.repository import GLib
 import brightness  # noqa: E402
 
 TEMP_FILE = os.path.expanduser("~/.config/wlsunset/temperature")
+FLUSH_S = 5  # longest wait on close for the last brightness write (a rescan is ~3 s)
 
 
 def get_current_scale():
@@ -64,10 +65,51 @@ def apply_temperature(temp):
     )
 
 
+class LatestWriter:
+    """Runs fn(value) on one worker thread, newest value wins.
+
+    set() returns at once; a value set while a write runs replaces any not yet
+    written, so a drag becomes a few writes and the popup never waits on them.
+    """
+
+    def __init__(self, fn):
+        self._fn = fn
+        self._cond = threading.Condition()
+        self._want = None
+        self._busy = False
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def set(self, value):
+        with self._cond:
+            self._want = value
+            self._cond.notify_all()
+
+    def flush(self, timeout):
+        """Wait (at most timeout s) until the newest value is written."""
+        with self._cond:
+            self._cond.wait_for(
+                lambda: self._want is None and not self._busy, timeout)
+
+    def _loop(self):
+        while True:
+            with self._cond:
+                self._cond.wait_for(lambda: self._want is not None)
+                value, self._want = self._want, None
+                self._busy = True
+            try:
+                self._fn(value)
+            finally:
+                with self._cond:
+                    self._busy = False
+                    self._cond.notify_all()
+
+
 class DisplayPopup(WidgetPopup):
     def __init__(self):
         super().__init__(application_id="dev.dotfiles.display")
         self._timeouts = {"scale": 0, "brightness": 0, "temperature": 0}
+        self._pending = {}  # key -> (apply_fn, value) while its debounce runs
+        self._brightness_writer = None
 
     def build_ui(self):
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -97,6 +139,9 @@ class DisplayPopup(WidgetPopup):
         container.append(self._brightness_box)
 
         self._load_brightness_async()
+        # widget-toggle closes the popup with SIGTERM: quit cleanly so do_shutdown
+        # writes a brightness value still on its way
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit)
 
         # --- Night Light (file read is fast, keep sync) ---
         container.append(Gtk.Separator())
@@ -122,7 +167,9 @@ class DisplayPopup(WidgetPopup):
         threading.Thread(target=worker, daemon=True).start()
 
     def _build_brightness(self, backend, pct):
-        delay = 100 if backend == "backlight" else 500
+        # DDC writes take 0.1-3 s: they run on a worker, never on the main thread
+        self._brightness_writer = LatestWriter(
+            lambda v: brightness.set_pct(backend, v * 100))
         self._build_slider(
             self._brightness_box, "BRIGHTNESS",
             pct / 100,
@@ -131,8 +178,8 @@ class DisplayPopup(WidgetPopup):
             marks=[(0.0, "0%"), (0.5, "50%"), (1.0, "100%")],
             ticks=[i * 0.1 for i in range(11)],
             snap=lambda v: round(v * 20) / 20,
-            key="brightness", delay=delay,
-            apply_fn=lambda v: brightness.set_pct(backend, v * 100),
+            key="brightness", delay=100,
+            apply_fn=self._brightness_writer.set,
         )
         self._brightness_sep.set_visible(True)
         self._brightness_box.set_visible(True)
@@ -171,14 +218,26 @@ class DisplayPopup(WidgetPopup):
         value_label.set_text(fmt_fn(snapped))
         if self._timeouts[key]:
             GLib.source_remove(self._timeouts[key])
-        self._timeouts[key] = GLib.timeout_add(
-            delay, self._apply, key, apply_fn, snapped
-        )
+        self._pending[key] = (apply_fn, snapped)
+        self._timeouts[key] = GLib.timeout_add(delay, self._apply, key)
 
-    def _apply(self, key, apply_fn, value):
+    def _apply(self, key):
         self._timeouts[key] = 0
+        apply_fn, value = self._pending.pop(key)
         apply_fn(value)
         return GLib.SOURCE_REMOVE
+
+    def do_shutdown(self):
+        # A change still in its debounce is applied, not dropped, on close
+        for key, source in self._timeouts.items():
+            if source:
+                GLib.source_remove(source)
+                self._apply(key)
+        if self._brightness_writer:
+            for win in self.get_windows():
+                win.set_visible(False)
+            self._brightness_writer.flush(FLUSH_S)
+        Gtk.Application.do_shutdown(self)
 
 
 if __name__ == "__main__":
