@@ -4,15 +4,19 @@ Stdlib only: the CLI side must start in a few ms. A request is one header
 line of tab-separated fields, for dmenu followed by the stdin bytes:
 
   toggle \t <t0>
-  dmenu  \t <payload length> \t <prompt> \t <t0> \t <after tab: 1 or 0>
+  dmenu  \t <payload length> \t <prompt> \t <t0> \t <after tab: 1 or 0> \t <action>
 
 t0 (optional, from $LAUNCHER_T0 in ns since the epoch) makes the instance
 print how long after it the first frame was drawn. The instance answers a
-dmenu request with the chosen line's index, or -1, and a newline.
+dmenu request with the chosen line's index, -1 (Esc) or ACTION (the action
+button, shown when <action> is not empty), and a newline.
 """
 
 import os
 import socket
+
+ACTION = -2  # dmenu reply: the --action button was pressed
+ACTION_STATUS = 10  # the CLI's exit status for it (rofi's first custom key)
 
 
 def socket_path():

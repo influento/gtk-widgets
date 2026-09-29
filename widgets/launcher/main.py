@@ -3,11 +3,13 @@
 
   launcher                          show the app launcher, or hide it
   launcher --daemon                 start the resident instance hidden (autostart)
-  launcher --dmenu [--prompt TEXT] [--after-tab]
+  launcher --dmenu [--prompt TEXT] [--after-tab] [--action LABEL]
                                     pick a stdin line: print it as read, or
                                     print nothing and exit 1 on Esc;
                                     --after-tab shows and searches only what
-                                    follows a line's first tab (cliphist ids)
+                                    follows a line's first tab (cliphist ids);
+                                    --action adds a LABEL button that prints
+                                    nothing and exits 10
 
 One resident Gtk.Application (dev.dotfiles.launcher) builds the window once
 and shows/hides it. This entry point stays stdlib-only until it has to become
@@ -25,13 +27,13 @@ sys.path.insert(0, _DIR)
 
 import protocol  # noqa: E402
 
-USAGE = "usage: launcher [--daemon | --dmenu [--prompt TEXT] [--after-tab]]"
+USAGE = "usage: launcher [--daemon | --dmenu [--prompt TEXT] [--after-tab] [--action LABEL]]"
 _PRELOAD = "libgtk4-layer-shell.so.0"
 
 
 def parse_args(argv):
-    """-> (mode, prompt, after_tab); mode is toggle, daemon or dmenu."""
-    mode, prompt, after_tab = "toggle", "", False
+    """-> (mode, prompt, after_tab, action); mode is toggle, daemon or dmenu."""
+    mode, prompt, after_tab, action = "toggle", "", False, ""
     args = list(argv)
     while args:
         arg = args.pop(0)
@@ -45,14 +47,18 @@ def parse_args(argv):
             prompt = arg.split("=", 1)[1]
         elif arg == "--after-tab":
             after_tab = True
+        elif arg == "--action" and args:
+            action = args.pop(0)
+        elif arg.startswith("--action="):
+            action = arg.split("=", 1)[1]
         elif arg in ("-h", "--help"):
             print(__doc__.strip())
             sys.exit(0)
         else:
             sys.exit(USAGE)
-    if (prompt or after_tab) and mode != "dmenu":
+    if (prompt or after_tab or action) and mode != "dmenu":
         sys.exit(USAGE)
-    return mode, prompt, after_tab
+    return mode, prompt, after_tab, action
 
 
 def _recv_line(sock):
@@ -65,7 +71,7 @@ def _recv_line(sock):
     return buf
 
 
-def client(mode, prompt, after_tab):
+def client(mode, prompt, after_tab, action):
     """Hand the request to the running instance. Returns the exit status, or
     None when no instance is listening."""
     sock = protocol.connect()
@@ -81,7 +87,8 @@ def client(mode, prompt, after_tab):
         data = sys.stdin.buffer.read()
         lines = protocol.split_lines(data)
         try:
-            sock.sendall(protocol.header("dmenu", len(data), prompt, t0, int(after_tab)) + data)
+            sock.sendall(protocol.header("dmenu", len(data), prompt, t0, int(after_tab),
+                                         action) + data)
             reply = _recv_line(sock)
         except OSError as e:
             reply = None
@@ -93,6 +100,8 @@ def client(mode, prompt, after_tab):
         index = int(reply)
     except ValueError:
         return 1
+    if index == protocol.ACTION and action:
+        return protocol.ACTION_STATUS
     if not 0 <= index < len(lines):
         return 1
     sys.stdout.buffer.write(lines[index] + b"\n")
@@ -110,9 +119,9 @@ def detach():
 
 
 def main():
-    mode, prompt, after_tab = parse_args(sys.argv[1:])
+    mode, prompt, after_tab, action = parse_args(sys.argv[1:])
     try:
-        status = client(mode, prompt, after_tab)
+        status = client(mode, prompt, after_tab, action)
     except KeyboardInterrupt:
         return 130
     if status is not None:
@@ -127,7 +136,7 @@ def main():
         os.execv(sys.executable, [sys.executable] + sys.argv)
     import app
     if mode == "dmenu":
-        return app.run_dmenu_once(prompt, after_tab)
+        return app.run_dmenu_once(prompt, after_tab, action)
     return app.run_resident(hidden=mode == "daemon")
 
 

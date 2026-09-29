@@ -67,3 +67,20 @@ listview.launcher-list > row:selected .launcher-detail {
   color: @@OVERLAY1@@;
   font-size: 12px;
 }
+
+/* --action */
+button.launcher-action {
+  font-size: 12px;
+  background: @@SURFACE0@@;
+  color: @@SUBTEXT1@@;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 10px;
+  min-height: 0;
+  box-shadow: none;
+}
+
+button.launcher-action:hover {
+  background: @@SURFACE1@@;
+  color: @@TEXT@@;
+}

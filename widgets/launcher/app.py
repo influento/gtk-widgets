@@ -76,7 +76,8 @@ def _us_key(keyval):
 class Picker:
     """The popup: a search entry over a lazily rendered list (Gtk.ListView),
     built once and shown/hidden. drun lists desktop entries by match tier,
-    then usage, then name; dmenu lists lines by match tier, then input order.
+    then usage, then name; dmenu lists lines by match tier, then input order,
+    with an optional action button (--action).
     Only Esc closes it: q and every other key go to the search entry."""
 
     def __init__(self, app):
@@ -85,7 +86,7 @@ class Picker:
         self.items = []
         self.drun_items = []
         self.scores = {}      # drun: app id -> usage score, taken at show
-        self._on_pick = None  # dmenu: callback(line index or None)
+        self._on_pick = None  # dmenu: callback(line index, protocol.ACTION or None)
         self._quiet = False
 
         self.win, overlay = popup_window(app, self.dismiss, lambda *_: False)
@@ -109,6 +110,11 @@ class Picker:
         self.entry.add_css_class("launcher-entry")
         self.entry.connect("changed", self._on_changed)
         search.append(self.entry)
+        # Not focusable: typing stays in the entry after a click
+        self.action = Gtk.Button(focusable=False, focus_on_click=False, visible=False)
+        self.action.add_css_class("launcher-action")
+        self.action.connect("clicked", lambda *_: self._finish(protocol.ACTION))
+        search.append(self.action)
         box.append(search)
 
         self.store = Gio.ListStore(item_type=Item)
@@ -170,6 +176,7 @@ class Picker:
     def show_drun(self, usage, t0=None):
         self._drop_pick()
         self.mode = DRUN
+        self.action.set_visible(False)
         self.items = self.drun_items
         now = time.time()
         self.scores = {it.ref.id: usage.score(it.ref.id, now) for it in self.items}
@@ -177,11 +184,14 @@ class Picker:
         self.entry.set_placeholder_text("Search apps")
         self._present(t0)
 
-    def show_dmenu(self, texts, prompt, on_pick, t0=None):
-        """on_pick(index or None) is called once: pick, Esc, or superseded."""
+    def show_dmenu(self, texts, prompt, on_pick, t0=None, action=""):
+        """on_pick(index, protocol.ACTION or None) is called once: pick, the
+        action button, Esc, or superseded."""
         self._drop_pick()
         self.mode = DMENU
         self._on_pick = on_pick
+        self.action.set_label(action)
+        self.action.set_visible(bool(action))
         self.items = [Item(t[:DISPLAY_CHARS], match.Field(t), ref=i) for i, t in enumerate(texts)]
         self.prompt.set_text(prompt or "")
         self.entry.set_placeholder_text("Filter")
@@ -399,8 +409,9 @@ class Request:
         self.buf = bytearray()
         self.waiting = True
         after_tab = len(self.fields) > 4 and self.fields[4] == "1"
+        action = self.fields[5] if len(self.fields) > 5 else ""
         self.app.picker.show_dmenu(display_lines(lines, after_tab), self.fields[2], self.reply,
-                                   self.fields[3])
+                                   self.fields[3], action)
 
     def reply(self, index):
         if not self.waiting:
@@ -531,9 +542,10 @@ class DmenuOnce(Gtk.Application):
     """dmenu with no instance running: this process shows the picker, prints
     the pick and exits."""
 
-    def __init__(self, lines, prompt, after_tab):
+    def __init__(self, lines, prompt, after_tab, action):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.lines, self.prompt, self.after_tab = lines, prompt, after_tab
+        self.action = action
         self.status = 1
         self.picker = None
 
@@ -544,10 +556,12 @@ class DmenuOnce(Gtk.Application):
 
     def do_activate(self):
         self.picker.show_dmenu(display_lines(self.lines, self.after_tab), self.prompt, self._picked,
-                               os.environ.get("LAUNCHER_T0"))
+                               os.environ.get("LAUNCHER_T0"), self.action)
 
     def _picked(self, index):
-        if index is not None:
+        if index == protocol.ACTION:
+            self.status = protocol.ACTION_STATUS
+        elif index is not None:
             sys.stdout.buffer.write(self.lines[index] + b"\n")
             sys.stdout.flush()
             self.status = 0
@@ -563,8 +577,8 @@ def run_resident(hidden):
     return app.run([sys.argv[0]])
 
 
-def run_dmenu_once(prompt, after_tab):
+def run_dmenu_once(prompt, after_tab, action):
     lines = protocol.split_lines(sys.stdin.buffer.read())
-    app = DmenuOnce(lines, prompt, after_tab)
+    app = DmenuOnce(lines, prompt, after_tab, action)
     app.run([sys.argv[0]])
     return app.status
