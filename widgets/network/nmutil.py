@@ -120,6 +120,19 @@ def ac_reason_text(reason):
     return AC_REASONS.get(reason) or reason.value_nick.replace("-", " ")
 
 
+def failure_text(reason, devices, conn):
+    """device_reason_text for a failed activation of `conn` (a clone taken when it
+    started: NM deletes a volatile profile on failure). NM reports a Wi-Fi association
+    timeout as ssid-not-found even while a matching access point is in the scan list:
+    then it ignored the auth frames (a router that only a restart fixed)."""
+    if reason == NM.DeviceStateReason.SSID_NOT_FOUND and conn is not None and any(
+            ap.connection_valid(conn)
+            for d in devices if isinstance(d, NM.DeviceWifi)
+            for ap in d.get_access_points()):
+        return "the router did not answer (restart it?)"
+    return device_reason_text(reason)
+
+
 def hidden_connection(conn):
     """Profiles NM does not own (docker bridges, lo): never shown or touched."""
     return (bool(conn.get_flags() & NM.SettingsConnectionFlags.EXTERNAL)

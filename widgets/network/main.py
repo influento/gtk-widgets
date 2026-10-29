@@ -28,8 +28,8 @@ from proxypage import ProxyPage  # noqa: E402
 import proxy as px  # noqa: E402
 from nmutil import (  # noqa: E402
     HOTSPOT_ID, ICON, NM, VPN_TYPES, ac_reason_text, ap_security, connection_security,
-    connection_ssid, connectivity_problem, device_reason_text, eap_connection, eap_problem,
-    error_text, freq_band,
+    connection_ssid, connectivity_problem, eap_connection, eap_problem, error_text,
+    failure_text, freq_band,
     hidden_connection, hotspot_connection, ip_lines, is_hotspot, link_connection,
     password_problem, relative_time, signal_class, vpn_place, wifi_connection,
     wireguard_conf, write_private,
@@ -1321,6 +1321,9 @@ class NetworkPopup(WidgetPopup):
     def _follow(self, ac, name, on_activated=None, on_failed=None):
         """Report an activation's outcome on the status line."""
         devices = list(ac.get_devices())
+        # Clone now: NM deletes a volatile profile when its activation fails
+        conn = ac.get_connection()
+        conn = NM.SimpleConnection.new_clone(conn) if conn else None
         reasons = []
 
         def dev_changed(_dev, _new, _old, reason):
@@ -1342,7 +1345,8 @@ class NetworkPopup(WidgetPopup):
                     on_activated(ac)
             elif state == AC_STATE.DEACTIVATED:
                 finish()
-                why = device_reason_text(reasons[-1]) if reasons else ac_reason_text(reason)
+                why = (failure_text(reasons[-1], devices, conn) if reasons
+                       else ac_reason_text(reason))
                 self.set_status(f"Could not connect to {name}: {why}", error=True)
                 if on_failed:
                     on_failed(why)

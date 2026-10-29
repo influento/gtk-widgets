@@ -27,8 +27,8 @@ from lib.widget_base import (BASE_CSS, Gdk, Gtk, install_css, load_css, popup_wi
 from gi.repository import GLib
 
 from nmutil import (  # noqa: E402
-    ICON, NM, VPN_TYPES, ac_reason_text, connection_ssid, device_reason_text,
-    hidden_connection, is_hotspot, link_connection,
+    ICON, NM, VPN_TYPES, ac_reason_text, connection_ssid, failure_text, hidden_connection,
+    is_hotspot, link_connection,
 )
 import proxy as px  # noqa: E402
 import socks5  # noqa: E402
@@ -86,7 +86,9 @@ class Notifier:
         if ac.get_connection_type() == "loopback" or ac.get_path() in self._watched:
             return
         info = {"up": ac.get_state() == AC_STATE.ACTIVATED if initial else False,
-                "done": False, "devices": list(ac.get_devices()), "reason": None}
+                "done": False, "devices": list(ac.get_devices()), "reason": None,
+                # a clone: NM deletes a volatile profile when its activation fails
+                "conn": NM.SimpleConnection.new_clone(conn) if conn is not None else None}
         info["handlers"] = [(d, d.connect("state-changed", self._dev_changed, info))
                             for d in info["devices"]]
         info["ac_handler"] = ac.connect("state-changed", self._changed, info)
@@ -143,7 +145,7 @@ class Notifier:
         kind, name, icon = self._describe(ac)
         user = reason == NM.ActiveConnectionStateReason.USER_DISCONNECTED
         if info["reason"] is not None and not user:
-            why = device_reason_text(info["reason"])
+            why = failure_text(info["reason"], info["devices"], info["conn"])
         else:
             why = ac_reason_text(reason) if reason is not None else ""
         if info["up"]:
