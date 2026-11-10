@@ -12,7 +12,11 @@ from gi.repository import GLib
 
 import brightness  # noqa: E402
 
-TEMP_FILE = os.path.expanduser("~/.config/wlsunset/temperature")
+# Runtime state, outside any config checkout: sway includes scale.conf and
+# dotfiles' wlsunset.sh reads temperature at sway startup
+STATE_DIR = os.path.expanduser("~/.local/state/dotfiles")
+SCALE_FILE = os.path.join(STATE_DIR, "scale.conf")
+TEMP_FILE = os.path.join(STATE_DIR, "temperature")
 FLUSH_S = 5  # longest wait on close for the last brightness write (a rescan is ~3 s)
 
 
@@ -32,14 +36,29 @@ def get_current_scale():
     return 1.0
 
 
+def write_state(path, text):
+    """Write a state file whole: a reader sees the old text or the new, never
+    an empty or partial file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}"
+    try:
+        with open(tmp, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def apply_scale(scale):
     subprocess.run(
         ["swaymsg", "output", "*", "scale", f"{scale:.1f}"],
         capture_output=True,
     )
-    conf = os.path.expanduser("~/.config/sway/scale.conf")
-    with open(conf, "w") as f:
-        f.write(f"output * scale {scale:.1f}\n")
+    write_state(SCALE_FILE, f"output * scale {scale:.1f}\n")
     subprocess.Popen(["pkill", "-RTMIN+11", "waybar"],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -54,9 +73,7 @@ def get_temperature():
 
 def apply_temperature(temp):
     temp = int(temp)
-    os.makedirs(os.path.dirname(TEMP_FILE), exist_ok=True)
-    with open(TEMP_FILE, "w") as f:
-        f.write(f"{temp}\n")
+    write_state(TEMP_FILE, f"{temp}\n")
     subprocess.run(["pkill", "wlsunset"], capture_output=True)
     subprocess.Popen(
         ["wlsunset", "-T", str(temp + 1), "-t", str(temp)],
