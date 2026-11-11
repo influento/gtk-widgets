@@ -3,13 +3,15 @@
 
   launcher                          show the app launcher, or hide it
   launcher --daemon                 start the resident instance hidden (autostart)
-  launcher --dmenu [--prompt TEXT] [--after-tab] [--action LABEL]
+  launcher --dmenu [--prompt TEXT] [--after-tab] [--action LABEL] [--delete CMD]
                                     pick a stdin line: print it as read, or
                                     print nothing and exit 1 on Esc;
                                     --after-tab shows and searches only what
                                     follows a line's first tab (cliphist ids);
                                     --action adds a LABEL button that prints
-                                    nothing and exits 10
+                                    nothing and exits 10; --delete gives rows
+                                    a cross (and Ctrl+d) that drops the row and
+                                    runs CMD with its line on stdin
 
 One resident Gtk.Application (dev.dotfiles.launcher) builds the window once
 and shows/hides it. This entry point stays stdlib-only until it has to become
@@ -27,13 +29,14 @@ sys.path.insert(0, _DIR)
 
 import protocol  # noqa: E402
 
-USAGE = "usage: launcher [--daemon | --dmenu [--prompt TEXT] [--after-tab] [--action LABEL]]"
+USAGE = ("usage: launcher [--daemon | --dmenu [--prompt TEXT] [--after-tab] [--action LABEL]"
+         " [--delete CMD]]")
 _PRELOAD = "libgtk4-layer-shell.so.0"
 
 
 def parse_args(argv):
-    """-> (mode, prompt, after_tab, action); mode is toggle, daemon or dmenu."""
-    mode, prompt, after_tab, action = "toggle", "", False, ""
+    """-> (mode, prompt, after_tab, action, delete); mode is toggle, daemon or dmenu."""
+    mode, prompt, after_tab, action, delete = "toggle", "", False, "", ""
     args = list(argv)
     while args:
         arg = args.pop(0)
@@ -51,27 +54,39 @@ def parse_args(argv):
             action = args.pop(0)
         elif arg.startswith("--action="):
             action = arg.split("=", 1)[1]
+        elif arg == "--delete" and args:
+            delete = args.pop(0)
+        elif arg.startswith("--delete="):
+            delete = arg.split("=", 1)[1]
         elif arg in ("-h", "--help"):
             print(__doc__.strip())
             sys.exit(0)
         else:
             sys.exit(USAGE)
-    if (prompt or after_tab or action) and mode != "dmenu":
+    if (prompt or after_tab or action or delete) and mode != "dmenu":
         sys.exit(USAGE)
-    return mode, prompt, after_tab, action
+    return mode, prompt, after_tab, action, delete
 
 
-def _recv_line(sock):
-    buf = b""
-    while not buf.endswith(b"\n"):
-        chunk = sock.recv(64)
-        if not chunk:
-            return None
-        buf += chunk
-    return buf
+def _reply(sock, lines, delete):
+    """Read the instance's answer, running --delete for each "del" before it.
+    -> the final line, or None when the instance went away."""
+    with sock.makefile("rb") as f:
+        while True:
+            line = f.readline()
+            if not line.endswith(b"\n"):
+                return None
+            if not line.startswith(b"del "):
+                return line
+            try:
+                index = int(line[4:])
+            except ValueError:
+                continue
+            if delete and 0 <= index < len(lines):
+                protocol.run_delete(delete, lines[index])
 
 
-def client(mode, prompt, after_tab, action):
+def client(mode, prompt, after_tab, action, delete):
     """Hand the request to the running instance. Returns the exit status, or
     None when no instance is listening."""
     sock = protocol.connect()
@@ -88,8 +103,8 @@ def client(mode, prompt, after_tab, action):
         lines = protocol.split_lines(data)
         try:
             sock.sendall(protocol.header("dmenu", len(data), prompt, t0, int(after_tab),
-                                         action) + data)
-            reply = _recv_line(sock)
+                                         action, int(bool(delete))) + data)
+            reply = _reply(sock, lines, delete)
         except OSError as e:
             reply = None
             print(f"launcher: {e}", file=sys.stderr)
@@ -119,9 +134,9 @@ def detach():
 
 
 def main():
-    mode, prompt, after_tab, action = parse_args(sys.argv[1:])
+    mode, prompt, after_tab, action, delete = parse_args(sys.argv[1:])
     try:
-        status = client(mode, prompt, after_tab, action)
+        status = client(mode, prompt, after_tab, action, delete)
     except KeyboardInterrupt:
         return 130
     if status is not None:
@@ -136,7 +151,7 @@ def main():
         os.execv(sys.executable, [sys.executable] + sys.argv)
     import app
     if mode == "dmenu":
-        return app.run_dmenu_once(prompt, after_tab, action)
+        return app.run_dmenu_once(prompt, after_tab, action, delete)
     return app.run_resident(hidden=mode == "daemon")
 
 

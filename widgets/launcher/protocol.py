@@ -5,15 +5,20 @@ line of tab-separated fields, for dmenu followed by the stdin bytes:
 
   toggle \t <t0>
   dmenu  \t <payload length> \t <prompt> \t <t0> \t <after tab: 1 or 0> \t <action>
+         \t <delete: 1 or 0>
 
 t0 (optional, from $LAUNCHER_T0 in ns since the epoch) makes the instance
 print how long after it the first frame was drawn. The instance answers a
 dmenu request with the chosen line's index, -1 (Esc) or ACTION (the action
-button, shown when <action> is not empty), and a newline.
+button, shown when <action> is not empty), and a newline. With <delete> 1
+it first sends "del <index>" and a newline for each row deleted (the row's
+cross or Ctrl+d); the CLI runs its --delete command for each.
 """
 
 import os
+import shlex
 import socket
+import sys
 
 ACTION = -2  # dmenu reply: the --action button was pressed
 ACTION_STATUS = 10  # the CLI's exit status for it (rofi's first custom key)
@@ -50,3 +55,18 @@ def split_lines(data):
     if lines[-1] == b"":
         lines.pop()
     return lines
+
+
+def run_delete(cmd, line):
+    """Run a --delete command (split like a shell would, run without one)
+    with the deleted line and a newline on stdin; its stdout goes to stderr,
+    so it can't end up in the pick."""
+    import subprocess
+    try:
+        done = subprocess.run(shlex.split(cmd), input=line + b"\n", stdout=sys.stderr,
+                              check=False)
+    except (OSError, ValueError) as e:
+        print(f"launcher: --delete: {e}", file=sys.stderr)
+        return
+    if done.returncode:
+        print(f"launcher: --delete exited {done.returncode}", file=sys.stderr)

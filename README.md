@@ -119,12 +119,16 @@ bindsym $mod+v exec sh -c 'id=$(launcher-clipboard | launcher --dmenu --prompt C
 
 (A plain `… | launcher --dmenu | cliphist decode | wl-copy` pipe would still run `wl-copy`
 after Esc, on empty input.) `--after-tab` shows and searches only what follows a line's first
-tab, so cliphist's ids stay hidden but still reach `cliphist decode`.
+tab, so cliphist's ids stay hidden but still reach `cliphist decode`. `--action LABEL` adds
+a LABEL button that prints nothing and exits 10 (the clipboard picker's Clear).
+`--delete CMD` gives every row a cross, and Ctrl+d deletes the selected row: the row leaves
+the list, the picker stays open, and `CMD` runs (split like a shell would, without one) with
+the row's line on stdin (`--delete 'cliphist delete'`).
 
 `launcher-clipboard` prints cliphist's history with row options after a NUL byte (see
 `widgets/launcher/options.py`): images, GIFs and file links get thumbnails, and Right opens
-a preview pane beside the list (Left closes it, Ctrl+Left/Right pages through several
-files). `cut -f1` keeps only the id: `cliphist decode` needs nothing more, and the NUL never
+a preview pane beside the list (Left closes it; Ctrl+l and Ctrl+h open and close it wherever
+the caret is; Ctrl+Left/Right pages through several files). `cut -f1` keeps only the id: `cliphist decode` needs nothing more, and the NUL never
 reaches the shell.
 
 Without a running instance, `launcher` starts one and shows it, and `--dmenu` runs as a

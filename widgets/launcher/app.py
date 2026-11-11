@@ -31,6 +31,9 @@ DISPLAY_CHARS = 200  # a dmenu row shows at most this much: Pango shapes all of 
 DRUN, DMENU = "drun", "dmenu"
 _NEXT = {"j", "n"}  # with Ctrl (the us-layout key, whatever the layout)
 _PREV = {"k", "p"}
+_PANE = {"l": True, "h": False}  # Ctrl+l opens the preview pane, Ctrl+h closes it
+_DELETE = "d"  # Ctrl+d deletes the selected row (dmenu --delete)
+DELETE_ICON = "\U000f0156"  # nf-md-close
 
 
 class Item(GObject.Object):
@@ -60,6 +63,12 @@ class Row(Gtk.Box):
         self.detail = Gtk.Label(max_width_chars=28, ellipsize=Pango.EllipsizeMode.MIDDLE)
         self.detail.add_css_class("launcher-detail")
         self.append(self.detail)
+        # dmenu --delete; not focusable, so typing stays in the entry
+        self.delete = Gtk.Button(label=DELETE_ICON, focusable=False, focus_on_click=False,
+                                 valign=Gtk.Align.CENTER, tooltip_text="Delete (Ctrl+d)")
+        self.delete.add_css_class("launcher-delete")
+        self.append(self.delete)
+        self.item = None
 
 
 def display_lines(lines, after_tab=False):
@@ -98,6 +107,7 @@ class Picker:
         self.drun_items = []
         self.scores = {}      # drun: app id -> usage score, taken at show
         self._on_pick = None  # dmenu: callback(line index, protocol.ACTION or None)
+        self._on_delete = None  # dmenu --delete: callback(line index)
         self.pane_open = False
         self._quiet = False
 
@@ -163,10 +173,13 @@ class Picker:
         click = Gtk.GestureClick()
         click.connect("released", lambda *_: self._activate(li.get_position()))
         row.add_controller(click)
+        row.delete.connect("clicked", lambda *_: self._delete(row.item))
         li.set_child(row)
 
     def _bind_row(self, _factory, li):
         item, row = li.get_item(), li.get_child()
+        row.item = item
+        row.delete.set_visible(self._on_delete is not None)
         row.label.set_text(item.text)
         row.detail.set_text(item.detail)
         row.detail.set_visible(bool(item.detail))
@@ -212,12 +225,14 @@ class Picker:
         self.entry.set_placeholder_text("Search apps")
         self._present(t0)
 
-    def show_dmenu(self, texts, prompt, on_pick, t0=None, action=""):
+    def show_dmenu(self, texts, prompt, on_pick, t0=None, action="", on_delete=None):
         """on_pick(index, protocol.ACTION or None) is called once: pick, the
-        action button, Esc, or superseded."""
+        action button, Esc, or superseded. With on_delete, rows get a cross
+        (and Ctrl+d) that removes the row and calls on_delete(index)."""
         self._drop_pick()
         self.mode = DMENU
         self._on_pick = on_pick
+        self._on_delete = on_delete
         self.action.set_label(action)
         self.action.set_visible(bool(action))
         self.items = [Item(t[:DISPLAY_CHARS],
@@ -264,11 +279,13 @@ class Picker:
     def _drop_pick(self):
         """A new show replaces a pending dmenu pick: its caller gets None."""
         on_pick, self._on_pick = self._on_pick, None
+        self._on_delete = None
         if on_pick is not None:
             on_pick(None)
 
     def _finish(self, index):
         on_pick, self._on_pick = self._on_pick, None
+        self._on_delete = None
         self.hide()
         if on_pick is not None:
             on_pick(index)
@@ -359,6 +376,10 @@ class Picker:
             self._move(ROWS - 1)
         elif keyval in (Gdk.KEY_Page_Up, Gdk.KEY_KP_Page_Up):
             self._move(-(ROWS - 1))
+        elif ctrl and _us_key(keyval) == _DELETE and self._on_delete is not None:
+            pos = self.selection.get_selected()
+            if pos != Gtk.INVALID_LIST_POSITION:
+                self._delete(self.store.get_item(pos))
         elif ctrl and _us_key(keyval) in _NEXT:
             self._move(1)
         elif ctrl and _us_key(keyval) in _PREV:
@@ -369,10 +390,16 @@ class Picker:
 
     def _pane_key(self, keyval, ctrl, state):
         """Right at the end of the filter text opens the pane, Left at its
-        start closes it; elsewhere they move the caret. Ctrl+Left/Right page
-        through a row's files while it is open."""
+        start closes it; elsewhere they move the caret. Ctrl+l/Ctrl+h open and
+        close it wherever the caret is. Ctrl+Left/Right page through a row's
+        files while it is open."""
         if not self._has_previews():
             return False
+        vim = _us_key(keyval) if ctrl else ""
+        if vim in _PANE and not state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK):
+            if _PANE[vim] != self.pane_open:
+                self._set_pane(_PANE[vim])
+            return True
         left = keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left)
         right = keyval in (Gdk.KEY_Right, Gdk.KEY_KP_Right)
         if not (left or right) or state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK):
@@ -448,6 +475,28 @@ class Picker:
         self.selection.set_selected(pos)
         self.list.scroll_to(pos, Gtk.ListScrollFlags.NONE, None)
 
+    def _delete(self, item):
+        """Drop a dmenu row (--delete) for good, keeping the selection where
+        it was, and tell the caller."""
+        if self._on_delete is None or item is None:
+            return
+        found, pos = self.store.find(item)
+        if not found:
+            return
+        sel = self.selection.get_selected()
+        self.items.remove(item)  # in place: _warm() checks the list's identity
+        self.store.remove(pos)
+        n = self.store.get_n_items()
+        self.empty.set_visible(not n)
+        if n:
+            if sel == Gtk.INVALID_LIST_POSITION or sel == pos:
+                sel = min(pos, n - 1)
+            elif sel > pos:
+                sel -= 1
+            self.selection.set_selected(sel)
+        self._show_selected()
+        self._on_delete(item.ref)
+
     def _activate(self, pos):
         item = self.store.get_item(pos) if pos != Gtk.INVALID_LIST_POSITION else None
         if item is None:
@@ -518,8 +567,20 @@ class Request:
         self.waiting = True
         after_tab = len(self.fields) > 4 and self.fields[4] == "1"
         action = self.fields[5] if len(self.fields) > 5 else ""
+        delete = len(self.fields) > 6 and self.fields[6] == "1"
         self.app.picker.show_dmenu(display_lines(lines, after_tab), self.fields[2], self.reply,
-                                   self.fields[3], action)
+                                   self.fields[3], action, self.deleted if delete else None)
+
+    def deleted(self, index):
+        """A row was deleted: the CLI runs its --delete command for it."""
+        if not self.waiting:
+            return
+        try:
+            self.conn.setblocking(True)
+            self.conn.sendall(b"del %d\n" % index)
+            self.conn.setblocking(False)
+        except OSError:
+            pass
 
     def reply(self, index):
         if not self.waiting:
@@ -650,10 +711,10 @@ class DmenuOnce(Gtk.Application):
     """dmenu with no instance running: this process shows the picker, prints
     the pick and exits."""
 
-    def __init__(self, lines, prompt, after_tab, action):
+    def __init__(self, lines, prompt, after_tab, action, delete):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.lines, self.prompt, self.after_tab = lines, prompt, after_tab
-        self.action = action
+        self.action, self.delete = action, delete
         self.status = 1
         self.picker = None
 
@@ -664,7 +725,11 @@ class DmenuOnce(Gtk.Application):
 
     def do_activate(self):
         self.picker.show_dmenu(display_lines(self.lines, self.after_tab), self.prompt, self._picked,
-                               os.environ.get("LAUNCHER_T0"), self.action)
+                               os.environ.get("LAUNCHER_T0"), self.action,
+                               self._deleted if self.delete else None)
+
+    def _deleted(self, index):
+        protocol.run_delete(self.delete, self.lines[index])
 
     def _picked(self, index):
         if index == protocol.ACTION:
@@ -685,8 +750,8 @@ def run_resident(hidden):
     return app.run([sys.argv[0]])
 
 
-def run_dmenu_once(prompt, after_tab, action):
+def run_dmenu_once(prompt, after_tab, action, delete):
     lines = protocol.split_lines(sys.stdin.buffer.read())
-    app = DmenuOnce(lines, prompt, after_tab, action)
+    app = DmenuOnce(lines, prompt, after_tab, action, delete)
     app.run([sys.argv[0]])
     return app.status

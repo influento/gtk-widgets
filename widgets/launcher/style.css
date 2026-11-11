@@ -85,6 +85,33 @@ button.launcher-action:hover {
   color: @@TEXT@@;
 }
 
+/* --delete: a row's cross */
+button.launcher-delete {
+  font-size: 13px;
+  background: transparent;
+  color: @@OVERLAY0@@;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 5px;
+  min-height: 0;
+  min-width: 0;
+  box-shadow: none;
+}
+
+button.launcher-delete:hover {
+  background: @@SURFACE1@@;
+  color: @@RED@@;
+}
+
+listview.launcher-list > row:selected button.launcher-delete {
+  color: alpha(@@BASE@@, 0.6);
+}
+
+listview.launcher-list > row:selected button.launcher-delete:hover {
+  background: alpha(@@BASE@@, 0.2);
+  color: @@BASE@@;
+}
+
 /* dmenu rows with options: thumbnails (preview.py) */
 .launcher-thumb {
   background: @@CRUST@@;
