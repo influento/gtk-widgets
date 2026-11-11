@@ -60,6 +60,8 @@ MARKER = "application/x-launcher-clipboard"
 STILL_MIME = {"png": "image/png", "jpeg": "image/jpeg", "jpg": "image/jpeg",
               "webp": "image/webp", "bmp": "image/bmp", "avif": "image/avif",
               "heic": "image/heic", "jxl": "image/jxl"}
+# What wl-copy offers for text: apps ask for any of these
+TEXT_TYPES = ("text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT")
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic", ".heif", ".jxl",
              ".bmp", ".tif", ".tiff", ".svg", ".ico", ".qoi", ".tga"}
 
@@ -229,14 +231,14 @@ def restore_kind(text, raw):
 
 
 def _text_forms(text):
-    from selection import TEXT_TYPES
     return [(t, text.encode()) for t in TEXT_TYPES]
 
 
 def image_forms(raw, fmt, path):
-    """Image data: its bytes, the cached file, the file's path."""
-    mime = STILL_MIME.get(fmt, f"image/{fmt}")
-    return ([(mime, raw), ("text/uri-list", pathlib.Path(path).as_uri().encode())]
+    """Image data: its bytes (still formats only), the cached file, the
+    file's path."""
+    forms = [(STILL_MIME[fmt], raw)] if fmt in STILL_MIME else []
+    return (forms + [("text/uri-list", pathlib.Path(path).as_uri().encode())]
             + _text_forms(path) + [(MARKER, b"")])
 
 
@@ -268,7 +270,11 @@ def restore(cid, cliphist, serve, wl_copy, root=CACHE, offer=False):
     top = cid
     if not offer:
         cliphist("store", data=raw)  # to the top, under a new id
-        top = cliphist("list").split(b"\n", 1)[0].partition(b"\t")[0].decode() or cid
+        # The newest entry with the pick's text: a copy can land on top
+        # meanwhile (no store, no match: cid is still the pick)
+        top = next((i.decode() for i, _, t in (ln.partition(b"\t")
+                                               for ln in cliphist("list").split(b"\n"))
+                    if t.decode("utf-8", "replace") == text), cid)
     if kind[0] == "image":
         path = Cache(root, lambda _: raw).data(cid, kind[1])
         if top != cid:

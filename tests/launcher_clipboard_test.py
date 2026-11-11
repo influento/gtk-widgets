@@ -194,6 +194,17 @@ class FakeCliphist:
         raise AssertionError(args)
 
 
+class IntruderCliphist(FakeCliphist):
+    """A copy lands between the pick's store and the listing after it."""
+
+    def __call__(self, *args, data=None):
+        out = super().__call__(*args, data=data)
+        if args == ("store",):
+            self.entries.insert(0, (str(self.next), "copied meanwhile", b"copied meanwhile"))
+            self.next += 1
+        return out
+
+
 class Restore(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -224,6 +235,24 @@ class Restore(unittest.TestCase):
         self.assertIn(clipboard.MARKER, forms)
         self.assertEqual(self.copied, [])
 
+    def assert_gif_goes_up_as_file_and_path(self, path):
+        self.assertEqual(pathlib.Path(path).read_bytes(), GIF_ANIM)
+        forms = dict(self.served[0])
+        self.assertNotIn("image/gif", forms)
+        self.assertEqual(self.types()[0], "text/uri-list")
+        self.assertEqual(forms["text/uri-list"], f"file://{path}".encode())
+        self.assertEqual(forms["text/plain"], path.encode())
+
+    def test_gif_restore_goes_up_as_file_and_path_not_bytes(self):
+        ch = FakeCliphist([("6", "[[ binary data 1 KiB gif 1x1 ]]", GIF_ANIM)])
+        self.restore(ch, "6")
+        self.assert_gif_goes_up_as_file_and_path(os.path.join(self.root, "7.gif"))
+
+    def test_gif_offer_goes_up_as_file_and_path_not_bytes(self):
+        ch = FakeCliphist([("6", "[[ binary data 1 KiB gif 1x1 ]]", GIF_ANIM)])
+        clipboard.restore("6", ch, self.served.append, self.copied.append, self.root, offer=True)
+        self.assert_gif_goes_up_as_file_and_path(os.path.join(self.root, "6.gif"))
+
     def test_cached_file_follows_the_new_id(self):
         os.makedirs(self.root)
         with open(os.path.join(self.root, "5.png"), "wb") as f:
@@ -231,6 +260,16 @@ class Restore(unittest.TestCase):
         ch = FakeCliphist([("5", "[[ binary data 40 B png 1x1 ]]", PNG)])
         self.restore(ch, "5")
         self.assertEqual(sorted(os.listdir(self.root)), ["6.png"])
+
+    def test_cached_file_follows_the_pick_when_a_copy_lands_meanwhile(self):
+        ch = IntruderCliphist([("7", "hello", b"hello"),
+                               ("5", "[[ binary data 40 B png 1x1 ]]", PNG)])
+        self.restore(ch, "5")
+        bumped = next(i for i, _, raw in ch.entries if raw == PNG)
+        self.assertEqual(os.listdir(self.root), [f"{bumped}.png"])
+        path = dict(self.served[0])["text/plain"].decode()
+        self.assertEqual(path, os.path.join(self.root, f"{bumped}.png"))
+        self.assertEqual(pathlib.Path(path).read_bytes(), PNG)
 
     def test_sniffed_webp_is_image_data(self):
         ch = FakeCliphist([("3", "RIFF\ufffd", WEBP)])

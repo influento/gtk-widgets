@@ -200,7 +200,7 @@ gtk-widgets/
 │   │   ├── options.py     # dmenu row options after a NUL, GIF frame count (stdlib)
 │   │   ├── preview.py     # Row thumbnails, the preview pane, GIF playback via ffmpeg (worker-thread decode, caches)
 │   │   ├── clipboard.py   # launcher-clipboard: cliphist list -> rows with options; --restore/--offer (stdlib; tests/launcher_clipboard_test.py)
-│   │   ├── selection.py   # Own the clipboard with several forms of one item over ext/wlr data-control (stdlib, forks to serve)
+│   │   ├── selection.py   # Own the clipboard with several forms of one item over ext/wlr data-control (stdlib, forks to serve; tests/launcher_selection_test.py runs the CLI against a fake compositor)
 │   │   └── style.css
 │   ├── capture/
 │   │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy; gif flow, stop/cancel signals, clipboard order
@@ -417,6 +417,9 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 - Chrome's "Copy image" offers `text/x-moz-url` (UTF-16 URL), `text/html`, `image/png` and
   no `text/plain`: a plain `wl-paste --watch` stored the URL. `cliphist-store` stores the
   image then, and `--offer` replaces Chrome's offer with bytes + file + path
+- cliphist 0.7.0 drops a copy over 5,000,000 bytes (or blank) without a word: such a copy
+  stays the app's own offer (no path) and is not in the history. `cliphist-store` offers
+  only when the newest id changed across its store
 
 ### Backlog
 

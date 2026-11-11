@@ -18,6 +18,7 @@ import os
 import struct
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
 
@@ -27,21 +28,39 @@ from lib.wayland import Connection, WaylandError, string  # noqa: E402
 # requests and events at the same opcodes
 MANAGERS = ("ext_data_control_manager_v1", "zwlr_data_control_manager_v1")
 
-# What wl-copy offers for text: apps ask for any of these
-TEXT_TYPES = ("text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT")
+# Pastes still being written when the clipboard changes get this long in all
+# to finish (wl-copy's cat children finish them too); a reader that never
+# reads must not keep the serving process forever
+WRITERS_DEADLINE = 10
 
 
 def _write(fd, data):
     try:
+        # The app's pipe may come O_NONBLOCK; wl-copy clears it too
+        os.set_blocking(fd, True)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
     except OSError:
         pass  # the app closed its end early
 
 
+def _start_writers(state):
+    """Start a writer for each queued paste request."""
+    writers = [t for t in state["writers"] if t.is_alive()]
+    while state["pending"]:
+        mime, fd = state["pending"].pop(0)
+        writer = threading.Thread(target=_write, args=(fd, state["data"].get(mime, b"")),
+                                  daemon=True)
+        writer.start()
+        writers.append(writer)
+    state["writers"] = writers
+
+
 def _take(forms):
     """Connect and set the selection. Returns (conn, state) once the
-    compositor has it."""
+    compositor has it. Paste requests are only queued (state["pending"]):
+    one may come during the roundtrip, before the process that serves them
+    exists; _start_writers() starts them (state["writers"])."""
     conn = Connection()
     found = conn.globals()
     manager = seat = None
@@ -59,13 +78,11 @@ def _take(forms):
         conn.close()
         raise WaylandError("the compositor offers no seat")
 
-    data = dict(forms)
-    state = {"done": False}
+    state = {"done": False, "data": dict(forms), "pending": [], "writers": []}
 
     def on_source(opcode, r):
         if opcode == 0:  # send(mime_type, fd)
-            mime, fd = r.string(), r.fd()
-            threading.Thread(target=_write, args=(fd, data.get(mime, b"")), daemon=True).start()
+            state["pending"].append((r.string(), r.fd()))
         elif opcode == 1:  # cancelled: another client owns the clipboard now
             state["done"] = True
 
@@ -84,28 +101,46 @@ def _take(forms):
     return conn, state
 
 
+def _serve(conn, state):
+    """Serve until another client takes the clipboard, then let go of it
+    and give pastes under way WRITERS_DEADLINE to finish."""
+    _start_writers(state)
+    try:
+        while not state["done"]:
+            conn.dispatch()
+            _start_writers(state)
+    except WaylandError:
+        pass
+    finally:
+        conn.close()  # the clipboard is no longer ours; pastes under way go on
+        _start_writers(state)  # a send that came in one read with cancelled
+        deadline = time.monotonic() + WRITERS_DEADLINE
+        for writer in state["writers"]:
+            writer.join(max(0, deadline - time.monotonic()))
+
+
 def serve(forms, fork=True):
     """Put forms ([(mime, bytes)], in order of preference) on the clipboard.
     With fork, return once it is set and serve from a child process, as
     wl-copy does; without, serve until the clipboard is replaced."""
     conn, state = _take(forms)
-    if fork:
-        if os.fork():
-            conn.sock.detach()  # the child owns the socket now
-            return
+    if not fork:
+        _serve(conn, state)
+        return
+    if os.fork():
+        conn.sock.detach()  # the child owns the socket now
+        for _, fd in state["pending"]:
+            os.close(fd)  # and its own copies of these
+        return
+    # The child never returns or raises into the caller's code
+    try:
         os.setsid()
         null = os.open(os.devnull, os.O_RDWR)
         for fd in (0, 1, 2):
             os.dup2(null, fd)
         os.close(null)
-    try:
-        while not state["done"]:
-            conn.dispatch()
-    except WaylandError:
-        pass
+        _serve(conn, state)
     finally:
-        conn.close()
-    if fork:
         os._exit(0)
 
 
