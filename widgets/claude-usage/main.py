@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude usage popup — GTK4 widget showing subscription utilization with progress bars."""
 
-import json, os, subprocess, sys, threading, urllib.error, urllib.request
+import json, os, subprocess, sys, threading, urllib.request
 _DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "..", ".."))
 sys.path.insert(0, _DIR)
@@ -38,16 +38,8 @@ def fetch_subscription(session_key, org_uuid):
         return json.loads(resp.read())
 
 
-def get_org_uuid(force_refresh=False):
-    """Get org UUID from cache or OAuth profile."""
-    if not force_refresh:
-        try:
-            with open(CACHE_PATH) as f:
-                cached = json.load(f).get("org_uuid")
-            if cached:
-                return cached
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
+def fetch_profile(timeout=10):
+    """The OAuth profile's organization (uuid, plan, subscription status)."""
     creds_path = Path.home() / ".claude" / ".credentials.json"
     with open(creds_path) as f:
         token = json.load(f)["claudeAiOauth"]["accessToken"]
@@ -58,26 +50,57 @@ def get_org_uuid(force_refresh=False):
             "anthropic-beta": "oauth-2025-04-20",
         },
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())["organization"]["uuid"]
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())["organization"]
+
+
+def plan_of(org):
+    """What the billing day hangs on: a plan change can move it."""
+    return "/".join(str(org.get(k)) for k in
+                    ("organization_type", "rate_limit_tier", "subscription_status"))
+
+
+def load_cache():
+    try:
+        with open(CACHE_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_cache(cache):
+    with open(CACHE_PATH, "w") as f:
+        json.dump(cache, f)
 
 
 def save_subscription(session_key):
-    """Fetch next_charge_date with the session key, cache it, and return it."""
-    org_uuid = get_org_uuid()
-    try:
-        sub = fetch_subscription(session_key, org_uuid)
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            raise
-        org_uuid = get_org_uuid(force_refresh=True)
-        sub = fetch_subscription(session_key, org_uuid)
+    """Fetch next_charge_date with the session key, cache it with the plan, and return it."""
+    org = fetch_profile()
+    sub = fetch_subscription(session_key, org["uuid"])
     charge_date = sub.get("next_charge_date")
     if not charge_date:
         raise ValueError("no next_charge_date in response")
-    with open(CACHE_PATH, "w") as f:
-        json.dump({"next_charge_date": charge_date, "org_uuid": org_uuid}, f)
+    save_cache({"next_charge_date": charge_date, "org_uuid": org["uuid"], "plan": plan_of(org)})
     return charge_date
+
+
+def plan_unchanged():
+    """False (and the charge date forgotten) when the plan changed since the date was saved.
+
+    The cached date is rolled forward monthly, which holds only while the billing day
+    stays; a plan change can move it, so the session key is asked for again.
+    """
+    cache = load_cache()
+    if not cache.get("next_charge_date"):
+        return True
+    plan = plan_of(fetch_profile(timeout=3))  # runs before the popup renders
+    if "plan" not in cache:  # saved before plans were recorded: take the current one
+        save_cache({**cache, "plan": plan})
+        return True
+    if cache["plan"] == plan:
+        return True
+    save_cache({k: v for k, v in cache.items() if k not in ("next_charge_date", "plan")})
+    return False
 
 
 class ClaudeUsagePopup(WidgetPopup):
@@ -125,6 +148,13 @@ class ClaudeUsagePopup(WidgetPopup):
                 data = fetch_data(force=force)
             except Exception as e:
                 data = {"error": str(e)}
+            if data.get("next_charge_date"):
+                try:
+                    if not plan_unchanged():
+                        data.pop("next_charge_date")
+                        data["plan_changed"] = True
+                except Exception:
+                    pass  # offline or no credentials: keep the date
             GLib.idle_add(self._render_data, generation, loading, data)
         threading.Thread(target=worker, daemon=True).start()
 
@@ -221,7 +251,10 @@ class ClaudeUsagePopup(WidgetPopup):
             container.append(label)
             return
 
-        hint = Gtk.Label(label="paste session key to fetch billing info")
+        text = "paste session key to fetch billing info"
+        if data.get("plan_changed"):
+            text = "plan changed: " + text
+        hint = Gtk.Label(label=text)
         hint.add_css_class("session-label")
         hint.set_halign(Gtk.Align.START)
         container.append(hint)

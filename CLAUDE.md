@@ -58,7 +58,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | -------------- | ----------------------------------------------------------------- |
 | `calendar`     | GTK4 calendar                                                     |
 | `display`      | Display settings: scale, brightness, night light temp; `display-brightness` CLI for keybinds |
-| `claude-usage` | Claude usage: 5h session, weekly all-models, weekly per-model     |
+| `claude-usage` | Claude usage: 5h session, weekly all-models, weekly per-model, next charge date |
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect          |
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
 | `translate`    | ezpick text tool (`dev.dotfiles.ezpick`): translate, fix English, dictionary via `claude` CLI |

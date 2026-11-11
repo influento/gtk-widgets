@@ -8,14 +8,13 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 from usage import (  # noqa: E402
     describe_charge_date, format_reset_absolute, format_reset_relative,
-    reset_in_future, severity,
+    reset_in_future, roll_charge_date, severity,
 )
 
 SUBSCRIPTION_CACHE = Path.home() / ".claude" / "subscription_cache.json"
@@ -70,13 +69,13 @@ def fetch_usage(token):
 
 
 def load_cached_charge_date():
-    """Read next_charge_date from cache if it exists and is in the future."""
+    """The next charge: the cached one, rolled forward a month at a time once it passes."""
     try:
         with open(SUBSCRIPTION_CACHE) as f:
             cache = json.load(f)
         charge_date = cache.get("next_charge_date")
-        if charge_date and datetime.strptime(charge_date, "%Y-%m-%d").date() >= date.today():
-            return charge_date
+        if charge_date:
+            return roll_charge_date(charge_date)
     except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
         pass
     return None

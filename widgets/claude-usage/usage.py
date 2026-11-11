@@ -1,6 +1,7 @@
 """Formatting shared by the claude-usage popup and its status script."""
 
-from datetime import datetime, timezone
+import calendar
+from datetime import date, datetime, timezone
 
 
 def _parse_iso(iso_str):
@@ -62,6 +63,22 @@ def format_date_absolute(date_str):
 def describe_charge_date(date_str):
     """'Oct 7 (19d 22h)'."""
     return f"{format_date_absolute(date_str)} ({format_date_relative(date_str)})"
+
+
+def roll_charge_date(date_str, today=None):
+    """The first monthly charge on or after today, counted from a known charge date.
+
+    The billing day is the known date's day, clamped to short months (31 -> Feb 28).
+    """
+    today = today or date.today()
+    known = datetime.strptime(date_str, "%Y-%m-%d").date()
+    charge, months = known, 0
+    while charge < today:
+        months += 1
+        years, month0 = divmod(known.month - 1 + months, 12)
+        year, month = known.year + years, month0 + 1
+        charge = date(year, month, min(known.day, calendar.monthrange(year, month)[1]))
+    return charge.isoformat()
 
 
 def severity(pct):
