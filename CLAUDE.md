@@ -65,7 +65,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `usb`          | USB device manager: list, mount/unmount (click path to copy), fix partition type for Mac/Windows, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
 | `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
-| `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab] [--action LABEL] [--delete CMD]` (stdin lines, prints the pick byte-exact, Esc = exit 1; `--action` adds a LABEL button that exits 10: the clipboard picker's Clear; `--delete` gives rows a cross, and Ctrl+d deletes the selected one: the row goes in place and the CLI runs CMD with its line on stdin, the instance sending `del <index>` before the pick). A dmenu line may carry options after a NUL, rofi-style (`options.py`: kind, thumbnail, preview files, detail, count, search words): rows with them get a 64x46 thumbnail or a kind icon (56 px rows for images, 34 px for the rest), and Right with the caret at the end of the filter opens a preview pane beside the list, the popup growing to the output less 40 px a side (Left at the caret's start closes it; Ctrl+l/Ctrl+h open/close it wherever the caret is; every show starts compact). The pane shows the image, a playing GIF (ffmpeg at the pane's pixel size, never GdkPixbuf: it would decode every frame), one of several files (Ctrl+Left/Right), a file type's icon or the row's whole text as is (64 KiB at most). `launcher-clipboard` (`clipboard.py`, stdlib) turns `cliphist list` into such rows: image data (named by cliphist, or sniffed: WebP, AVIF, HEIC, JXL) and text (cliphist's list joins its lines and cuts it at 100 characters) decoded once into `~/.cache/launcher/clipboard/<id>.<ext>` (0700, files 0600) and pruned with the history, file links (several in one entry: a recording's sheets), plain paths, missing files, binary, text. The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
+| `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab] [--action LABEL] [--delete CMD]` (stdin lines, prints the pick byte-exact, Esc = exit 1; `--action` adds a LABEL button that exits 10: the clipboard picker's Clear; `--delete` gives rows a cross, and Ctrl+d deletes the selected one: the row goes in place and the CLI runs CMD with its line on stdin, the instance sending `del <index>` before the pick). A dmenu line may carry options after a NUL, rofi-style (`options.py`: kind, thumbnail, preview files, detail, count, search words): rows with them get a 64x46 thumbnail or a kind icon (56 px rows for images, 34 px for the rest), and Right with the caret at the end of the filter opens a preview pane beside the list, the popup growing to the output less 40 px a side (Left at the caret's start closes it; Ctrl+l/Ctrl+h open/close it wherever the caret is; every show starts compact). The pane shows the image, a playing GIF (ffmpeg at the pane's pixel size, never GdkPixbuf: it would decode every frame), one of several files (Ctrl+Left/Right), a file type's icon or the row's whole text as is (64 KiB at most). `launcher-clipboard` (`clipboard.py`, stdlib) turns `cliphist list` into such rows: image data (named by cliphist, or sniffed: WebP, AVIF, HEIC, JXL) and text (cliphist's list joins its lines and cuts it at 100 characters) decoded once into `~/.cache/launcher/clipboard/<id>.<ext>` (0700, files 0600) and pruned with the history, file links (several in one entry: a recording's sheets), plain paths, missing files, binary, text; `launcher-clipboard --restore ID` (the pick) and `--offer ID` (a fresh copy, from dotfiles' `cliphist-store`) put image data and file links up in several forms at once over data-control (`selection.py`): bytes, file, path, so Telegram/Obsidian paste the picture or animated GIF and a terminal the path. The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
 | `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
 | `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; before a drag the window under the pointer gets the frame (the shade stays until a drag; the frame is pulled inside at the output's edges) and a click (moved < 3 px) takes it (sway GET_TREE read with the frames: content without border/title bar, topmost first) or, over the bar/wallpaper, the whole output (region and gif alike); Z (by keycode, so also in the ru layout) toggles a magnifier while picking (loupe of 13x13 physical px, pixel position and colour; off at start); `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes). `capture gif [--dir DIR] [--copy]`: same picker, then wf-recorder (lossless RGB, 30 fps, 60 s cap) with a click-through indicator outside the region; a second `capture gif` stops it (pid file + SIGUSR1), `--cancel` discards it (SIGUSR2); the indicator goes at once; ffmpeg makes `DIR/recording-STAMP/` = `recording.gif` first (every frame, exact duplicates merged; `--copy` copies it right away), then `sheet.png` (frames showing a new state, no cap, tiled under `N/M · time · before switch` labels, for AI; `sheet-N.png` when they need several) and `frames/`; `--copy` then copies the sheets in one list (on top); a notification when done or failed |
 
@@ -143,6 +143,7 @@ gtk-widgets/
 │   ├── widget_base.py     # Shared GTK4 popup base class
 │   ├── theme.py           # Theme file lookup, colours, @@TOKEN@@ rendering (stdlib, no GTK)
 │   ├── copy_label.py      # CopyLabel + copyable(): click copies text via wl-copy, flashes "Copied"
+│   ├── wayland.py         # Minimal Wayland wire client (stdlib): ids, dispatch with fds, registry
 │   └── pulsectl/          # Vendored libpulse ctypes bindings (upstream commit + changes in README.md)
 ├── polkit/
 │   ├── usb-helper         # Root helper for USB format/write, installed to /usr/lib/gtk-widgets/
@@ -198,11 +199,12 @@ gtk-widgets/
 │   │   ├── protocol.py    # CLI <-> instance wire format (stdlib)
 │   │   ├── options.py     # dmenu row options after a NUL, GIF frame count (stdlib)
 │   │   ├── preview.py     # Row thumbnails, the preview pane, GIF playback via ffmpeg (worker-thread decode, caches)
-│   │   ├── clipboard.py   # launcher-clipboard: cliphist list -> rows with options (stdlib; tests/launcher_clipboard_test.py)
+│   │   ├── clipboard.py   # launcher-clipboard: cliphist list -> rows with options; --restore/--offer (stdlib; tests/launcher_clipboard_test.py)
+│   │   ├── selection.py   # Own the clipboard with several forms of one item over ext/wlr data-control (stdlib, forks to serve)
 │   │   └── style.css
 │   ├── capture/
 │   │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy; gif flow, stop/cancel signals, clipboard order
-│   │   ├── screencopy.py  # Wayland wire client: wlr-screencopy of every output into one memfd (stdlib)
+│   │   ├── screencopy.py  # wlr-screencopy of every output into one memfd (stdlib, over lib/wayland.py)
 │   │   ├── swayipc.py     # Exact output scales, logical rects and shown windows from sway IPC (stdlib)
 │   │   ├── geometry.py    # Logical -> physical selection and window placement maths (no GTK)
 │   │   ├── image.py       # Upright frames (lossless flips/turns), row-slice crops, PNG save
@@ -395,14 +397,28 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 
 - Passthrough formats (AC-3/DTS/… over HDMI/S/PDIF): skipped, no receiver here; `pactl set-sink-formats` covers it if one appears
 
-### Backlog
+### launcher — clipboard notes
 
-- **launcher: native clipboard images** — postponed by the user on 2026-11-11, its own
-  feature. dotfiles' single `wl-paste --watch cliphist store` likely stores an app's
-  "Copy image" (offered as HTML and an image) as the HTML, so it gets no thumbnail;
-  cliphist's README adds a second `wl-paste --type image --watch` (one copy then makes two
-  entries). Together with it: pasting a file-link entry back as a file (`text/uri-list`) or
-  as its path, since not every app takes files.
+- Forms per entry, tested by the user on 2026-11-11 (Telegram, Obsidian, ghostty, Claude Code):
+  a GIF as file + path pastes animated in Telegram and Obsidian, the path in a terminal; GIF
+  bytes paste as a still frame (so GIFs never go as bytes); a still image as bytes + file +
+  path gives the picture in Telegram and the path in a terminal. The GNOME
+  `x-special/gnome-copied-files` form added nothing
+- `wl-copy -t text/uri-list` also offers the same bytes as `text/plain`, and Telegram takes
+  that text for a GIF (a PNG it still attached): wl-copy can't offer a file without its text
+  twin, hence `selection.py`
+- Claude Code turns a pasted path to an image file into an `[Image #N]` attachment and
+  sends the path with it (`[Image: source: …]`); a `file://` link stays text
+- A pick is stored again (cliphist drops the older copy, new id; the cached file is renamed
+  to the new id so the pasted path stays valid) and offers `MARKER`, which `cliphist-store`
+  skips. A fresh image copy has no path of its own: its path is the cache file, alive
+  while the entry is in the history (100). `--offer` never runs wl-copy (it would be
+  stored again and loop)
+- Chrome's "Copy image" offers `text/x-moz-url` (UTF-16 URL), `text/html`, `image/png` and
+  no `text/plain`: a plain `wl-paste --watch` stored the URL. `cliphist-store` stores the
+  image then, and `--offer` replaces Chrome's offer with bytes + file + path
+
+### Backlog
 
 - **network: mobile broadband (USB modems)** — postponed by the user on 2026-09-24, its
   own phase. First add `modemmanager` to arch-install; NetworkManager can't use modems

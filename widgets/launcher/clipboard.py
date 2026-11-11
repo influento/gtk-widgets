@@ -2,6 +2,8 @@
 """launcher-clipboard — cliphist's history as dmenu lines with options.
 
   launcher-clipboard | launcher --dmenu --after-tab ...
+  launcher-clipboard --restore ID
+  launcher-clipboard --offer ID
 
 Prints one line per `cliphist list` entry, newest first:
 
@@ -24,9 +26,27 @@ Image data and text are decoded once into $XDG_CACHE_HOME/launcher/clipboard/
 <id>.<ext> (0700 folder, 0600 files: clipboard text, as private as cliphist's
 own database); a file whose entry left the history is deleted on the next run.
 Stdlib only: this runs before every clipboard pick.
+
+--restore puts a picked entry back on the clipboard. Image data and file links
+go up in several forms at once (selection.py), and each app takes the one it
+reads: image data as its bytes + the cached file + that file's path; file links
+as the files + their paths (+ the bytes of a single still image, for web
+pages). Telegram and Obsidian then paste the image or the animated GIF, a
+terminal the path; Claude Code attaches the image and keeps its path. GIF bytes
+would paste as a still frame, so GIFs go only as files. The entry moves to the
+top of the history (stored again: cliphist drops the older copy and gives it a
+new id, and the cached file follows the id), and MARKER tells dotfiles'
+cliphist-store not to store the forms as a new entry. Everything else (text,
+plain paths, unknown bytes) goes through wl-copy as before.
+
+--offer does the same for a copy cliphist-store has just stored (an image from
+Chrome, a capture's file link), so a fresh copy pastes as a path too; it leaves
+the entry where it is and any other copy alone (no wl-copy: that would be
+stored again and loop).
 """
 
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -35,6 +55,11 @@ import urllib.parse
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
                      "launcher", "clipboard")
 BINARY = re.compile(r"^\[\[ binary data (\S+ \S+) (\w+) (\d+)x(\d+) \]\]$")
+MARKER = "application/x-launcher-clipboard"
+# Formats sent as image bytes as well as a file; GIF is left out on purpose
+STILL_MIME = {"png": "image/png", "jpeg": "image/jpeg", "jpg": "image/jpeg",
+              "webp": "image/webp", "bmp": "image/bmp", "avif": "image/avif",
+              "heic": "image/heic", "jxl": "image/jxl"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic", ".heif", ".jxl",
              ".bmp", ".tif", ".tiff", ".svg", ".ico", ".qoi", ".tga"}
 
@@ -189,11 +214,98 @@ def run(listing, decode, root=CACHE):
     return out
 
 
+def restore_kind(text, raw):
+    """("image", fmt), ("files", [paths]) or None (wl-copy as is) for an entry
+    whose `cliphist list` text is text and whose bytes are raw."""
+    m = BINARY.match(text)
+    fmt = m.group(2) if m else sniff(raw)
+    if fmt:
+        return "image", fmt
+    if text.startswith("file://"):
+        paths = uri_paths(raw.decode("utf-8", "replace"))
+        if paths:
+            return "files", paths
+    return None
+
+
+def _text_forms(text):
+    from selection import TEXT_TYPES
+    return [(t, text.encode()) for t in TEXT_TYPES]
+
+
+def image_forms(raw, fmt, path):
+    """Image data: its bytes, the cached file, the file's path."""
+    mime = STILL_MIME.get(fmt, f"image/{fmt}")
+    return ([(mime, raw), ("text/uri-list", pathlib.Path(path).as_uri().encode())]
+            + _text_forms(path) + [(MARKER, b"")])
+
+
+def file_forms(raw, paths):
+    """File links: the files as they were copied, their paths one per line,
+    and a single still image's bytes too."""
+    forms = [("text/uri-list", raw)]
+    if len(paths) == 1:
+        ext = os.path.splitext(paths[0])[1].lower().lstrip(".")
+        if ext in STILL_MIME and os.path.isfile(paths[0]):
+            with open(paths[0], "rb") as f:
+                forms.append((STILL_MIME[ext], f.read()))
+    return forms + _text_forms("\n".join(paths)) + [(MARKER, b"")]
+
+
+def restore(cid, cliphist, serve, wl_copy, root=CACHE, offer=False):
+    """Put entry cid back on the clipboard (see the module notes). With
+    offer (a copy cliphist-store has just stored), only image data and file
+    links go up, without moving the entry: anything else is left as the app
+    offered it."""
+    text = next((t for i, _, t in (ln.partition(b"\t") for ln in cliphist("list").split(b"\n"))
+                 if i.decode() == cid), b"").decode("utf-8", "replace")
+    raw = cliphist("decode", data=f"{cid}\t\n".encode())
+    kind = restore_kind(text, raw)
+    if kind is None:
+        if not offer:
+            wl_copy(raw)
+        return
+    top = cid
+    if not offer:
+        cliphist("store", data=raw)  # to the top, under a new id
+        top = cliphist("list").split(b"\n", 1)[0].partition(b"\t")[0].decode() or cid
+    if kind[0] == "image":
+        path = Cache(root, lambda _: raw).data(cid, kind[1])
+        if top != cid:
+            new = os.path.join(root, f"{top}.{kind[1]}")
+            os.replace(path, new)
+            path = new
+        forms = image_forms(raw, kind[1], path)
+    else:
+        forms = file_forms(raw, kind[1])
+    try:
+        serve(forms)
+    except OSError:
+        if not offer:
+            wl_copy(raw)
+
+
 def main():
     def cliphist(*args, data=None):
         return subprocess.run(["cliphist", *args], input=data, capture_output=True,
                               timeout=10).stdout
 
+    if sys.argv[1:2] in (["--restore"], ["--offer"]) and len(sys.argv) == 3:
+        def wl_copy(raw):
+            subprocess.run(["wl-copy"], input=raw, check=False)
+
+        def serve(forms):
+            import selection
+            try:
+                selection.serve(forms)
+            except selection.WaylandError as e:
+                raise OSError(str(e)) from None
+
+        try:
+            restore(sys.argv[2], cliphist, serve, wl_copy, offer=sys.argv[1] == "--offer")
+        except (OSError, subprocess.SubprocessError) as e:
+            sys.exit(f"launcher-clipboard: {e}")
+        return
     try:
         listing = cliphist("list")
     except (OSError, subprocess.SubprocessError) as e:

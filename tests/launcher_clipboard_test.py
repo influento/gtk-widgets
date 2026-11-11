@@ -7,6 +7,7 @@ come from a fake listing, decode() from a dict, files from a temp dir.
 """
 
 import os
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -168,6 +169,128 @@ class Clipboard(unittest.TestCase):
         out = clipboard.run(b"4\t[[ binary data 1 KiB png 1x1 ]]", self.decode, root=self.cache)
         self.assertTrue(out[0].startswith("4\t"))
         self.assertNotIn("\n", out[0])
+
+
+class FakeCliphist:
+    """cliphist over a list of (id, list text, bytes), newest first; store
+    moves identical bytes to the top under a new id, as cliphist does."""
+
+    def __init__(self, entries):
+        self.entries = list(entries)
+        self.next = max(int(e[0]) for e in entries) + 1
+
+    def __call__(self, *args, data=None):
+        if args == ("list",):
+            return b"\n".join(f"{i}\t{t}".encode() for i, t, _ in self.entries) + b"\n"
+        if args == ("decode",):
+            cid = data.decode().split("\t")[0]
+            return next(r for i, _, r in self.entries if i == cid)
+        if args == ("store",):
+            old = next(e for e in self.entries if e[2] == data)
+            self.entries.remove(old)
+            self.entries.insert(0, (str(self.next), old[1], data))
+            self.next += 1
+            return b""
+        raise AssertionError(args)
+
+
+class Restore(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.join(self.tmp.name, "cache")
+        self.served, self.copied = [], []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def restore(self, cliphist, cid):
+        clipboard.restore(cid, cliphist, self.served.append, self.copied.append, self.root)
+
+    def types(self):
+        return [m for m, _ in self.served[0]]
+
+    def test_image_data_goes_up_as_bytes_file_and_path(self):
+        ch = FakeCliphist([("7", "hello", b"hello"),
+                           ("5", "[[ binary data 40 B png 1x1 ]]", PNG)])
+        self.restore(ch, "5")
+        self.assertEqual(ch.entries[0][0], "8")  # moved to the top, new id
+        path = os.path.join(self.root, "8.png")
+        self.assertEqual(pathlib.Path(path).read_bytes(), PNG)
+        forms = dict(self.served[0])
+        self.assertEqual(self.types()[0], "image/png")
+        self.assertEqual(forms["image/png"], PNG)
+        self.assertEqual(forms["text/uri-list"], f"file://{path}".encode())
+        self.assertEqual(forms["text/plain"], path.encode())
+        self.assertIn(clipboard.MARKER, forms)
+        self.assertEqual(self.copied, [])
+
+    def test_cached_file_follows_the_new_id(self):
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, "5.png"), "wb") as f:
+            f.write(PNG)
+        ch = FakeCliphist([("5", "[[ binary data 40 B png 1x1 ]]", PNG)])
+        self.restore(ch, "5")
+        self.assertEqual(sorted(os.listdir(self.root)), ["6.png"])
+
+    def test_sniffed_webp_is_image_data(self):
+        ch = FakeCliphist([("3", "RIFF\ufffd", WEBP)])
+        self.restore(ch, "3")
+        self.assertEqual(self.types()[0], "image/webp")
+
+    def test_gif_link_goes_as_file_and_path_never_bytes(self):
+        gif = os.path.join(self.tmp.name, "rec ording.gif")
+        with open(gif, "wb") as f:
+            f.write(GIF_ANIM)
+        uri = pathlib.Path(gif).as_uri().encode()
+        ch = FakeCliphist([("4", uri.decode(), uri)])
+        self.restore(ch, "4")
+        forms = dict(self.served[0])
+        self.assertEqual(self.types()[0], "text/uri-list")
+        self.assertEqual(forms["text/uri-list"], uri)
+        self.assertEqual(forms["text/plain;charset=utf-8"], gif.encode())
+        self.assertNotIn("image/gif", forms)
+
+    def test_still_image_link_also_offers_bytes(self):
+        png = os.path.join(self.tmp.name, "shot.png")
+        with open(png, "wb") as f:
+            f.write(PNG)
+        uri = pathlib.Path(png).as_uri().encode()
+        self.restore(FakeCliphist([("4", uri.decode(), uri)]), "4")
+        self.assertEqual(dict(self.served[0])["image/png"], PNG)
+
+    def test_several_links_give_paths_one_per_line(self):
+        a, b = (os.path.join(self.tmp.name, n) for n in ("sheet-1.png", "sheet-2.png"))
+        raw = f"file://{a}\r\nfile://{b}".encode()
+        self.restore(FakeCliphist([("9", raw.decode(), raw)]), "9")
+        forms = dict(self.served[0])
+        self.assertEqual(forms["text/plain"], f"{a}\n{b}".encode())
+        self.assertNotIn("image/png", forms)
+
+    def test_text_goes_through_wl_copy(self):
+        ch = FakeCliphist([("2", "/etc/hostname", b"/etc/hostname"), ("1", "hi", b"hi")])
+        self.restore(ch, "2")
+        self.restore(ch, "1")
+        self.assertEqual(self.copied, [b"/etc/hostname", b"hi"])
+        self.assertEqual(self.served, [])
+
+    def test_offer_keeps_the_entry_and_its_id(self):
+        ch = FakeCliphist([("5", "[[ binary data 40 B png 1x1 ]]", PNG), ("4", "hi", b"hi")])
+        clipboard.restore("5", ch, self.served.append, self.copied.append, self.root, offer=True)
+        self.assertEqual([e[0] for e in ch.entries], ["5", "4"])
+        self.assertEqual(dict(self.served[0])["text/plain"],
+                         os.path.join(self.root, "5.png").encode())
+
+    def test_offer_leaves_text_alone(self):
+        ch = FakeCliphist([("4", "hi", b"hi")])
+        clipboard.restore("4", ch, self.served.append, self.copied.append, self.root, offer=True)
+        self.assertEqual((self.served, self.copied), ([], []))
+
+    def test_failed_serve_falls_back_to_wl_copy(self):
+        def broken(forms):
+            raise OSError("no data-control")
+        ch = FakeCliphist([("5", "[[ binary data 40 B png 1x1 ]]", PNG)])
+        clipboard.restore("5", ch, broken, self.copied.append, self.root)
+        self.assertEqual(self.copied, [PNG])
 
 
 if __name__ == "__main__":
