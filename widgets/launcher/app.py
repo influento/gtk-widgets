@@ -17,6 +17,8 @@ from gi.repository import Gio, GObject, Pango  # noqa: E402
 
 import apps as appdb  # noqa: E402
 import match  # noqa: E402
+import options  # noqa: E402
+import preview  # noqa: E402
 import protocol  # noqa: E402
 
 APP_ID = "dev.dotfiles.launcher"
@@ -36,10 +38,11 @@ class Item(GObject.Object):
 
     __gtype_name__ = "LauncherItem"
 
-    def __init__(self, text, field, extra=(), icon=None, detail="", ref=None):
+    def __init__(self, text, field, extra=(), icon=None, detail="", ref=None, opts=None):
         super().__init__()
         self.text, self.field, self.extra = text, field, extra
         self.icon, self.detail, self.ref = icon, detail, ref
+        self.opts = opts or {}  # dmenu row options (options.py)
 
 
 class Row(Gtk.Box):
@@ -47,6 +50,8 @@ class Row(Gtk.Box):
         super().__init__(spacing=10)
         self.icon = Gtk.Image(pixel_size=24)
         self.append(self.icon)
+        self.slot = preview.Slot()  # dmenu rows with options
+        self.append(self.slot)
         # max_width_chars=1: a long name can't widen the list, it ellipsizes
         self.label = Gtk.Label(xalign=0, hexpand=True, max_width_chars=1,
                                ellipsize=Pango.EllipsizeMode.END, single_line_mode=True)
@@ -58,13 +63,18 @@ class Row(Gtk.Box):
 
 
 def display_lines(lines, after_tab=False):
-    """dmenu input lines as shown and searched: UTF-8 (invalid bytes replaced),
-    with after_tab only what follows the first tab (cliphist's "<id>\t<preview>"),
-    other tabs as two spaces. The pick is printed from the original bytes."""
-    texts = (line.decode("utf-8", "replace") for line in lines)
-    if after_tab:
-        texts = (t.split("\t", 1)[-1] for t in texts)
-    return [t.replace("\t", "  ") for t in texts]
+    """dmenu input lines as (text, options): the text shown and searched is
+    UTF-8 (invalid bytes replaced), without the options after a NUL
+    (options.py), with after_tab only what follows the first tab (cliphist's
+    "<id>\t<preview>"), other tabs as two spaces. The pick is printed from
+    the original bytes."""
+    rows = []
+    for line in lines:
+        text, opts = options.split(line.decode("utf-8", "replace"))
+        if after_tab:
+            text = text.split("\t", 1)[-1]
+        rows.append((text.replace("\t", "  "), opts))
+    return rows
 
 
 def _us_key(keyval):
@@ -77,7 +87,8 @@ class Picker:
     """The popup: a search entry over a lazily rendered list (Gtk.ListView),
     built once and shown/hidden. drun lists desktop entries by match tier,
     then usage, then name; dmenu lists lines by match tier, then input order,
-    with an optional action button (--action).
+    with an optional action button (--action). dmenu rows with options get
+    thumbnails, and Right opens the preview pane beside the list (Left closes it).
     Only Esc closes it: q and every other key go to the search entry."""
 
     def __init__(self, app):
@@ -87,6 +98,7 @@ class Picker:
         self.drun_items = []
         self.scores = {}      # drun: app id -> usage score, taken at show
         self._on_pick = None  # dmenu: callback(line index, protocol.ACTION or None)
+        self.pane_open = False
         self._quiet = False
 
         self.win, overlay = popup_window(app, self.dismiss, lambda *_: False)
@@ -132,7 +144,14 @@ class Picker:
                                valign=Gtk.Align.START, margin_top=8)
         self.empty.add_css_class("launcher-empty")
         stack.add_overlay(self.empty)
-        box.append(stack)
+        self.box, self.scroller, self.liststack = box, scroller, stack
+        # The list and, while open, the preview pane beside it
+        self.body = Gtk.Box(spacing=10)
+        self.body.append(stack)
+        self.pane = preview.Pane()
+        self.body.append(self.pane)
+        box.append(self.body)
+        self.selection.connect("notify::selected", lambda *_: self._show_selected())
 
         place_popup(self.win, overlay, box, MARGIN_TOP)
 
@@ -152,6 +171,13 @@ class Picker:
         row.detail.set_text(item.detail)
         row.detail.set_visible(bool(item.detail))
         row.icon.set_visible(self.mode == DRUN)
+        thumbs = self.mode == DMENU and bool(item.opts)
+        row.slot.set_visible(thumbs)
+        row.set_size_request(-1, preview.THUMB_ROW_H if thumbs and row.slot.show(item.opts) else -1)
+        if thumbs and options.first(item.opts, "kind") == "missing":
+            row.label.add_css_class("launcher-missing")
+        else:
+            row.label.remove_css_class("launcher-missing")
         if self.mode == DRUN:
             if item.icon is not None:
                 row.icon.set_from_gicon(item.icon)
@@ -176,6 +202,8 @@ class Picker:
     def show_drun(self, usage, t0=None):
         self._drop_pick()
         self.mode = DRUN
+        self.pane_open = False
+        self._layout()
         self.action.set_visible(False)
         self.items = self.drun_items
         now = time.time()
@@ -192,7 +220,12 @@ class Picker:
         self._on_pick = on_pick
         self.action.set_label(action)
         self.action.set_visible(bool(action))
-        self.items = [Item(t[:DISPLAY_CHARS], match.Field(t), ref=i) for i, t in enumerate(texts)]
+        self.items = [Item(t[:DISPLAY_CHARS],
+                           match.Field(" ".join([t] + o.get("detail", []) + o.get("meta", []))),
+                           detail=options.first(o, "detail"), ref=i, opts=o)
+                      for i, (t, o) in enumerate(texts)]
+        self.pane_open = False  # every show starts compact
+        self._layout()
         self.prompt.set_text(prompt or "")
         self.entry.set_placeholder_text("Filter")
         self._present(t0)
@@ -222,6 +255,7 @@ class Picker:
             self.hide()
 
     def hide(self):
+        self.pane.stop()
         self.win.set_visible(False)
         if self.mode == DMENU:  # free a long list; the next show rebuilds it
             self.items = []
@@ -302,11 +336,14 @@ class Picker:
         if result:
             self.selection.set_selected(0)
             self.list.scroll_to(0, Gtk.ListScrollFlags.NONE, None)
+        self._show_selected()  # the row at 0 may be a new one
 
     # --- keys ---
 
     def _on_key(self, _ctrl, keyval, _code, state):
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if self._pane_key(keyval, ctrl, state):
+            return True
         if keyval == Gdk.KEY_Escape:
             self.dismiss()
         elif keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter):
@@ -329,6 +366,77 @@ class Picker:
         else:
             return False
         return True
+
+    def _pane_key(self, keyval, ctrl, state):
+        """Right at the end of the filter text opens the pane, Left at its
+        start closes it; elsewhere they move the caret. Ctrl+Left/Right page
+        through a row's files while it is open."""
+        if not self._has_previews():
+            return False
+        left = keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left)
+        right = keyval in (Gdk.KEY_Right, Gdk.KEY_KP_Right)
+        if not (left or right) or state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK):
+            return False
+        if ctrl:
+            if self.pane_open:
+                self.pane.page(1 if right else -1)
+            return self.pane_open
+        caret = self.entry.get_position()
+        if right and not self.pane_open and caret == len(self.entry.get_text()):
+            self._set_pane(True)
+            return True
+        if left and self.pane_open and caret == 0:
+            self._set_pane(False)
+            return True
+        return False
+
+    # --- preview pane ---
+
+    def _has_previews(self):
+        return self.mode == DMENU and any(it.opts for it in self.items)
+
+    def _set_pane(self, open_):
+        self.pane_open = open_
+        self._layout()
+        self._show_selected()
+
+    def _layout(self):
+        """Compact (the list alone, as wide and tall as ever), or the pane open:
+        the popup takes the output but MARGIN_TOP and 40 px around, and the
+        list keeps its width beside the pane."""
+        open_ = self.pane_open and self._has_previews()
+        self.pane.set_visible(open_)
+        list_w = WIDTH - 20  # .launcher padding
+        self.liststack.set_size_request(list_w, -1)
+        if not open_:
+            self.pane.stop()
+            self.box.set_size_request(WIDTH, -1)
+            self._list_height(ROWS * ROW_H)
+            return
+        mon = self._monitor()
+        width = mon.width - 80
+        tall = mon.height - MARGIN_TOP - 40 - 92  # padding, search row, spacing
+        self.box.set_size_request(width, -1)
+        self._list_height(tall)
+        self.pane.set_view_size(width - 20 - list_w - 10 - 24, tall - 24 - 64)
+
+    def _monitor(self):
+        display = Gdk.Display.get_default()
+        surface = self.win.get_surface()
+        mon = display.get_monitor_at_surface(surface) if surface is not None else None
+        return (mon or display.get_monitors().get_item(0)).get_geometry()
+
+    def _list_height(self, h):
+        # GTK refuses a max below the current min: clear the min first
+        self.scroller.set_min_content_height(-1)
+        self.scroller.set_max_content_height(h)
+        self.scroller.set_min_content_height(h)
+
+    def _show_selected(self):
+        if not (self.pane_open and self._has_previews()):
+            return
+        pos = self.selection.get_selected()
+        self.pane.show_item(self.store.get_item(pos) if pos != Gtk.INVALID_LIST_POSITION else None)
 
     def _move(self, delta):
         n = self.store.get_n_items()

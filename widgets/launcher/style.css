@@ -84,3 +84,58 @@ button.launcher-action:hover {
   background: @@SURFACE1@@;
   color: @@TEXT@@;
 }
+
+/* dmenu rows with options: thumbnails (preview.py) */
+.launcher-thumb {
+  background: @@CRUST@@;
+  border-radius: 4px;
+}
+
+.launcher-badge {
+  font-size: 9px;
+  font-weight: bold;
+  background: @@PEACH@@;
+  color: @@BASE@@;
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+
+.launcher-missing {
+  color: @@OVERLAY1@@;
+  text-decoration: line-through;
+}
+
+listview.launcher-list > row:selected .launcher-missing {
+  color: alpha(@@BASE@@, 0.65);
+}
+
+listview.launcher-list > row:selected image {
+  color: @@BASE@@;
+}
+
+/* the preview pane beside the list (Right opens it) */
+.launcher-pane {
+  background: @@MANTLE@@;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.launcher-pane-view {
+  background: @@CRUST@@;
+  border-radius: 4px;
+}
+
+.launcher-pane-text {
+  font-size: 12px;
+  color: @@TEXT@@;
+}
+
+.launcher-pane-caption {
+  font-size: 12px;
+  color: @@SUBTEXT1@@;
+}
+
+.launcher-pane-meta {
+  font-size: 11px;
+  color: @@OVERLAY1@@;
+}

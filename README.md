@@ -114,12 +114,18 @@ the chosen one exactly as read (Esc prints nothing and exits 1):
 ```
 exec launcher --daemon
 bindsym $mod+d exec launcher
-bindsym $mod+v exec sh -c 'sel=$(cliphist list | launcher --dmenu --prompt Clipboard --after-tab) && printf "%s\n" "$sel" | cliphist decode | wl-copy'
+bindsym $mod+v exec sh -c 'id=$(launcher-clipboard | launcher --dmenu --prompt Clipboard --after-tab | cut -f1) && [ -n "$id" ] && printf "%s\t\n" "$id" | cliphist decode | wl-copy'
 ```
 
 (A plain `… | launcher --dmenu | cliphist decode | wl-copy` pipe would still run `wl-copy`
 after Esc, on empty input.) `--after-tab` shows and searches only what follows a line's first
 tab, so cliphist's ids stay hidden but still reach `cliphist decode`.
+
+`launcher-clipboard` prints cliphist's history with row options after a NUL byte (see
+`widgets/launcher/options.py`): images, GIFs and file links get thumbnails, and Right opens
+a preview pane beside the list (Left closes it, Ctrl+Left/Right pages through several
+files). `cut -f1` keeps only the id: `cliphist decode` needs nothing more, and the NUL never
+reaches the shell.
 
 Without a running instance, `launcher` starts one and shows it, and `--dmenu` runs as a
 one-shot process (slower, ~200 ms). The CLI talks to the instance over
