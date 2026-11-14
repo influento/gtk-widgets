@@ -175,7 +175,7 @@ gtk-widgets/
 ├── src/gtk_widgets/
 │   ├── __init__.py        # Empty: launcher's CLI imports it
 │   ├── lib/
-│   │   ├── parse.py       # JSON readers (object/array guards, str/bool/float) returning ParseError; the theme file's parser (stdlib)
+│   │   ├── parse.py       # JSON readers (object/array guards, str/bool/int/float) returning ParseError; the theme file's parser (stdlib)
 │   │   ├── paths.py       # SRC, module_child(): run one of our modules in a child Python (stdlib)
 │   │   ├── theme.py       # Theme file lookup, colours, @@TOKEN@@ rendering (stdlib, no GTK)
 │   │   ├── wayland.py     # Minimal Wayland wire client (stdlib): ids, dispatch with fds, registry
@@ -196,7 +196,9 @@ gtk-widgets/
 │       │   └── status         # JSON: date/time with icon
 │       ├── claude_usage/
 │       │   ├── main.py
-│       │   ├── usage.py       # Shared formatting (reset/charge dates, severity) for popup + status
+│       │   ├── usage.py       # Shared formatting (reset/charge dates, severity) for popup + status; UsageError
+│       │   ├── parse.py       # Models + parsers: usage answer/cache, --json report, charge cache, credentials, profile
+│       │   ├── api.py         # GET api.anthropic.com paths with Claude Code's OAuth token, errors as UsageError
 │       │   ├── style.css
 │       │   └── status.py      # JSON: usage percentages, reset times
 │       ├── display/

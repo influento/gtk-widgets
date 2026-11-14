@@ -35,6 +35,10 @@ def as_bool(value: object, path: str) -> bool | ParseError:
     return value if isinstance(value, bool) else ParseError(f"{path}: not a boolean")
 
 
+def as_int(value: object, path: str) -> int | ParseError:
+    return value if type(value) is int else ParseError(f"{path}: not an integer")
+
+
 def as_float(value: object, path: str) -> float | ParseError:
     """A number; an int is taken as a float."""
     if isinstance(value, bool) or not isinstance(value, int | float):

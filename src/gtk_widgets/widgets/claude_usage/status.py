@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 """Fetch Claude subscription usage and output waybar-compatible JSON."""
 
+import contextlib
 import json
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
+from dataclasses import asdict
 from pathlib import Path
 
+from gtk_widgets.lib.parse import ParseError
 from gtk_widgets.lib.paths import module_child
+from gtk_widgets.widgets.claude_usage import api
+from gtk_widgets.widgets.claude_usage.parse import (
+    ChargeCache,
+    Usage,
+    parse_charge_cache,
+    parse_usage,
+)
 from gtk_widgets.widgets.claude_usage.usage import (
+    UsageError,
     describe_charge_date,
     format_reset_absolute,
     format_reset_relative,
@@ -24,145 +33,66 @@ USAGE_CACHE = Path.home() / ".claude" / "usage_cache.json"
 CACHE_TTL = 600  # 10 minutes
 
 
-def load_token():
-    """Read OAuth access token from Claude Code credentials."""
-    creds_path = Path.home() / ".claude" / ".credentials.json"
-    with Path(creds_path).open() as f:
-        creds = json.load(f)
-    return creds["claudeAiOauth"]["accessToken"]
-
-
-def fetch_usage_api(token):
-    """Call the Anthropic OAuth usage endpoint."""
-    req = urllib.request.Request(
-        "https://api.anthropic.com/api/oauth/usage",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "anthropic-beta": "oauth-2025-04-20",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
-
-
-def load_usage_cache():
+def load_usage_cache() -> tuple[Usage | None, bool]:
     """Load cached usage data and freshness flag."""
     try:
-        with Path(USAGE_CACHE).open() as f:
-            cache = json.load(f)
-        fresh = time.time() - cache.get("_cached_at", 0) < CACHE_TTL
-        return cache, fresh
-    except FileNotFoundError, json.JSONDecodeError:
+        data: object = json.loads(USAGE_CACHE.read_text())
+    except FileNotFoundError, ValueError:
         return None, False
+    match parse_usage(data):
+        case ParseError():
+            return None, False
+        case cache:
+            return cache, time.time() - cache.cached_at < CACHE_TTL
 
 
-def save_usage_cache(data):
-    """Save usage data to cache with timestamp."""
-    data["_cached_at"] = time.time()
-    with Path(USAGE_CACHE).open("w") as f:
-        json.dump(data, f)
-
-
-def fetch_usage(token):
-    """Fetch usage data from API and save to cache."""
-    data = fetch_usage_api(token)
-    save_usage_cache(data)
-    return data
-
-
-def load_cached_charge_date():
-    """The next charge: the cached one, rolled forward a month at a time once it passes."""
+def fetch_usage(token: str) -> Usage | UsageError:
+    """Fetch usage data from the API and save it to the cache."""
+    match api.get("/api/oauth/usage", api.oauth_headers(token), parse_usage):
+        case UsageError() as e:
+            return e
+        case usage:
+            pass
     try:
-        with Path(SUBSCRIPTION_CACHE).open() as f:
-            cache = json.load(f)
-        charge_date = cache.get("next_charge_date")
-        if charge_date:
-            return roll_charge_date(charge_date)
-    except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
-        pass
-    return None
+        USAGE_CACHE.write_text(json.dumps({**usage.raw, "_cached_at": time.time()}))
+    except OSError as e:
+        return UsageError(str(e))
+    return usage
 
 
-LEGACY_WINDOWS = [
-    ("five_hour", "session", "5h", "Current session"),
-    ("seven_day", "weekly_all", "7d", "All models"),
-]
+def load_charge_cache() -> ChargeCache:
+    """subscription_cache.json; a missing, unreadable or malformed one is empty."""
+    try:
+        data: object = json.loads(SUBSCRIPTION_CACHE.read_text())
+    except FileNotFoundError, ValueError:
+        return ChargeCache()
+    match parse_charge_cache(data):
+        case ParseError():
+            return ChargeCache()
+        case cache:
+            return cache
 
 
-def normalize_limits(data):
-    """Return a list of usage windows in display order.
-
-    Each window: {kind, short, label, percent, resets_at, severity, is_active}.
-    Prefers the ``limits`` array (session / weekly_all / weekly_scoped),
-    falling back to the legacy five_hour / seven_day objects.
-    """
-    windows = []
-    limits = data.get("limits") or []
-    for lim in limits:
-        kind = lim.get("kind")
-        scope = lim.get("scope") or {}
-        model = (scope.get("model") or {}).get("display_name")
-        surface = (
-            (scope.get("surface") or {}).get("display_name")
-            if isinstance(scope.get("surface"), dict)
-            else scope.get("surface")
-        )
-        if kind == "session":
-            short, label = "5h", "Current session"
-        elif kind == "weekly_all":
-            short, label = "7d", "All models"
-        elif kind == "weekly_scoped":
-            name = model or surface or "scoped"
-            short, label = name.lower(), name
-        else:
-            name = model or surface or kind or "other"
-            short, label = name.lower(), name
-        windows.append(
-            {
-                "kind": kind,
-                "short": short,
-                "label": label,
-                "percent": float(lim.get("percent") or 0),
-                "resets_at": lim.get("resets_at"),
-                "severity": lim.get("severity") or "normal",
-                "is_active": bool(lim.get("is_active")),
-            }
-        )
-    if windows:
-        return windows
-
-    for key, kind, short, label in LEGACY_WINDOWS:
-        win = data.get(key)
-        if not win or win.get("utilization") is None:
-            continue
-        windows.append(
-            {
-                "kind": kind,
-                "short": short,
-                "label": label,
-                "percent": float(win["utilization"]),
-                "resets_at": win.get("resets_at"),
-                "severity": "normal",
-                "is_active": False,
-            }
-        )
-    return windows
+def load_cached_charge_date() -> str | None:
+    """The next charge: the cached one, rolled forward a month at a time once it passes."""
+    charge_date = load_charge_cache().next_charge_date
+    return roll_charge_date(charge_date) if charge_date else None
 
 
-def format_output(data):
+def format_output(usage: Usage) -> dict[str, str]:
     """Format usage data as waybar JSON."""
-    windows = normalize_limits(data)
+    windows = usage.windows
     if not windows:
         return {"text": "no data", "tooltip": "", "class": "error"}
-    css_class = severity(max((w["percent"] for w in windows), default=0))
+    css_class = severity(max((w.percent for w in windows), default=0))
 
-    width = max(len(w["label"]) for w in windows) + 2
-    tooltip_lines = []
+    width = max(len(w.label) for w in windows) + 2
+    tooltip_lines: list[str] = []
     for w in windows:
-        pct = round(w["percent"])
-        line = f"{w['label'] + ':':<{width}}{pct:>3}%"
-        if reset_in_future(w["resets_at"]):
-            line += f"  resets {format_reset_absolute(w['resets_at'])} ({format_reset_relative(w['resets_at'])})"
+        pct = round(w.percent)
+        line = f"{w.label + ':':<{width}}{pct:>3}%"
+        if w.resets_at and reset_in_future(w.resets_at):
+            line += f"  resets {format_reset_absolute(w.resets_at)} ({format_reset_relative(w.resets_at)})"
         tooltip_lines.append(line)
 
     charge_date = load_cached_charge_date()
@@ -171,11 +101,11 @@ def format_output(data):
             f"{'next charge:':<{width}}{describe_charge_date(charge_date)}"
         )
 
-    parts = []
+    parts: list[str] = []
     for w in windows:
-        part = f"{w['short']} - {round(w['percent'])}%"
-        if w["kind"] == "session" and reset_in_future(w["resets_at"]):
-            part += f" ({format_reset_relative(w['resets_at']).replace(' ', ':')})"
+        part = f"{w.short} - {round(w.percent)}%"
+        if w.kind == "session" and w.resets_at and reset_in_future(w.resets_at):
+            part += f" ({format_reset_relative(w.resets_at).replace(' ', ':')})"
         parts.append(part)
 
     return {
@@ -185,26 +115,24 @@ def format_output(data):
     }
 
 
-def print_json(data):
+def print_json(usage: Usage) -> None:
     """Raw API data plus normalized windows and cached charge date, for the popup."""
-    out = {k: v for k, v in data.items() if not k.startswith("_")}
-    out["windows"] = normalize_limits(data)
+    out = {k: v for k, v in usage.raw.items() if not k.startswith("_")}
+    out["windows"] = [asdict(w) for w in usage.windows]
     charge_date = load_cached_charge_date()
     if charge_date:
         out["next_charge_date"] = charge_date
     print(json.dumps(out))
 
 
-def refresh_cache():
+def refresh_cache() -> None:
     """Background-only: fetch fresh data and update cache, then exit."""
-    try:
-        token = load_token()
-        fetch_usage(token)
-    except Exception:
-        pass
+    token = api.load_token()
+    if not isinstance(token, UsageError):
+        _ = fetch_usage(token)
 
 
-def main():
+def main() -> None:
     if "--refresh-cache" in sys.argv:
         refresh_cache()
         return
@@ -214,7 +142,7 @@ def main():
     cached, fresh = load_usage_cache()
 
     # Fresh cache — render immediately, no API call
-    if fresh and not force:
+    if cached is not None and fresh and not force:
         if is_json:
             print_json(cached)
         else:
@@ -224,35 +152,28 @@ def main():
     # Stale or no cache — print what we have and refresh in background (waybar)
     # or fetch synchronously (--json mode)
     if not is_json:
-        if cached:
+        if cached is not None:
             print(json.dumps(format_output(cached)))
         else:
             print(json.dumps({"text": "fetching…", "tooltip": "", "class": "error"}))
         # Refresh cache in background so waybar gets output immediately
         cmd, env = module_child(__spec__.name)  # __name__ is __main__ under -m
-        try:
+        with contextlib.suppress(OSError):
             subprocess.Popen(
                 [*cmd, "--refresh-cache"],
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except Exception:
-            pass
         return
 
     # --json with a stale cache: fetch synchronously so the popup shows live data
-    try:
-        print_json(fetch_usage(load_token()))
-    except Exception as e:
-        msg = str(e)
-        if isinstance(e, urllib.error.HTTPError):
-            msg = f"HTTP {e.code} {e.reason}"
-        elif isinstance(e, urllib.error.URLError):
-            msg = f"network error: {e.reason}"
-        elif isinstance(e, (FileNotFoundError, KeyError)):
-            msg = f"credentials: {e}"
-        print(json.dumps({"error": msg}))
+    token = api.load_token()
+    match token if isinstance(token, UsageError) else fetch_usage(token):
+        case UsageError() as e:
+            print(json.dumps({"error": str(e)}))
+        case usage:
+            print_json(usage)
 
 
 if __name__ == "__main__":

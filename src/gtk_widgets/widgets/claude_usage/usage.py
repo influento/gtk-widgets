@@ -1,16 +1,16 @@
 """Formatting shared by the claude-usage popup and its status script."""
 
 import calendar
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 
 
-def _parse_iso(iso_str):
-    return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+class UsageError(RuntimeError):
+    """A fetch, a file or an answer failed; the message is shown as it is."""
 
 
-def format_reset_relative(iso_str):
+def format_reset_relative(iso_str: str) -> str:
     """Reset time as a relative duration: '1d 2h', '2h 5m', '5m', or 'now'."""
-    delta = _parse_iso(iso_str) - datetime.now(UTC)
+    delta = datetime.fromisoformat(iso_str) - datetime.now(UTC)
     total_minutes = int(delta.total_seconds() / 60)
     if total_minutes < 0:
         return "now"
@@ -23,17 +23,17 @@ def format_reset_relative(iso_str):
     return f"{minutes}m"
 
 
-def format_reset_absolute(iso_str):
+def format_reset_absolute(iso_str: str) -> str:
     """Reset time as a local day and time (e.g., 'Fri 10:59 AM')."""
-    return _parse_iso(iso_str).astimezone().strftime("%a %-I:%M %p")
+    return datetime.fromisoformat(iso_str).astimezone().strftime("%a %-I:%M %p")
 
 
-def reset_in_future(iso_str):
+def reset_in_future(iso_str: str | None) -> bool:
     """True if a reset timestamp is present and still ahead of now."""
-    return bool(iso_str) and _parse_iso(iso_str) > datetime.now(UTC)
+    return bool(iso_str) and datetime.fromisoformat(iso_str) > datetime.now(UTC)
 
 
-def describe_reset(iso_str):
+def describe_reset(iso_str: str) -> str:
     """'resets Fri 10:59 AM (2h 5m)', or 'resets now' once the window has passed."""
     relative = format_reset_relative(iso_str)
     if relative == "now":
@@ -41,9 +41,9 @@ def describe_reset(iso_str):
     return f"resets {format_reset_absolute(iso_str)} ({relative})"
 
 
-def format_date_relative(date_str):
+def format_date_relative(date_str: str) -> str:
     """A YYYY-MM-DD date (taken as UTC midnight) as a relative duration."""
-    target = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
+    target = datetime.combine(date.fromisoformat(date_str), time(), tzinfo=UTC)
     delta = target - datetime.now(UTC)
     total_hours = int(delta.total_seconds() / 3600)
     if total_hours < 0:
@@ -55,23 +55,23 @@ def format_date_relative(date_str):
     return f"{total_hours}h {minutes}m"
 
 
-def format_date_absolute(date_str):
+def format_date_absolute(date_str: str) -> str:
     """A YYYY-MM-DD date as a short readable date (e.g., 'Apr 3')."""
-    return datetime.strptime(date_str, "%Y-%m-%d").strftime("%b %-d")
+    return date.fromisoformat(date_str).strftime("%b %-d")
 
 
-def describe_charge_date(date_str):
+def describe_charge_date(date_str: str) -> str:
     """'Oct 7 (19d 22h)'."""
     return f"{format_date_absolute(date_str)} ({format_date_relative(date_str)})"
 
 
-def roll_charge_date(date_str, today=None):
+def roll_charge_date(date_str: str, today: date | None = None) -> str:
     """The first monthly charge on or after today, counted from a known charge date.
 
     The billing day is the known date's day, clamped to short months (31 -> Feb 28).
     """
-    today = today or date.today()
-    known = datetime.strptime(date_str, "%Y-%m-%d").date()
+    today = today or datetime.now().astimezone().date()
+    known = date.fromisoformat(date_str)
     charge, months = known, 0
     while charge < today:
         months += 1
@@ -81,7 +81,7 @@ def roll_charge_date(date_str, today=None):
     return charge.isoformat()
 
 
-def severity(pct):
+def severity(pct: float) -> str:
     """CSS class for a utilization percentage: low / medium / high."""
     if pct > 95:
         return "high"
