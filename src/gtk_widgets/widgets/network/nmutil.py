@@ -3,16 +3,25 @@
 import base64
 import binascii
 import os
-import pathlib
 import re
 import socket
 import time
 import uuid
+from collections.abc import Sequence
+from pathlib import Path
+from typing import TypedDict
 
 from gi.repository import NM, GLib
 
-ApSec = getattr(NM, "80211ApSecurityFlags")
-ApFlags = getattr(NM, "80211ApFlags")
+# libnm's NM80211ApSecurityFlags and NM80211ApFlags: Python can't name those
+# classes (a digit first), so the stubs give the flags as plain GFlags
+SEC_KEY_MGMT_PSK = 0x100
+SEC_KEY_MGMT_802_1X = 0x200
+SEC_KEY_MGMT_SAE = 0x400
+SEC_KEY_MGMT_OWE = 0x800
+SEC_KEY_MGMT_OWE_TM = 0x1000
+SEC_KEY_MGMT_EAP_SUITE_B_192 = 0x2000
+AP_FLAGS_PRIVACY = 0x1
 
 VPN_TYPES = ("wireguard", "vpn")
 HOTSPOT_ID = "Hotspot"
@@ -88,6 +97,7 @@ VPN_CITIES = {
 }
 # Chișinău shares "chi" with Chicago; the country code disambiguates
 VPN_PLACES = {"md-chi": "Chișinău"}
+COUNTRY_CODE_LEN = 2
 
 
 # NM's connectivity check results that mean "connected, but no working internet".
@@ -102,20 +112,29 @@ CONNECTIVITY_PROBLEMS = {
 }
 
 
-def vpn_place(name):
+def nullable[T](value: T) -> T | None:
+    """value as what libnm may return: the stubs drop the nullable mark of
+    getters such as get_primary_connection() and get_connection()."""
+    return value
+
+
+def vpn_place(name: str) -> str | None:
     """'nl-ams' -> 'Amsterdam'; None when the name is not a location code."""
     if name in VPN_PLACES:
         return VPN_PLACES[name]
-    parts = name.split("-")
-    return VPN_CITIES.get(parts[1]) if len(parts) == 2 and len(parts[0]) == 2 else None
+    match name.split("-"):
+        case [country, city] if len(country) == COUNTRY_CODE_LEN:
+            return VPN_CITIES.get(city)
+        case _:
+            return None
 
 
-def kernel_stale():
+def kernel_stale() -> bool:
     """The running kernel's modules are gone (package upgraded, no reboot yet)."""
-    return not pathlib.Path(f"/lib/modules/{os.uname().release}").is_dir()
+    return not Path(f"/lib/modules/{os.uname().release}").is_dir()
 
 
-def error_text(err):
+def error_text(err: BaseException) -> str:
     """Readable message for a libnm GLib.Error, with a hint for missing kernel modules."""
     msg = err.message if isinstance(err, GLib.Error) else str(err)
     if "Operation not supported" in msg and kernel_stale():
@@ -123,23 +142,25 @@ def error_text(err):
     return msg
 
 
-def reapply_refusal_text(err):
+def reapply_refusal_text(err: GLib.Error) -> str:
     """Why NM refused a reapply, shortened to the setting that cannot change live."""
     m = re.search(r"reapply (?:any )?changes to '([^']+)'", err.message or "")
     return f"{m.group(1)} cannot change while connected" if m else error_text(err)
 
 
-def device_reason_text(reason):
-    reason = NM.DeviceStateReason(reason)
-    return DEVICE_REASONS.get(reason) or reason.value_nick.replace("-", " ")
+def device_reason_text(reason: int) -> str:
+    known = NM.DeviceStateReason(reason)
+    return DEVICE_REASONS.get(known) or known.value_nick.replace("-", " ")
 
 
-def ac_reason_text(reason):
-    reason = NM.ActiveConnectionStateReason(reason)
-    return AC_REASONS.get(reason) or reason.value_nick.replace("-", " ")
+def ac_reason_text(reason: int) -> str:
+    known = NM.ActiveConnectionStateReason(reason)
+    return AC_REASONS.get(known) or known.value_nick.replace("-", " ")
 
 
-def failure_text(reason, devices, conn):
+def failure_text(
+    reason: int, devices: Sequence[NM.Device], conn: NM.Connection | None
+) -> str:
     """device_reason_text for a failed activation of `conn` (a clone taken when it
     started: NM deletes a volatile profile on failure). NM reports a Wi-Fi association
     timeout as ssid-not-found even while a matching access point is in the scan list:
@@ -158,7 +179,7 @@ def failure_text(reason, devices, conn):
     return device_reason_text(reason)
 
 
-def hidden_connection(conn):
+def hidden_connection(conn: NM.RemoteConnection) -> bool:
     """Profiles NM does not own (docker bridges, lo): never shown or touched."""
     return (
         bool(conn.get_flags() & NM.SettingsConnectionFlags.EXTERNAL)
@@ -166,7 +187,7 @@ def hidden_connection(conn):
     )
 
 
-def ssid_text(ssid):
+def ssid_text(ssid: GLib.Bytes | None) -> str | None:
     """GLib.Bytes SSID -> display string (None for hidden APs)."""
     if ssid is None:
         return None
@@ -174,29 +195,29 @@ def ssid_text(ssid):
     return NM.utils_ssid_to_utf8(data) if data else None
 
 
-def connection_ssid(conn):
+def connection_ssid(conn: NM.Connection) -> str | None:
     s_wifi = conn.get_setting_wireless()
     return ssid_text(s_wifi.get_ssid()) if s_wifi else None
 
 
-def is_hotspot(conn):
+def is_hotspot(conn: NM.Connection) -> bool:
     s_wifi = conn.get_setting_wireless()
     return bool(s_wifi) and s_wifi.get_mode() == "ap"
 
 
-def is_vpn(ac):
+def is_vpn(ac: NM.ActiveConnection) -> bool:
     return ac.get_connection_type() in VPN_TYPES or ac.get_vpn()
 
 
-def link_connection(client):
+def link_connection(client: NM.Client) -> NM.ActiveConnection | None:
     """The activated connection carrying traffic below any VPN: the primary one,
     or while a VPN is primary, the first other one (Wi-Fi and wired first)."""
-    primary = client.get_primary_connection()
+    primary = nullable(client.get_primary_connection())
     if primary is not None and not is_vpn(primary):
         return primary
-    acs = []
+    acs: list[NM.ActiveConnection] = []
     for ac in client.get_active_connections():
-        conn = ac.get_connection()
+        conn = nullable(ac.get_connection())
         if (
             ac.get_state() != NM.ActiveConnectionState.ACTIVATED
             or is_vpn(ac)
@@ -205,15 +226,15 @@ def link_connection(client):
         ):
             continue
         acs.append(ac)
-    acs.sort(
-        key=lambda ac: (
-            ac.get_connection_type() not in ("802-11-wireless", "802-3-ethernet")
-        )
-    )
+    acs.sort(key=_not_wifi_or_wired)
     return acs[0] if acs else None
 
 
-def connectivity_problem(client):
+def _not_wifi_or_wired(ac: NM.ActiveConnection) -> bool:
+    return ac.get_connection_type() not in {"802-11-wireless", "802-3-ethernet"}
+
+
+def connectivity_problem(client: NM.Client) -> tuple[str, str] | None:
     """(kind, text) when NM's connectivity check found a problem, else None."""
     return CONNECTIVITY_PROBLEMS.get(client.get_connectivity())
 
@@ -221,7 +242,7 @@ def connectivity_problem(client):
 WEAK, VERY_WEAK = 30, 5  # nm-applet's lowest two signal thresholds
 
 
-def signal_class(strength):
+def signal_class(strength: int | None) -> str | None:
     """ "weak" (6-30%), "very-weak" (0-5%) or None (stronger, or unknown): the
     bar and the popup colour the one Wi-Fi glyph by it. NM's percentage comes
     from the last scan and jumps by 20 points, so level glyphs said little."""
@@ -230,21 +251,21 @@ def signal_class(strength):
     return "very-weak" if strength <= VERY_WEAK else "weak"
 
 
-def ap_security(ap):
+def ap_security(ap: NM.AccessPoint) -> tuple[str, str]:
     """(kind, label) for an access point. kind: open, owe, wep, psk, sae, eap."""
-    wpa, rsn = ap.get_wpa_flags(), ap.get_rsn_flags()
+    wpa, rsn = int(ap.get_wpa_flags()), int(ap.get_rsn_flags())
     both = wpa | rsn
-    if both & (ApSec.KEY_MGMT_802_1X | ApSec.KEY_MGMT_EAP_SUITE_B_192):
+    if both & (SEC_KEY_MGMT_802_1X | SEC_KEY_MGMT_EAP_SUITE_B_192):
         return "eap", "WPA2 Enterprise" if rsn else "WPA Enterprise"
-    if rsn & ApSec.KEY_MGMT_SAE:
-        if rsn & ApSec.KEY_MGMT_PSK:
+    if rsn & SEC_KEY_MGMT_SAE:
+        if rsn & SEC_KEY_MGMT_PSK:
             return "psk", "WPA2/WPA3 Personal"
         return "sae", "WPA3 Personal"
-    if both & ApSec.KEY_MGMT_PSK:
+    if both & SEC_KEY_MGMT_PSK:
         return "psk", "WPA2 Personal" if rsn else "WPA Personal"
-    if rsn & (ApSec.KEY_MGMT_OWE | ApSec.KEY_MGMT_OWE_TM):
+    if rsn & (SEC_KEY_MGMT_OWE | SEC_KEY_MGMT_OWE_TM):
         return "owe", "Enhanced Open (OWE)"
-    if ap.get_flags() & ApFlags.PRIVACY:
+    if int(ap.get_flags()) & AP_FLAGS_PRIVACY:
         return "wep", "WEP"
     return "open", "Open"
 
@@ -260,7 +281,7 @@ KEY_MGMT_LABELS = {
 }
 
 
-def connection_security(conn):
+def connection_security(conn: NM.Connection) -> str:
     s_wsec = conn.get_setting_wireless_security()
     if not s_wsec:
         return "Open"
@@ -268,28 +289,39 @@ def connection_security(conn):
     return KEY_MGMT_LABELS.get(km, km)
 
 
-def freq_band(mhz):
+BAND_5GHZ_MHZ, BAND_6GHZ_MHZ = 3000, 5925  # where the 5 and 6 GHz bands start
+MINUTE, HOUR, DAY = 60, 3600, 86400
+RECENT_DAYS = 30  # older times show as a date
+
+
+def freq_band(mhz: int) -> str:
     """'5 GHz, channel 36' for a frequency in MHz."""
-    band = "2.4 GHz" if mhz < 3000 else "5 GHz" if mhz < 5925 else "6 GHz"
+    band = (
+        "2.4 GHz"
+        if mhz < BAND_5GHZ_MHZ
+        else "5 GHz"
+        if mhz < BAND_6GHZ_MHZ
+        else "6 GHz"
+    )
     return f"{band}, channel {NM.utils_wifi_freq_to_channel(mhz)}"
 
 
-def relative_time(ts, now=None):
+def relative_time(ts: float, now: float | None = None) -> str:
     if not ts:
         return "never"
     delta = max(0, (now or time.time()) - ts)
-    if delta < 60:
+    if delta < MINUTE:
         return "just now"
-    if delta < 3600:
-        return f"{int(delta // 60)} min ago"
-    if delta < 86400:
-        return f"{int(delta // 3600)} h ago"
-    if delta < 30 * 86400:
-        return f"{int(delta // 86400)} d ago"
+    if delta < HOUR:
+        return f"{int(delta // MINUTE)} min ago"
+    if delta < DAY:
+        return f"{int(delta // HOUR)} h ago"
+    if delta < RECENT_DAYS * DAY:
+        return f"{int(delta // DAY)} d ago"
     return time.strftime("%Y-%m-%d", time.localtime(ts))
 
 
-def ip_lines(ipcfg):
+def ip_lines(ipcfg: NM.IPConfig | None) -> tuple[list[str], str | None, list[str]]:
     """(addresses, gateway, dns) of an NM.IPConfig as display strings."""
     if not ipcfg:
         return [], None, []
@@ -300,7 +332,13 @@ def ip_lines(ipcfg):
 # --- building connections ---
 
 
-def _base_connection(conn_id, conn_type, autoconnect=True, iface=None):
+def _base_connection(
+    conn_id: str,
+    conn_type: str,
+    *,
+    autoconnect: bool = True,
+    iface: str | None = None,
+) -> NM.Connection:
     conn = NM.SimpleConnection.new()
     s_con = NM.SettingConnection.new()
     s_con.set_property(NM.SETTING_CONNECTION_ID, conn_id)
@@ -313,7 +351,9 @@ def _base_connection(conn_id, conn_type, autoconnect=True, iface=None):
     return conn
 
 
-def wifi_connection(ssid, kind, password=None, hidden=False):
+def wifi_connection(
+    ssid: str, kind: str, password: str | None = None, *, hidden: bool = False
+) -> NM.Connection:
     """Client profile for `ssid`. kind: open, owe, psk, sae. Secrets are
     system-owned (flags 0), as nmcli stores them by default."""
     conn = _base_connection(ssid, "802-11-wireless")
@@ -321,9 +361,9 @@ def wifi_connection(ssid, kind, password=None, hidden=False):
     s_wifi.set_property(NM.SETTING_WIRELESS_SSID, GLib.Bytes.new(ssid.encode()))
     s_wifi.set_property(NM.SETTING_WIRELESS_MODE, "infrastructure")
     if hidden:
-        s_wifi.set_property(NM.SETTING_WIRELESS_HIDDEN, True)
+        s_wifi.set_property(NM.SETTING_WIRELESS_HIDDEN, hidden)
     conn.add_setting(s_wifi)
-    if kind in ("psk", "sae", "owe"):
+    if kind in {"psk", "sae", "owe"}:
         s_wsec = NM.SettingWirelessSecurity.new()
         s_wsec.set_property(
             NM.SETTING_WIRELESS_SECURITY_KEY_MGMT, {"psk": "wpa-psk"}.get(kind, kind)
@@ -337,7 +377,9 @@ def wifi_connection(ssid, kind, password=None, hidden=False):
     return conn
 
 
-def hotspot_connection(ssid, password, band, iface):
+def hotspot_connection(
+    ssid: str, password: str, band: str, iface: str | None
+) -> NM.Connection:
     """Access point with NAT (ipv4.method=shared), never autoconnected.
     band: 'bg' (2.4 GHz) or 'a' (5 GHz). Mirrors `nmcli device wifi hotspot`."""
     conn = _base_connection(
@@ -398,7 +440,18 @@ _EAP_CERTS = (
 )
 
 
-def eap_values(s_8021x):
+class EapValues(TypedDict):
+    """A PEAP/TTLS password setting as the Enterprise form edits it."""
+
+    method: str
+    inner: str
+    identity: str
+    anonymous: str
+    domain: str
+    ask: bool  # "Ask every time": the password is not saved
+
+
+def eap_values(s_8021x: NM.Setting8021x | None) -> EapValues | None:
     """{method, inner, identity, anonymous, domain, ask} of a PEAP/TTLS
     password setting without certificates, or None when it is anything else
     (TLS, several methods, certificate files: not supported here)."""
@@ -407,9 +460,7 @@ def eap_values(s_8021x):
     eap = [s_8021x.get_eap_method(i) for i in range(s_8021x.get_num_eap_methods())]
     if len(eap) != 1 or eap[0] not in EAP_INNER:
         return None
-    if s_8021x.get_system_ca_certs() or any(
-        s_8021x.get_property(p) for p in _EAP_CERTS
-    ):
+    if s_8021x.get_system_ca_certs() or any(_is_set(s_8021x, p) for p in _EAP_CERTS):
         return None
     auth, autheap = s_8021x.get_phase2_auth(), s_8021x.get_phase2_autheap()
     inner = None
@@ -430,7 +481,14 @@ def eap_values(s_8021x):
     }
 
 
-def apply_eap(s_8021x, values, password=None):
+def _is_set(setting: NM.Setting, prop: str) -> bool:
+    value: object = setting.get_property(prop)
+    return bool(value)
+
+
+def apply_eap(
+    s_8021x: NM.Setting8021x, values: EapValues, password: str | None = None
+) -> None:
     """Write eap_values()-shaped `values` into an 802-1x setting. `password`
     None leaves the stored one alone; "Ask every time" drops it (NOT_SAVED)."""
     inner = next(e for e in EAP_INNER[values["method"]] if e[0] == values["inner"])
@@ -452,7 +510,9 @@ def apply_eap(s_8021x, values, password=None):
             s_8021x.set_property("password", password)
 
 
-def eap_problem(values, password, password_known):
+def eap_problem(
+    values: EapValues, password: str, *, password_known: bool
+) -> str | None:
     """Why these Enterprise fields can't work, or None. password_known: a
     password is stored already (editing) and the field was left alone."""
     if not values["identity"].strip():
@@ -462,7 +522,7 @@ def eap_problem(values, password, password_known):
     return None
 
 
-def eap_connection(ssid, values, password):
+def eap_connection(ssid: str, values: EapValues, password: str | None) -> NM.Connection:
     """New WPA/WPA2 Enterprise client profile (PEAP/TTLS, no CA certificate)."""
     conn = wifi_connection(ssid, "open")
     s_wsec = NM.SettingWirelessSecurity.new()
@@ -477,26 +537,32 @@ def eap_connection(ssid, values, password):
 # --- field checks for the editor ---
 
 
-def wg_key_problem(key, what="Key"):
+WG_KEY_BYTES = 32
+MAC_BYTES = 6
+
+
+def wg_key_problem(key: str, what: str = "Key") -> str | None:
     """WireGuard keys are 32 bytes of base64."""
     try:
         raw = base64.b64decode(key, validate=True)
     except binascii.Error, ValueError:
         raw = b""
     return (
-        None if len(raw) == 32 else f"{what} must be 32 bytes of base64 (44 characters)"
+        None
+        if len(raw) == WG_KEY_BYTES
+        else f"{what} must be 32 bytes of base64 (44 characters)"
     )
 
 
-def mac_problem(mac):
+def mac_problem(mac: str) -> str | None:
     return (
         None
-        if NM.utils_hwaddr_valid(mac, 6)
+        if NM.utils_hwaddr_valid(mac, MAC_BYTES)
         else "Not a MAC address (aa:bb:cc:dd:ee:ff)"
     )
 
 
-def parse_ip(text, family):
+def parse_ip(text: str, family: int) -> str:
     """'addr' -> addr, or raise ValueError. family: socket.AF_INET / AF_INET6."""
     text = text.strip()
     if not NM.utils_ipaddr_valid(family, text):
@@ -506,11 +572,13 @@ def parse_ip(text, family):
     return text
 
 
-def parse_cidr(text, family, default_prefix=None):
+def parse_cidr(
+    text: str, family: int, default_prefix: int | None = None
+) -> tuple[str, int]:
     """'addr/prefix' -> (addr, prefix), or raise ValueError."""
     addr, _, prefix = text.strip().partition("/")
     addr = parse_ip(addr, family)
-    top = 32 if family == socket.AF_INET else 128
+    top = IPV4_BITS if family == socket.AF_INET else IPV6_BITS
     if not prefix and default_prefix is not None:
         return addr, default_prefix
     if not prefix.isdigit() or not 0 <= int(prefix) <= top:
@@ -518,7 +586,10 @@ def parse_cidr(text, family, default_prefix=None):
     return addr, int(prefix)
 
 
-def password_problem(kind, password):
+IPV4_BITS, IPV6_BITS = 32, 128
+
+
+def password_problem(kind: str, password: str) -> str | None:
     """Why `password` can't work for security `kind`, or None."""
     if kind == "psk" and not NM.utils_wpa_psk_valid(password):
         return "WPA passwords are 8-63 characters (or 64 hex digits)"
@@ -530,9 +601,14 @@ def password_problem(kind, password):
 # --- WireGuard export ---
 
 
-def _ip_setting_values(conn):
-    addrs, dns = [], []
-    for s_ip in (conn.get_setting_ip4_config(), conn.get_setting_ip6_config()):
+def _ip_setting_values(conn: NM.Connection) -> tuple[list[str], list[str]]:
+    addrs: list[str] = []
+    dns: list[str] = []
+    settings: tuple[NM.SettingIPConfig | None, ...] = (
+        conn.get_setting_ip4_config(),
+        conn.get_setting_ip6_config(),
+    )
+    for s_ip in settings:
         if not s_ip:
             continue
         for i in range(s_ip.get_num_addresses()):
@@ -551,11 +627,13 @@ def _ip_setting_values(conn):
     return addrs, list(dict.fromkeys(dns))
 
 
-def wireguard_conf(conn):
+def wireguard_conf(conn: NM.Connection) -> str:
     """wg-quick .conf text for a WireGuard profile whose secrets have been
     merged in (private key, peer preshared keys). Inverse of the fields
     NM.conn_wireguard_import() reads."""
     s_wg = conn.get_setting_by_name(NM.SETTING_WIREGUARD_SETTING_NAME)
+    if not isinstance(s_wg, NM.SettingWireGuard):
+        raise TypeError("wireguard_conf() needs a WireGuard profile")
     lines = ["[Interface]"]
     if s_wg.get_private_key():
         lines.append(f"PrivateKey = {s_wg.get_private_key()}")
@@ -588,9 +666,9 @@ def wireguard_conf(conn):
     return "\n".join(lines) + "\n"
 
 
-def write_private(path, text):
+def write_private(path: str, text: str) -> None:
     """Write `text` to `path` readable by the owner only (mode 0600)."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         os.fchmod(f.fileno(), 0o600)  # an existing file keeps its old mode otherwise
-        f.write(text)
+        _ = f.write(text)

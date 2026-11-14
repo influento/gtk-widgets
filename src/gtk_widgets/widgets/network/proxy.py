@@ -500,10 +500,9 @@ class ServiceWatch(_Unit):
 
 
 def _string(variant: GLib.Variant | None) -> str | None:
-    """A D-Bus string or object path, or None when it is missing
-    (lookup_value and get_cached_property return NULL then; the stubs leave
-    that out) or of another type."""
-    # Not get_string(): at run time it gives the bare string, while the
-    # stubs promise a tuple with the length
+    """A D-Bus string or object path, or None when it is missing (lookup_value
+    returns NULL then, though its stub says Variant) or of another type."""
+    # unpack() and isinstance, not get_string(): a variant of another type
+    # then reads as None instead of failing
     value: object = variant.unpack() if variant is not None else None
     return value if isinstance(value, str) else None

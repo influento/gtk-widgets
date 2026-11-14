@@ -853,7 +853,9 @@ class EditPage(Gtk.Box):
 
             def apply(cand):
                 values, password = form.values(), form.password_value()
-                problem = eap_problem(values, password, stored and password is None)
+                problem = eap_problem(
+                    values, password, password_known=stored and password is None
+                )
                 if problem:
                     raise FieldError("802-1x.identity", problem)
                 apply_eap(cand.get_setting_802_1x(), values, password)

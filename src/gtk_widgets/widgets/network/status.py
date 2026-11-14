@@ -23,32 +23,38 @@ import json
 import os
 import signal
 import sys
+from typing import TypedDict
+
+from gi.repository import NM, GLib, GObject
 
 from gtk_widgets.widgets.network import proxy as px
 from gtk_widgets.widgets.network.nmutil import (
     ICON,
-    NM,
-    GLib,
     connectivity_problem,
     is_hotspot,
     is_vpn,
     link_connection,
+    nullable,
     signal_class,
 )
 
 DEBOUNCE_MS = 200
 TICK_S = 10  # signal strength changes without a signal we follow
 
+# waybar's JSON: "class" is a Python keyword, hence the functional form
+Bar = TypedDict("Bar", {"text": str, "class": list[str]})
+type Service = px.ServiceState | px.ServiceWatch
 
-def link_info(ac):
+
+def link_info(ac: NM.ActiveConnection) -> tuple[list[str], str]:
     """(classes, glyph) for the connection carrying traffic."""
-    ctype, conn = ac.get_connection_type(), ac.get_connection()
+    ctype, conn = ac.get_connection_type(), nullable(ac.get_connection())
     if ctype == "802-11-wireless":
         if conn and is_hotspot(conn):
             return ["hotspot"], ICON["hotspot"]
         devs = ac.get_devices()
         ap = (
-            devs[0].get_active_access_point()
+            nullable(devs[0].get_active_access_point())
             if devs and isinstance(devs[0], NM.DeviceWifi)
             else None
         )
@@ -59,7 +65,7 @@ def link_info(ac):
     return ["other"], ICON["wired"]
 
 
-def proxy_part(svc):
+def proxy_part(svc: Service | None) -> tuple[str, str] | None:
     """(class, bar text) for Proxy rules, or None when off."""
     if svc is None or not (svc.active or svc.starting or svc.crashed):
         return None
@@ -69,7 +75,7 @@ def proxy_part(svc):
     return "proxy", f"{ICON['proxy']} {apps}"
 
 
-def status(client, svc=None):
+def status(client: NM.Client, svc: Service | None = None) -> Bar:
     if not client.get_nm_running():
         return {"text": ICON["offline"], "class": ["error"]}
     if not client.networking_get_enabled():
@@ -101,9 +107,9 @@ def status(client, svc=None):
     return {"text": "  ".join(parts), "class": cls}
 
 
-def emit(line):
+def emit(line: str) -> None:
     try:
-        sys.stdout.write(line + "\n")
+        _ = sys.stdout.write(line + "\n")
         sys.stdout.flush()
     except BrokenPipeError:  # waybar went away
         os._exit(0)
@@ -112,31 +118,40 @@ def emit(line):
 class Follower:
     """Prints the status on every change, debounced and deduplicated."""
 
-    def __init__(self, client):
+    def __init__(self, client: NM.Client) -> None:
         self.client = client
-        self._last = None
+        self._last: str | None = None
         self._queued = 0
-        self.svc = px.ServiceWatch(lambda _w: self.queue())
-        client.connect("notify", lambda *_: self.queue())
-        client.connect("active-connection-added", self._watch)
+        self.svc = px.ServiceWatch(self._service_changed)
+        _ = client.connect("notify", self._notified)
+        _ = client.connect("active-connection-added", self._watch)
         for ac in client.get_active_connections():
             self._watch(client, ac)
-        GLib.timeout_add_seconds(TICK_S, self._tick)
-        self._print()
+        _ = GLib.timeout_add_seconds(TICK_S, self._tick)
+        _ = self._print()
 
-    def _watch(self, _client, ac):
-        ac.connect("state-changed", lambda *_: self.queue())
+    def _service_changed(self, _watch: px.ServiceWatch) -> None:
         self.queue()
 
-    def queue(self):
+    def _notified(self, _client: NM.Client, _pspec: GObject.ParamSpec) -> None:
+        self.queue()
+
+    def _watch(self, _client: NM.Client, ac: NM.ActiveConnection) -> None:
+        _ = ac.connect("state-changed", self._ac_changed)
+        self.queue()
+
+    def _ac_changed(self, _ac: NM.ActiveConnection, _state: int, _reason: int) -> None:
+        self.queue()
+
+    def queue(self) -> None:
         if not self._queued:
             self._queued = GLib.timeout_add(DEBOUNCE_MS, self._print)
 
-    def _tick(self):
+    def _tick(self) -> bool:
         self.queue()
         return GLib.SOURCE_CONTINUE
 
-    def _print(self):
+    def _print(self) -> bool:
         self._queued = 0
         line = json.dumps(status(self.client, self.svc), ensure_ascii=False)
         if line != self._last:
@@ -145,7 +160,7 @@ class Follower:
         return GLib.SOURCE_REMOVE
 
 
-def main():
+def main() -> int:
     try:
         client = NM.Client.new(None)
     except GLib.Error as e:
@@ -161,7 +176,7 @@ def main():
     if "--once" in sys.argv[1:]:
         emit(json.dumps(status(client, px.ServiceState()), ensure_ascii=False))
         return 0
-    signal.signal(signal.SIGINT, signal.SIG_DFL)  # exit quietly, like on SIGTERM
+    _ = signal.signal(signal.SIGINT, signal.SIG_DFL)  # exit quietly, like on SIGTERM
     loop = GLib.MainLoop()
     _follower = Follower(client)
     loop.run()

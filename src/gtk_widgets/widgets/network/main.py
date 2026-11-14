@@ -407,7 +407,7 @@ class WifiRow(ExpandRow):
             )
 
     def _on_enterprise(self, values, password):
-        problem = eap_problem(values, password, False)
+        problem = eap_problem(values, password, password_known=False)
         if problem:
             self.eap_form.show_error(problem)
             return
@@ -1199,7 +1199,7 @@ class NetworkPopup(WidgetPopup):
             )
             return GLib.SOURCE_REMOVE
         self._net_switch.set_sensitive(True)
-        networking = self._net_switch.set_(c.networking_get_enabled())
+        networking = self._net_switch.set_(active=c.networking_get_enabled())
         if not networking:
             self._inet.set_visible(False)
             self._show_offline("Networking is disabled", "")
@@ -1266,7 +1266,7 @@ class NetworkPopup(WidgetPopup):
         devs = self._devices(NM.DeviceWifi)
         hw = c.wireless_hardware_get_enabled()
         # the user's flip shows before NM reports it: the list follows the switch
-        on = self._wifi_switch.set_(c.wireless_get_enabled() and hw)
+        on = self._wifi_switch.set_(active=c.wireless_get_enabled() and hw)
         visible = bool(devs)
         for w in (self._wifi_section, self._wifi_scroller, self._wifi_extra):
             w.set_visible(visible)
@@ -1493,11 +1493,11 @@ class NetworkPopup(WidgetPopup):
                 if not e.matches(
                     NM.ManagerError.quark(), NM.ManagerError.ALREADYENABLEDORDISABLED
                 ):
-                    self._net_switch.done(False)
+                    self._net_switch.done(ok=False)
                     self._fail("Networking", e)
                     self.queue_sync()
                     return
-            self._net_switch.done(True)
+            self._net_switch.done(ok=True)
             self.set_status(None)
             self.queue_sync()
 
@@ -1518,9 +1518,9 @@ class NetworkPopup(WidgetPopup):
         def done(c, res):
             try:
                 c.dbus_set_property_finish(res)
-                self._wifi_switch.done(True)
+                self._wifi_switch.done(ok=True)
             except GLib.Error as e:
-                self._wifi_switch.done(False)
+                self._wifi_switch.done(ok=False)
                 self._fail("Wi-Fi", e)
             self.queue_sync()
 
