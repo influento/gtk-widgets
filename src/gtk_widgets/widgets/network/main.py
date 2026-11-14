@@ -1408,8 +1408,8 @@ class NetworkPopup(WidgetPopup):
         w, st = self.proxy_watch, self.proxy_state
         active, stopping = bool(w and w.active), self._proxy_busy == "stopping"
         starting = self._proxy_busy == "starting" or bool(w and w.starting)
-        pairs = [(r["app"], px.exit_label(st, r["exit"])) for r in st["rules"]]
-        pairs.append(("everything else", px.exit_label(st, st["default"])))
+        pairs = [(r.app, px.exit_label(st, r.exit)) for r in st.rules]
+        pairs.append(("everything else", px.exit_label(st, st.default)))
         return {
             "up": (active or starting) and not stopping,
             "on": active and not starting and not stopping,

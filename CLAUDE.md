@@ -264,7 +264,8 @@ gtk-widgets/
 │           ├── ui.py          # Small GTK helpers shared by main.py and editor.py
 │           ├── agent.py       # network-agent: connection notifications + NM.SecretAgentOld password prompt
 │           ├── nmutil.py      # Shared libnm helpers: profile builders, reasons, connectivity, WireGuard .conf export
-│           ├── proxy.py       # Proxy rules model: state file (0600), paste parser, helper call, unit watch (D-Bus)
+│           ├── parse.py       # Proxy rules state file, pasted proxy lines, sway's window PIDs: models and parsers
+│           ├── proxy.py       # Proxy rules: state file (0600) load/save, imports, helper call, unit watch (D-Bus)
 │           ├── proxypage.py   # Proxy rules page: proxies (paste, check, Block QUIC), app rules, default exit, kill switch
 │           ├── socks5.py      # Minimal SOCKS5 client: login, CONNECT trace (exit IP, country, latency), UDP ASSOCIATE round trip
 │           ├── style.css      # Also styles network-agent's prompt

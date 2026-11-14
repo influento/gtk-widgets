@@ -241,7 +241,7 @@ class ProxyMonitor:
             )
             body += (
                 ". Kill switch: internet is blocked until you pick another exit"
-                if st["kill_switch"]
+                if st.kill_switch
                 else ". Proxied apps are unprotected until it is back"
             )
             notify("Proxy rules stopped", body, "network-error", "critical")
@@ -251,8 +251,8 @@ class ProxyMonitor:
     def _probe(self):
         if self._was == "up" and not self._probing:
             st = px.load_state()
-            used = {r["exit"] for r in st["rules"]} | {st["default"]}
-            proxies = [p for p in st["proxies"] if p["id"] in used]
+            used = {r.exit for r in st.rules} | {st.default}
+            proxies = [p for p in st.proxies if p.id in used]
             if proxies:
                 self._probing = True
                 threading.Thread(
@@ -262,7 +262,7 @@ class ProxyMonitor:
 
     def _probe_all(self, proxies):
         results = [
-            (p["id"], socks5.alive(p["host"], p["port"], p["username"], p["password"]))
+            (p.id, socks5.alive(p.host, p.port, p.username, p.password))
             for p in proxies
         ]
         GLib.idle_add(self._probed, results)
@@ -273,8 +273,8 @@ class ProxyMonitor:
             return GLib.SOURCE_REMOVE
         st = px.load_state()
         for pid, (ok, err) in results:
-            apps = [r["app"] for r in st["rules"] if r["exit"] == pid]
-            if st["default"] == pid:
+            apps = [r.app for r in st.rules if r.exit == pid]
+            if st.default == pid:
                 apps.append("everything else")
             if ok:
                 self._fails.pop(pid, None)

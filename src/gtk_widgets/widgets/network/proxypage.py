@@ -13,6 +13,7 @@ from gtk_widgets.widgets.network import proxy as px
 from gtk_widgets.widgets.network import socks5
 from gtk_widgets.widgets.network.editor import Choice, edit_section, toggle
 from gtk_widgets.widgets.network.nmutil import ICON
+from gtk_widgets.widgets.network.parse import Check, Rule
 from gtk_widgets.widgets.network.ui import (
     KeyedList,
     button,
@@ -30,29 +31,29 @@ def check_line(res):
         return "not checked", None
     if res == "running":
         return "checking…", None
-    if not res["ok"]:
-        return f"{ICON['cross']} {res['error']}", "net-status-err"
-    parts = [f"{ICON['check']} {res['latency_ms']} ms"]
-    if res.get("ip"):
-        parts.append(res["ip"])
-    if res.get("country"):
-        parts.append(res["country"])
+    if not res.ok:
+        return f"{ICON['cross']} {res.error}", "net-status-err"
+    parts = [f"{ICON['check']} {res.latency_ms} ms"]
+    if res.ip:
+        parts.append(res.ip)
+    if res.country:
+        parts.append(res.country)
     return " · ".join(parts), "net-status-ok"
 
 
 def udp_badge(res):
-    if not isinstance(res, dict) or not res["ok"] or res.get("udp") is None:
+    if not isinstance(res, Check) or not res.ok or res.udp is None:
         return "", None, None
-    if res["udp"]:
+    if res.udp:
         return (
             f"UDP {ICON['check']}",
             "net-udp-ok",
-            f"UDP works ({res['udp_ms']} ms round trip)",
+            f"UDP works ({res.udp_ms} ms round trip)",
         )
     return (
         f"UDP {ICON['cross']}",
         "net-udp-bad",
-        f"{res['udp_error']}: QUIC and UDP apps fail "
+        f"{res.udp_error}: QUIC and UDP apps fail "
         "through this proxy; turn on Block QUIC so browsers use TCP at once",
     )
 
@@ -116,26 +117,26 @@ class ProxyRow(Gtk.Box):
 
     def update(self, data):
         p, res = data
-        self.title.set_text(f"{p['id']} · {p['host']}:{p['port']}")
+        self.title.set_text(f"{p.id} · {p.host}:{p.port}")
         self.title.set_tooltip_text(
-            f"{p['host']}:{p['port']}, "
-            + (f"user {p['username']}" if p["username"] else "no login")
+            f"{p.host}:{p.port}, "
+            + (f"user {p.username}" if p.username else "no login")
         )
         text, cls = check_line(res)
         failed = cls == "net-status-err"
         self.subtitle.set_text(text)
-        copyable(self.subtitle, on=failed, copy_text=res["error"] if failed else None)
+        copyable(self.subtitle, on=failed, copy_text=res.error if failed else None)
         self.subtitle.set_tooltip_text(text + ("\nClick to copy" if failed else ""))
         self.subtitle.set_css_classes(["net-row-subtitle"] + ([cls] if cls else []))
         badge, bcls, tip = udp_badge(res)
         bad = bcls == "net-udp-bad"
         self.udp.set_text(badge)
-        copyable(self.udp, on=bad, copy_text=res["udp_error"] if bad else None)
+        copyable(self.udp, on=bad, copy_text=res.udp_error if bad else None)
         self.udp.set_tooltip_text(tip and tip + ("\nClick to copy" if bad else ""))
         self.udp.set_css_classes(["net-row-subtitle"] + ([bcls] if bcls else []))
         self.check_btn.set_sensitive(res != "running")
         self.quic.handler_block(self._quic_handler)
-        self.quic.set_active(p["block_quic"])
+        self.quic.set_active(p.block_quic)
         self.quic.handler_unblock(self._quic_handler)
 
     def _on_quic(self, btn):
@@ -413,30 +414,30 @@ class ProxyPage(Gtk.Box):
     def sync(self):
         st, watch = self.state, self.app.proxy_watch
         self._syncing = True
-        self.no_proxies.set_visible(not st["proxies"])
+        self.no_proxies.set_visible(not st.proxies)
         self.proxies.sync(
             [
                 (
-                    p["id"],
+                    p.id,
                     (
                         p,
                         "running"
-                        if self._running.get(p["id"])
-                        else st["checks"].get(p["id"]),
+                        if self._running.get(p.id)
+                        else st.checks.get(p.id),
                     ),
                 )
-                for p in st["proxies"]
+                for p in st.proxies
             ]
         )
-        self.check_all_btn.set_visible(bool(st["proxies"]))
+        self.check_all_btn.set_visible(bool(st.proxies))
         options = [(px.DIRECT, "direct")] + [
-            (p["id"], px.exit_label(st, p["id"])) for p in st["proxies"]
+            (p.id, px.exit_label(st, p.id)) for p in st.proxies
         ]
-        running = px.running_apps() if st["rules"] else {}
+        running = px.running_apps() if st.rules else {}
         self.rules.sync(
             [
-                (r["app"], (r["exit"], options, running.get(r["app"])))
-                for r in st["rules"]
+                (r.app, (r.exit, options, running.get(r.app)))
+                for r in st.rules
             ]
         )
         if options != self._default_options:
@@ -446,9 +447,9 @@ class ProxyPage(Gtk.Box):
             self.default.set_hexpand(False)
             self.default_box.append(self.default)
             self._default_options = options
-        if self.default.value() != st["default"]:
-            self.default.set_value(st["default"])
-        self.kill.set_active(bool(st["kill_switch"]))
+        if self.default.value() != st.default:
+            self.default.set_value(st.default)
+        self.kill.set_active(bool(st.kill_switch))
         on = watch is not None and (watch.active or watch.starting)
         self.page_state.set_text(
             f"{ICON['check']} on"
@@ -502,14 +503,14 @@ class ProxyPage(Gtk.Box):
                 f"Added {added} prox{'ies' if added != 1 else 'y'}: checking…", ok=True
             )
             self.changed()
-            for p in self.state["proxies"][-added:]:
-                self.check(p["id"])
+            for p in self.state.proxies[-added:]:
+                self.check(p.id)
         elif not errors:
             self.show_msg("Nothing new: those proxies are already in the list")
             self.changed()
 
     def delete_proxy(self, pid):
-        used = [r["app"] for r in self.state["rules"] if r["exit"] == pid]
+        used = [r.app for r in self.state.rules if r.exit == pid]
         px.remove_proxy(self.state, pid)
         self.show_msg(
             f"Deleted {pid}"
@@ -519,13 +520,13 @@ class ProxyPage(Gtk.Box):
 
     def set_block_quic(self, pid, on):
         p = px.proxy_by_id(self.state, pid)
-        if p and p["block_quic"] != on:
-            p["block_quic"] = on
+        if p and p.block_quic != on:
+            p.block_quic = on
             self.changed()
 
     def check_all(self):
-        for p in self.state["proxies"]:
-            self.check(p["id"])
+        for p in self.state.proxies:
+            self.check(p.id)
 
     def check(self, pid):
         p = px.proxy_by_id(self.state, pid)
@@ -533,7 +534,7 @@ class ProxyPage(Gtk.Box):
             return
         self._running[pid] = True
         self.app.queue_sync()
-        args = (p["host"], p["port"], p["username"], p["password"])
+        args = (p.host, p.port, p.username, p.password)
 
         def work():
             res = socks5.check(*args)
@@ -546,9 +547,9 @@ class ProxyPage(Gtk.Box):
         p = px.proxy_by_id(self.state, pid)
         if (
             p is not None
-            and (p["host"], p["port"], p["username"], p["password"]) == args
+            and (p.host, p.port, p.username, p.password) == args
         ):
-            self.state["checks"][pid] = res
+            self.state.checks[pid] = res
             self.changed()
         self.app.queue_sync()
         return GLib.SOURCE_REMOVE
@@ -556,11 +557,11 @@ class ProxyPage(Gtk.Box):
     # --- rules ---
 
     def _open_picker(self):
-        if not self.state["proxies"]:
+        if not self.state.proxies:
             self.show_msg("Paste a proxy first", error=True)
             return
         self.paste.set_visible(False)
-        self.picker.open({r["app"] for r in self.state["rules"]})
+        self.picker.open({r.app for r in self.state.rules})
 
     def _pick(self, app):
         app = app.strip()
@@ -569,40 +570,40 @@ class ProxyPage(Gtk.Box):
         except ValueError as e:
             self.show_msg(str(e), error=True)
             return
-        if any(r["app"] == app for r in self.state["rules"]):
+        if any(r.app == app for r in self.state.rules):
             self.show_msg(f"{app} already has a rule", error=True)
             return
         self.picker.set_visible(False)
-        exit_ = self.state["proxies"][0]["id"]
-        self.state["rules"].append({"app": app, "exit": exit_})
+        exit_ = self.state.proxies[0].id
+        self.state.rules.append(Rule(app, exit_))
         self.show_msg(f"{app} → {exit_}")
         self.changed()
 
     def set_rule(self, app, exit_):
         if self._syncing:
             return
-        for r in self.state["rules"]:
-            if r["app"] == app and r["exit"] != exit_:
-                r["exit"] = exit_
+        for r in self.state.rules:
+            if r.app == app and r.exit != exit_:
+                r.exit = exit_
                 self.changed()
 
     def remove_rule(self, app):
-        self.state["rules"] = [r for r in self.state["rules"] if r["app"] != app]
+        self.state.rules = [r for r in self.state.rules if r.app != app]
         self.changed()
 
     def _on_default(self):
         if self._syncing or self.default is None:
             return
-        if self.state["default"] != self.default.value():
-            self.state["default"] = self.default.value()
+        if self.state.default != self.default.value():
+            self.state.default = self.default.value()
             self.changed()
 
     def _on_kill(self):
         if self._syncing:
             return
         on = self.kill.get_active()
-        if bool(self.state["kill_switch"]) != on:
-            self.state["kill_switch"] = on
+        if bool(self.state.kill_switch) != on:
+            self.state.kill_switch = on
             self.changed()
 
     # --- apply ---

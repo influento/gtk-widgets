@@ -10,319 +10,283 @@ helper last applied. The helper gets only the request (never a config or a
 path) on stdin and writes the root-only sing-box config itself.
 """
 
+import contextlib
+import dataclasses
 import hashlib
-import ipaddress
 import json
 import os
-import pathlib
-import re
 import subprocess
 import tempfile
+from collections.abc import Callable
+from pathlib import Path
+from typing import TypedDict
 
-from gi.repository import Gio, GLib
+from gi.repository import Gio, GLib, GObject
 
-STATE_PATH = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
-    "gtk-widgets",
-    "network-proxy.json",
+from gtk_widgets.lib.parse import ParseError
+from gtk_widgets.widgets.network.parse import (
+    DIRECT,
+    Proxy,
+    State,
+    parse_proxy_line,
+    parse_state,
+    parse_window_pids,
 )
+
+
+def _config_home() -> Path:
+    if env := os.environ.get("XDG_CONFIG_HOME"):
+        return Path(env)
+    try:
+        return Path("~/.config").expanduser()
+    except RuntimeError:  # no home: os.path.expanduser's answer
+        return Path("~/.config")
+
+
+STATE_PATH = _config_home() / "gtk-widgets" / "network-proxy.json"
 HELPER = "/usr/lib/gtk-widgets/proxy-helper"
 UNIT = "gtk-widgets-proxy.service"
-DIRECT = "direct"
 MAX_PROXIES = 32
+MAX_ID = 100  # proxy ids are p1 .. p99; MAX_PROXIES keeps them from running out
 
 SD_BUS, SD_PATH = "org.freedesktop.systemd1", "/org/freedesktop/systemd1"
 SD_MANAGER, SD_UNIT = (
     "org.freedesktop.systemd1.Manager",
     "org.freedesktop.systemd1.Unit",
 )
+DBUS_TIMEOUT_MS = 2000
+SWAYMSG_TIMEOUT_S = 2
+EXIT_DISMISSED = 126  # pkexec: the authorisation dialog was dismissed
+EXIT_NOT_FOUND = 127  # pkexec: the helper is missing (or refused)
+
+__all__ = ["DIRECT", "STATE_PATH", "State"]
 
 
 # --- state ---
 
 
-def empty_state():
-    return {
-        "proxies": [],
-        "rules": [],
-        "default": DIRECT,
-        "kill_switch": False,
-        "checks": {},
-        "applied": None,
-    }
-
-
-def load_state(path=None):
+def load_state(path: Path | None = None) -> State:
+    """The saved state; a missing or unreadable file is an empty one."""
     try:
-        with pathlib.Path(path or STATE_PATH).open() as f:
-            data = json.load(f)
+        raw = (path or STATE_PATH).read_text()
     except OSError, ValueError:
-        return empty_state()
-    state = empty_state()
-    if isinstance(data, dict):
-        state.update({k: data[k] for k in state if k in data})
-    return state
+        return State()
+    state = parse_state(raw)
+    return State() if isinstance(state, ParseError) else state
 
 
-def save_state(state, path=None):
+def save_state(state: State, path: Path | None = None) -> None:
     """Atomic write, 0600 in a 0700 directory: the file holds proxy passwords."""
     path = path or STATE_PATH
-    folder = os.path.dirname(path)
-    pathlib.Path(folder).mkdir(mode=0o700, exist_ok=True, parents=True)
+    folder = path.parent
+    folder.mkdir(mode=0o700, exist_ok=True, parents=True)
     fd, tmp = tempfile.mkstemp(prefix=".network-proxy.", dir=folder)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump(state, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        pathlib.Path(tmp).replace(path)
+            json.dump(dataclasses.asdict(state), f, indent=2, ensure_ascii=False)
+            _ = f.write("\n")
+        Path(tmp).replace(path)
     except BaseException:
-        if pathlib.Path(tmp).exists():
-            pathlib.Path(tmp).unlink()
+        Path(tmp).unlink(missing_ok=True)
         raise
 
 
-def proxy_by_id(state, pid):
-    return next((p for p in state["proxies"] if p["id"] == pid), None)
+def proxy_by_id(state: State, pid: str) -> Proxy | None:
+    return next((p for p in state.proxies if p.id == pid), None)
 
 
-def next_id(state):
-    used = {p["id"] for p in state["proxies"]}
-    return next(f"p{i}" for i in range(1, 100) if f"p{i}" not in used)
+def next_id(state: State) -> str:
+    used = {p.id for p in state.proxies}
+    return next(f"p{i}" for i in range(1, MAX_ID) if f"p{i}" not in used)
 
 
-def exit_name(state, exit_):
+def exit_name(_state: State, exit_: str) -> str:
     return "direct" if exit_ == DIRECT else exit_
 
 
-def remove_proxy(state, pid):
+def remove_proxy(state: State, pid: str) -> None:
     """Drop a proxy; its apps and the default fall back to direct."""
-    state["proxies"] = [p for p in state["proxies"] if p["id"] != pid]
-    state["rules"] = [r for r in state["rules"] if r["exit"] != pid]
-    if state["default"] == pid:
-        state["default"] = DIRECT
-    state["checks"].pop(pid, None)
+    state.proxies = [p for p in state.proxies if p.id != pid]
+    state.rules = [r for r in state.rules if r.exit != pid]
+    if state.default == pid:
+        state.default = DIRECT
+    _ = state.checks.pop(pid, None)
 
 
-def request(state):
+class HelperProxy(TypedDict):
+    id: str
+    host: str
+    port: int
+    username: str
+    password: str
+    block_quic: bool
+
+
+class HelperRule(TypedDict):
+    app: str
+    exit: str
+
+
+class HelperRequest(TypedDict):
+    """What the helper gets on stdin (polkit/proxy-helper validates it)."""
+
+    proxies: list[HelperProxy]
+    rules: list[HelperRule]
+    default: str
+    kill_switch: bool
+
+
+def request(state: State) -> HelperRequest:
     """What the helper gets: only the fields it validates, no names or checks."""
     return {
         "proxies": [
             {
-                k: p[k]
-                for k in ("id", "host", "port", "username", "password", "block_quic")
+                "id": p.id,
+                "host": p.host,
+                "port": p.port,
+                "username": p.username,
+                "password": p.password,
+                "block_quic": p.block_quic,
             }
-            for p in state["proxies"]
+            for p in state.proxies
         ],
-        "rules": [{"app": r["app"], "exit": r["exit"]} for r in state["rules"]],
-        "default": state["default"],
-        "kill_switch": bool(state["kill_switch"]),
+        "rules": [{"app": r.app, "exit": r.exit} for r in state.rules],
+        "default": state.default,
+        "kill_switch": state.kill_switch,
     }
 
 
-def digest(req):
+def digest(req: HelperRequest) -> str:
     return hashlib.sha256(json.dumps(req, sort_keys=True).encode()).hexdigest()
 
 
-def usable_problem(state):
+def usable_problem(state: State) -> str | None:
     """Why Proxy rules cannot be turned on, or None."""
-    if not state["proxies"]:
+    if not state.proxies:
         return "Add a proxy first"
-    if state["default"] == DIRECT and not any(
-        r["exit"] != DIRECT for r in state["rules"]
-    ):
+    if state.default == DIRECT and not any(r.exit != DIRECT for r in state.rules):
         return "Route an app through a proxy, or pick a proxy for everything else"
     return None
 
 
-def summary(state):
+def summary(state: State) -> str:
     """'3 apps via 2 proxies', plus where everything else goes."""
-    proxied = [r for r in state["rules"] if r["exit"] != DIRECT]
-    used = {r["exit"] for r in proxied}
+    proxied = [r for r in state.rules if r.exit != DIRECT]
+    used = {r.exit for r in proxied}
     apps = len(proxied)
     text = (
         f"{apps} app{'s' * (apps != 1)} via {len(used)} prox{'ies' if len(used) != 1 else 'y'}"
         if apps
         else "no app rules"
     )
-    if state["default"] != DIRECT:
-        text += f", everything else via {exit_name(state, state['default'])}"
+    if state.default != DIRECT:
+        text += f", everything else via {exit_name(state, state.default)}"
     return text
 
 
-def exit_label(state, exit_):
+def exit_label(state: State, exit_: str) -> str:
     name = exit_name(state, exit_)
-    country = (state["checks"].get(exit_) or {}).get("country")
+    check = state.checks.get(exit_)
+    country = check.country if check else None
     return f"{name} ({country})" if country else name
 
 
 # --- pasted proxies ---
 
-HOST_RE = re.compile(
-    r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.?$"
-)
 
-
-def _host_port(host, port):
-    host = host.strip()
-    if host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
-    try:
-        host = str(ipaddress.ip_address(host))
-    except ValueError:
-        if not HOST_RE.match(host) or host.rstrip(".").split(".")[-1].isdigit():
-            raise ValueError(f"{host!r} is not a host name or IP address")
-    if not port.isdigit() or not 1 <= int(port) <= 65535:
-        raise ValueError(f"{port!r} is not a port")
-    return host, int(port)
-
-
-def parse_line(line):
-    """One proxy: host:port:user:pass (the provider format), host:port,
-    user:pass@host:port or socks5://user:pass@host:port. IPv6 in [brackets]."""
-    line = line.strip()
-    for prefix in ("socks5h://", "socks5://", "socks://"):
-        if line.lower().startswith(prefix):
-            line = line[len(prefix) :]
-            break
-    user = password = ""
-    if "@" in line:
-        cred, _, addr = line.rpartition("@")
-        user, sep, password = cred.partition(":")
-        if not sep:
-            raise ValueError("expected user:pass@host:port")
-        host, sep, port = addr.rpartition(":")
-        if not sep:
-            raise ValueError("missing port")
-    elif line.startswith("["):
-        host, sep, rest = line.partition("]:")
-        if not sep:
-            raise ValueError("expected [IPv6]:port")
-        host += "]"
-        port, _, cred = rest.partition(":")
-        if cred:
-            user, sep, password = cred.partition(":")
-            if not sep:
-                raise ValueError("expected [IPv6]:port:user:pass")
-    else:
-        parts = line.split(":", 3)  # the password may contain ':'
-        if len(parts) == 2:
-            host, port = parts
-        elif len(parts) == 4:
-            host, port, user, password = parts
-        else:
-            raise ValueError("expected host:port:user:pass")
-    host, port = _host_port(host, port)
-    if bool(user) != bool(password):
-        raise ValueError("give both a username and a password, or neither")
-    for what, value in (("username", user), ("password", password)):
-        if len(value.encode()) > 255:
-            raise ValueError(f"{what} longer than 255 bytes")
-        if re.search(r"[\x00-\x1f\x7f]", value):
-            raise ValueError(f"control characters in the {what}")
-    return {"host": host, "port": port, "username": user, "password": password}
-
-
-def import_lines(state, text):
+def import_lines(state: State, text: str) -> tuple[int, list[tuple[int, str]]]:
     """Add pasted proxies. Returns (added, [(line number, error)]); lines that
     repeat an existing host:port:user replace its password."""
-    added, errors = 0, []
+    added = 0
+    errors: list[tuple[int, str]] = []
     for n, line in enumerate(text.splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        try:
-            p = parse_line(line)
-        except ValueError as e:
-            errors.append((n, str(e)))
+        p = parse_proxy_line(line)
+        if isinstance(p, ParseError):
+            errors.append((n, str(p)))
             continue
         same = next(
             (
                 q
-                for q in state["proxies"]
-                if (q["host"], q["port"], q["username"])
-                == (p["host"], p["port"], p["username"])
+                for q in state.proxies
+                if (q.host, q.port, q.username) == (p.host, p.port, p.username)
             ),
             None,
         )
         if same:
-            same["password"] = p["password"]
+            same.password = p.password
             continue
-        if len(state["proxies"]) >= MAX_PROXIES:
+        if len(state.proxies) >= MAX_PROXIES:
             errors.append((n, f"at most {MAX_PROXIES} proxies"))
             continue
-        pid = next_id(state)
-        state["proxies"].append(dict(p, id=pid, block_quic=False))
+        p.id = next_id(state)
+        state.proxies.append(p)
         added += 1
     return added, errors
 
 
 # --- running processes (the app picker) ---
 
+_DELETED = " (deleted)"  # /proc/<pid>/exe of a replaced executable
 
-def running_apps(proc="/proc", uid=None):
+
+def running_apps(proc: str = "/proc", uid: int | None = None) -> dict[str, str]:
     """{executable name: path} of this user's processes: the names sing-box's
     process_name matches (basename of /proc/<pid>/exe, not comm)."""
     uid = os.getuid() if uid is None else uid
-    apps = {}
+    apps: dict[str, str] = {}
     try:
-        pids = [d for d in os.listdir(proc) if d.isdigit()]
+        pids = [d for d in Path(proc).iterdir() if d.name.isdigit()]
     except OSError:
         return apps
     for pid in pids:
         try:
-            if os.stat(os.path.join(proc, pid)).st_uid != uid:
+            if pid.stat().st_uid != uid:
                 continue
-            path = os.readlink(os.path.join(proc, pid, "exe"))
+            path = str((pid / "exe").readlink())
         except OSError:
             continue  # kernel threads, exited or foreign processes
-        path = path.removesuffix(" (deleted)")
-        apps.setdefault(os.path.basename(path), path)
+        path = path.removesuffix(_DELETED)
+        _ = apps.setdefault(Path(path).name, path)
     return apps
 
 
-def window_pids():
+def window_pids() -> set[int]:
     """PIDs owning a Sway window, to list apps with windows first."""
     try:
         out = subprocess.run(
             ["swaymsg", "-t", "get_tree", "-r"],
             capture_output=True,
-            timeout=2,
+            timeout=SWAYMSG_TIMEOUT_S,
             check=True,
         ).stdout
-        stack = [json.loads(out)]
-    except OSError, subprocess.SubprocessError, ValueError:
+    except OSError, subprocess.SubprocessError:
         return set()
-    pids = set()
-    while stack:
-        node = stack.pop()
-        if node.get("pid"):
-            pids.add(node["pid"])
-        stack.extend(node.get("nodes", []) + node.get("floating_nodes", []))
-    return pids
+    pids = parse_window_pids(out)
+    return set() if isinstance(pids, ParseError) else pids
 
 
-def window_apps(proc="/proc"):
-    names = set()
+def window_apps(proc: str = "/proc") -> set[str]:
+    names: set[str] = set()
     for pid in window_pids():
-        try:
-            names.add(
-                os.path.basename(os.readlink(f"{proc}/{pid}/exe")).removesuffix(
-                    " (deleted)"
-                )
-            )
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            exe = str(Path(f"{proc}/{pid}/exe").readlink())
+            names.add(Path(exe).name.removesuffix(_DELETED))
     return names
 
 
 # --- helper ---
 
 
-def run_helper(args, stdin_text, on_done):
+def run_helper(
+    args: list[str], stdin_text: str, on_done: Callable[[str | None], None]
+) -> None:
     """pkexec the root helper asynchronously; on_done(error or None)."""
     try:
         proc = Gio.Subprocess.new(
-            ["pkexec", HELPER] + args,
+            ["pkexec", HELPER, *args],
             Gio.SubprocessFlags.STDIN_PIPE
             | Gio.SubprocessFlags.STDOUT_PIPE
             | Gio.SubprocessFlags.STDERR_PIPE,
@@ -331,7 +295,7 @@ def run_helper(args, stdin_text, on_done):
         on_done(f"cannot run pkexec: {e.message}")
         return
 
-    def done(p, res):
+    def done(p: Gio.Subprocess, res: Gio.AsyncResult) -> None:
         try:
             _ok, _out, err = p.communicate_utf8_finish(res)
         except GLib.Error as e:
@@ -340,9 +304,9 @@ def run_helper(args, stdin_text, on_done):
         status = p.get_exit_status()
         if status == 0:
             on_done(None)
-        elif status == 126:
+        elif status == EXIT_DISMISSED:
             on_done("authorisation was dismissed")
-        elif status == 127 and not pathlib.Path(HELPER).exists():
+        elif status == EXIT_NOT_FOUND and not Path(HELPER).exists():
             on_done("the proxy helper is not installed: run install.sh")
         else:
             lines = (err or "").strip().splitlines()
@@ -352,49 +316,80 @@ def run_helper(args, stdin_text, on_done):
     proc.communicate_utf8_async(stdin_text, None, done)
 
 
-def apply(state, on_done):
+def apply(state: State, on_done: Callable[[str | None], None]) -> None:
     """Write the config and (re)start sing-box; on success record the digest."""
     req = request(state)
 
-    def done(err):
+    def done(err: str | None) -> None:
         if err is None:
-            state["applied"] = digest(req)
+            state.applied = digest(req)
             save_state(state)
         on_done(err)
 
     run_helper(["apply"], json.dumps(req), done)
 
 
-def stop(on_done):
+def stop(on_done: Callable[[str | None], None]) -> None:
     run_helper(["stop"], "", on_done)
 
 
-def pending_changes(state):
-    return state.get("applied") != digest(request(state))
+def pending_changes(state: State) -> bool:
+    return state.applied != digest(request(state))
 
 
 # --- service ---
 
 
-class ServiceState:
+class _Unit:
+    """systemd's view of the unit: LoadState, ActiveState, SubState."""
+
+    def __init__(self) -> None:
+        self.installed: bool | None = None
+        self.state: str | None = None
+        self.sub_state: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.state in {"active", "reloading"}
+
+    @property
+    def starting(self) -> bool:
+        return self.state == "activating"
+
+    @property
+    def crashed(self) -> bool:
+        """Stopped by a failure, not by a stop request (systemd may restart it)."""
+        return self.state == "failed" or self.sub_state == "auto-restart"
+
+    def _set(self, load: str | None, active: str | None, sub: str | None) -> bool:
+        """Take the three properties; True when anything changed."""
+        before = (self.installed, self.state, self.sub_state)
+        self.installed = load == "loaded"
+        self.state, self.sub_state = active, sub
+        return (self.installed, self.state, self.sub_state) != before
+
+
+class ServiceState(_Unit):
     """One synchronous read of the unit (for --once callers)."""
 
-    def __init__(self):
-        self.installed = self.state = self.sub_state = None
+    def __init__(self) -> None:
+        super().__init__()
         try:
             bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
-            path = bus.call_sync(
-                SD_BUS,
-                SD_PATH,
-                SD_MANAGER,
-                "LoadUnit",
-                GLib.Variant("(s)", (UNIT,)),
-                GLib.VariantType("(o)"),
-                Gio.DBusCallFlags.NONE,
-                2000,
-                None,
-            ).unpack()[0]
-            props = bus.call_sync(
+            path = _first_string(
+                bus.call_sync(
+                    SD_BUS,
+                    SD_PATH,
+                    SD_MANAGER,
+                    "LoadUnit",
+                    GLib.Variant("(s)", (UNIT,)),
+                    GLib.VariantType("(o)"),
+                    Gio.DBusCallFlags.NONE,
+                    DBUS_TIMEOUT_MS,
+                    None,
+                )
+            )
+            reply = bus.call_sync(
                 SD_BUS,
                 path,
                 "org.freedesktop.DBus.Properties",
@@ -402,44 +397,37 @@ class ServiceState:
                 GLib.Variant("(s)", (SD_UNIT,)),
                 GLib.VariantType("(a{sv})"),
                 Gio.DBusCallFlags.NONE,
-                2000,
+                DBUS_TIMEOUT_MS,
                 None,
-            ).unpack()[0]
+            )
         except GLib.Error:
             return
-        self.installed = props.get("LoadState") == "loaded"
-        self.state, self.sub_state = props.get("ActiveState"), props.get("SubState")
+        props = reply.get_child_value(0)
 
-    active = property(lambda s: s.state in ("active", "reloading"))
-    starting = property(lambda s: s.state == "activating")
-    crashed = property(lambda s: s.state == "failed" or s.sub_state == "auto-restart")
+        def prop(name: str) -> str | None:
+            return _string(props.lookup_value(name, None))
+
+        _ = self._set(prop("LoadState"), prop("ActiveState"), prop("SubState"))
 
 
-class ServiceWatch:
+def _first_string(reply: GLib.Variant) -> str:
+    """The string (or object path) a D-Bus reply tuple starts with, "" for
+    another type."""
+    return _string(reply.get_child_value(0)) or ""
+
+
+class ServiceWatch(_Unit):
     """Follows gtk-widgets-proxy.service over the system bus.
     on_change(watch) runs on every state change; read .installed, .state,
     .sub_state (systemd's names)."""
 
-    def __init__(self, on_change):
+    def __init__(self, on_change: Callable[[ServiceWatch], None]) -> None:
+        super().__init__()
         self.on_change = on_change
-        self.installed = self.state = self.sub_state = None
-        self.proxy = None
+        self.proxy: Gio.DBusProxy | None = None
         Gio.bus_get(Gio.BusType.SYSTEM, None, self._on_bus)
 
-    @property
-    def active(self):
-        return self.state in ("active", "reloading")
-
-    @property
-    def starting(self):
-        return self.state == "activating"
-
-    @property
-    def crashed(self):
-        """Stopped by a failure, not by a stop request (systemd may restart it)."""
-        return self.state == "failed" or self.sub_state == "auto-restart"
-
-    def _on_bus(self, _src, res):
+    def _on_bus(self, _src: GObject.Object | None, res: Gio.AsyncResult) -> None:
         try:
             bus = Gio.bus_get_finish(res)
         except GLib.Error:
@@ -459,9 +447,9 @@ class ServiceWatch:
             None,
         )
 
-        def loaded(conn, res2):
+        def loaded(conn: Gio.DBusConnection, res2: Gio.AsyncResult) -> None:
             try:
-                path = conn.call_finish(res2).unpack()[0]
+                path = _first_string(conn.call_finish(res2))
             except GLib.Error:
                 return
             Gio.DBusProxy.new(
@@ -488,21 +476,34 @@ class ServiceWatch:
             loaded,
         )
 
-    def _on_proxy(self, _src, res):
+    def _on_proxy(self, _src: GObject.Object | None, res: Gio.AsyncResult) -> None:
         try:
-            self.proxy = Gio.DBusProxy.new_finish(res)
+            proxy = Gio.DBusProxy.new_finish(res)
         except GLib.Error:
             return
-        self.proxy.connect("g-properties-changed", lambda *_: self._read())
-        self._read()
+        self.proxy = proxy
 
-    def _read(self):
-        def prop(name):
-            v = self.proxy.get_cached_property(name)
-            return v.unpack() if v is not None else None
+        def changed(
+            _proxy: Gio.DBusProxy, _changed: GLib.Variant, _gone: list[str]
+        ) -> None:
+            self._read(proxy)
 
-        before = (self.installed, self.state, self.sub_state)
-        self.installed = prop("LoadState") == "loaded"
-        self.state, self.sub_state = prop("ActiveState"), prop("SubState")
-        if (self.installed, self.state, self.sub_state) != before:
+        _ = proxy.connect("g-properties-changed", changed)
+        self._read(proxy)
+
+    def _read(self, proxy: Gio.DBusProxy) -> None:
+        def prop(name: str) -> str | None:
+            return _string(proxy.get_cached_property(name))
+
+        if self._set(prop("LoadState"), prop("ActiveState"), prop("SubState")):
             self.on_change(self)
+
+
+def _string(variant: GLib.Variant | None) -> str | None:
+    """A D-Bus string or object path, or None when it is missing
+    (lookup_value and get_cached_property return NULL then; the stubs leave
+    that out) or of another type."""
+    # Not get_string(): at run time it gives the bare string, while the
+    # stubs promise a tuple with the length
+    value: object = variant.unpack() if variant is not None else None
+    return value if isinstance(value, str) else None

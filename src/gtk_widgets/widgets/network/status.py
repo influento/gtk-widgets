@@ -65,7 +65,7 @@ def proxy_part(svc):
         return None
     if svc.crashed:
         return "proxy-down", f"{ICON['proxy']} !"
-    apps = sum(r["exit"] != px.DIRECT for r in px.load_state()["rules"])
+    apps = sum(r.exit != px.DIRECT for r in px.load_state().rules)
     return "proxy", f"{ICON['proxy']} {apps}"
 
 
