@@ -5,6 +5,7 @@ description = "GTK4 popup widgets for Sway (Wayland), themed via Catppuccin Moch
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "pycairo>=1.29.2,<2",
     "pygobject>=3.58.1,<4",
 ]
 
@@ -40,6 +41,7 @@ package = true
 
 [tool.uv.sources]
 gtk4-layer-shell-stubs = { path = "stubs/gtk4-layer-shell-stubs" }
+nm-stubs = { path = "stubs/nm-stubs" }
 
 [dependency-groups]
 dev = [
@@ -47,6 +49,7 @@ dev = [
     "deptry>=0.25.1,<0.26",
     "gtk4-layer-shell-stubs",
     "import-linter>=2.16,<3",
+    "nm-stubs",
     "pygobject-stubs>=2.20,<3",
     "pytest>=9.2,<10",
     "pytest-asyncio>=1.4,<2",

@@ -1,0 +1,17 @@
+# Types for libnm (NM-1.0), installed beside pygobject-stubs' own into
+# gi-stubs/repository/: the one place basedpyright reads a gi module's stub
+# from. A namespace package, so it adds a file and owns no __init__.pyi.
+# NM.pyi is generated: run ./generate after a libnm upgrade, never edit it.
+[project]
+name = "nm-stubs"
+version = "1.58.1"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "gi-stubs.repository"
+namespace = true

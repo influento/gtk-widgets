@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Writes src/gi-stubs/repository/NM.pyi from the installed NM-1.0 typelib with
+# pygobject-stubs' own generator, called as its tools/update.py calls it. It
+# runs code fetched from GitHub: the user runs it, not an agent.
+set -euo pipefail
+
+readonly TAG=v2.20.0
+readonly REPO=https://github.com/pygobject/pygobject-stubs.git
+
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here/../.." && pwd)"
+out="$here/src/gi-stubs/repository/NM.pyi"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+git clone -q --depth 1 --branch "$TAG" "$REPO" "$work/repo" 2>/dev/null
+PYTHONPATH="$work/repo/src" "$root/.venv/bin/python" -m pygobject_stub_generator NM 1.0 \
+  >"$work/NM.pyi"
+
+# The generator leaves out the classes whose names start with a digit
+# (80211ApFlags, 80211ApSecurityFlags, 80211Mode: no Python class can have such
+# a name) and their _...ValueType aliases, but still writes them as types. Their
+# bases stand in.
+sed -E \
+  -e 's/\b_?80211Ap(Security)?Flags(ValueType)?\b/GObject.GFlags/g' \
+  -e 's/\b_?80211Mode(ValueType)?\b/GObject.GEnum/g' \
+  "$work/NM.pyi" >"$work/fixed.pyi"
+
+"$root/.venv/bin/ruff" check --isolated --select=I001 --select=F401 --fix --quiet \
+  --stdin-filename NM.pyi - <"$work/fixed.pyi" >"$work/checked.pyi"
+"$root/.venv/bin/ruff" format --isolated --stdin-filename NM.pyi - \
+  <"$work/checked.pyi" >"$out"

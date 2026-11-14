@@ -10,3 +10,5 @@ ruff
 pygobject
 pygobject-stubs
 gtk4-layer-shell-stubs
+pycairo
+nm-stubs

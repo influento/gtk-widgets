@@ -9,6 +9,8 @@
   "exclude": [
     "repos/**",
     "workbench/**",
-    ".worktrees/**"
+    ".worktrees/**",
+    "src/gtk_widgets/lib/pulsectl/*.py",
+    "stubs/nm-stubs/src/**"
   ]
 }

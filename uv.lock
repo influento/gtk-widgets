@@ -114,6 +114,7 @@ name = "gtk-widgets"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pycairo" },
     { name = "pygobject" },
 ]
 
@@ -123,6 +124,7 @@ dev = [
     { name = "deptry" },
     { name = "gtk4-layer-shell-stubs" },
     { name = "import-linter" },
+    { name = "nm-stubs" },
     { name = "pygobject-stubs" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -132,7 +134,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pygobject", specifier = ">=3.58.1,<4" }]
+requires-dist = [
+    { name = "pycairo", specifier = ">=1.29.2,<2" },
+    { name = "pygobject", specifier = ">=3.58.1,<4" },
+]
 
 [package.metadata.requires-dev]
 dev = [
@@ -140,6 +145,7 @@ dev = [
     { name = "deptry", specifier = ">=0.25.1,<0.26" },
     { name = "gtk4-layer-shell-stubs", directory = "stubs/gtk4-layer-shell-stubs" },
     { name = "import-linter", specifier = ">=2.16,<3" },
+    { name = "nm-stubs", directory = "stubs/nm-stubs" },
     { name = "pygobject-stubs", specifier = ">=2.20,<3" },
     { name = "pytest", specifier = ">=9.2,<10" },
     { name = "pytest-asyncio", specifier = ">=1.4,<2" },
@@ -196,6 +202,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
 ]
+
+[[package]]
+name = "nm-stubs"
+version = "1.58.1"
+source = { directory = "stubs/nm-stubs" }
 
 [[package]]
 name = "nodejs-wheel-binaries"
