@@ -19,6 +19,10 @@ def is_object(value: object) -> TypeIs[Mapping[str, object]]:
     return _is_mapping(value) and all(isinstance(k, str) for k in value)
 
 
+def is_array(value: object) -> TypeIs[list[object]]:
+    return isinstance(value, list)
+
+
 def _is_mapping(value: object) -> TypeIs[Mapping[object, object]]:
     return isinstance(value, Mapping)
 

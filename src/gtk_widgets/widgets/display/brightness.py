@@ -16,21 +16,34 @@ CLI usage (symlinked as `display-brightness`):
   display-brightness get           print current percent
 """
 
+import contextlib
 import os
-import pathlib
 import subprocess
 import sys
+from pathlib import Path
+from typing import Literal
 
 STEP = 5
 _TAG = "gtk-widgets-brightness"
-_bus = None  # DDC bus number as a string, loaded from the cache on first use
+
+type Backend = Literal["backlight", "ddc"]
 
 
-def _run(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True)
+class _BusCache:
+    """The DDC bus number as a string, loaded from the cache file on first use."""
+
+    def __init__(self) -> None:
+        self.bus: str | None = None
 
 
-def _read_backlight():
+_cache = _BusCache()
+
+
+def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def _read_backlight() -> int | None:
     """Backlight percent, or None if brightnessctl has no backlight device."""
     try:
         if _run(["brightnessctl", "-c", "backlight", "info"]).returncode != 0:
@@ -42,25 +55,20 @@ def _read_backlight():
         return None
 
 
-def _bus_file():
-    cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(cache, "display", "ddc-bus")
+def _bus_file() -> Path:
+    cache = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
+    return Path(cache) / "display" / "ddc-bus"
 
 
-def _cached_bus():
-    global _bus
-    if _bus is None:
-        try:
-            with pathlib.Path(_bus_file()).open() as f:
-                _bus = f.read().strip() or None
-        except OSError:
-            pass
-    return _bus
+def _cached_bus() -> str | None:
+    if _cache.bus is None:
+        with contextlib.suppress(OSError):
+            _cache.bus = _bus_file().read_text().strip() or None
+    return _cache.bus
 
 
-def _detect_bus():
+def _detect_bus() -> str | None:
     """Scan for the first DDC display (ddcutil's default display), cache its bus."""
-    global _bus
     try:
         result = _run(["ddcutil", "detect", "--terse"])
     except OSError:
@@ -71,23 +79,21 @@ def _detect_bus():
             in_display = line.startswith("Display ")
         elif in_display and line.strip().startswith("I2C bus:"):
             dev = line.split(":", 1)[1].strip()  # /dev/i2c-N
-            _bus = dev.rsplit("-", 1)[-1]
+            bus = dev.rsplit("-", 1)[-1]
             break
     else:
         return None
+    _cache.bus = bus
     path = _bus_file()
-    try:
-        pathlib.Path(os.path.dirname(path)).mkdir(exist_ok=True, parents=True)
-        tmp = f"{path}.{os.getpid()}"
-        with pathlib.Path(tmp).open("w") as f:
-            f.write(_bus + "\n")
-        pathlib.Path(tmp).replace(path)
-    except OSError:
-        pass
-    return _bus
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(exist_ok=True, parents=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}")
+        tmp.write_text(bus + "\n")
+        tmp.replace(path)
+    return bus
 
 
-def _ddc(*args):
+def _ddc(*args: str) -> subprocess.CompletedProcess[str] | None:
     """Run ddcutil on the cached bus; rescan and retry once if that fails.
 
     Returns the CompletedProcess, or None if no DDC display answers.
@@ -107,7 +113,7 @@ def _ddc(*args):
     return result if result.returncode == 0 else None
 
 
-def _read_ddc():
+def _read_ddc() -> int | None:
     """DDC/CI percent from one `getvcp` round-trip, or None if no display answers."""
     result = _ddc("getvcp", "10")
     if result is None:
@@ -121,8 +127,9 @@ def _read_ddc():
     return None
 
 
-def probe():
-    """Detect the backend and read its level in one pass: (backend, percent) or (None, None).
+def probe() -> tuple[Backend, int] | None:
+    """Detect the backend and read its level in one pass: (backend, percent), or
+    None when there is no backend.
 
     The first DDC probe (or one after the bus changed) takes seconds, so
     callers should use the percent returned here rather than calling get() again.
@@ -133,30 +140,25 @@ def probe():
     pct = _read_ddc()
     if pct is not None:
         return "ddc", pct
-    return None, None
+    return None
 
 
-def detect_backend():
-    """Return 'backlight', 'ddc', or None."""
-    return probe()[0]
-
-
-def get(backend):
+def get(backend: Backend) -> int:
     """Current brightness as an integer percent (100 on failure)."""
     pct = _read_backlight() if backend == "backlight" else _read_ddc()
     return 100 if pct is None else pct
 
 
-def set_pct(backend, pct):
-    pct = max(0, min(100, int(pct)))
+def set_pct(backend: Backend, pct: float) -> int:
+    level = max(0, min(100, int(pct)))
     if backend == "backlight":
-        _run(["brightnessctl", "-c", "backlight", "set", f"{pct}%"])
+        _run(["brightnessctl", "-c", "backlight", "set", f"{level}%"])
     else:
-        _ddc("setvcp", "10", str(pct))
-    return pct
+        _ddc("setvcp", "10", str(level))
+    return level
 
 
-def adjust(backend, delta, cur=None):
+def adjust(backend: Backend, delta: int, cur: int | None = None) -> int:
     """Step brightness by delta percent, snapped to the step grid."""
     if cur is None:
         cur = get(backend)
@@ -165,9 +167,9 @@ def adjust(backend, delta, cur=None):
     return set_pct(backend, snapped + delta)
 
 
-def notify(pct):
+def notify(pct: int) -> None:
     """Transient OSD-style notification; replaces the previous one in place."""
-    try:
+    with contextlib.suppress(FileNotFoundError):
         subprocess.Popen(
             [
                 "notify-send",
@@ -185,18 +187,17 @@ def notify(pct):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    except FileNotFoundError:
-        pass
 
 
-def run(argv):
+def run(argv: list[str]) -> int:
     if not argv or argv[0] not in ("up", "down", "set", "get"):
-        print(__doc__.strip(), file=sys.stderr)
+        print((__doc__ or "").strip(), file=sys.stderr)
         return 2
-    backend, cur = probe()
-    if backend is None:
+    found = probe()
+    if found is None:
         print("no brightness backend (brightnessctl/ddcutil)", file=sys.stderr)
         return 1
+    backend, cur = found
     cmd = argv[0]
     if cmd == "get":
         print(cur)
@@ -205,7 +206,7 @@ def run(argv):
         if len(argv) < 2:
             print("set: missing percent", file=sys.stderr)
             return 2
-        pct = set_pct(backend, argv[1])
+        pct = set_pct(backend, int(argv[1]))
     else:
         step = int(argv[1]) if len(argv) > 1 else STEP
         pct = adjust(backend, step if cmd == "up" else -step, cur)
@@ -214,5 +215,5 @@ def run(argv):
     return 0
 
 
-def main() -> int | None:
+def main() -> int:
     return run(sys.argv[1:])

@@ -175,7 +175,7 @@ gtk-widgets/
 ├── src/gtk_widgets/
 │   ├── __init__.py        # Empty: launcher's CLI imports it
 │   ├── lib/
-│   │   ├── parse.py       # JSON readers (object guard, str/bool/float) returning ParseError; the theme file's parser (stdlib)
+│   │   ├── parse.py       # JSON readers (object/array guards, str/bool/float) returning ParseError; the theme file's parser (stdlib)
 │   │   ├── paths.py       # SRC, module_child(): run one of our modules in a child Python (stdlib)
 │   │   ├── theme.py       # Theme file lookup, colours, @@TOKEN@@ rendering (stdlib, no GTK)
 │   │   ├── wayland.py     # Minimal Wayland wire client (stdlib): ids, dispatch with fds, registry
@@ -202,6 +202,7 @@ gtk-widgets/
 │       ├── display/
 │       │   ├── main.py
 │       │   ├── brightness.py  # Backend (backlight/DDC on a cached bus) + CLI: display-brightness up|down|set|get
+│       │   ├── parse.py       # swaymsg's output list -> the active output's scale
 │       │   ├── style.css
 │       │   └── status         # JSON: display icon
 │       ├── power/

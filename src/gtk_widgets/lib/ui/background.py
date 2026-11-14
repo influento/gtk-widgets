@@ -12,7 +12,8 @@ def in_background(
     """Run `task` on a daemon thread. Nobody waits on that thread, so a bug in
     it would leave the popup showing its progress text: an exception calls
     `on_bug("bug: <exception>")` on the main thread, then raises again for its
-    traceback."""
+    traceback. `on_bug` must not return True: idle_add would call it again and
+    again."""
 
     def run() -> None:
         try:

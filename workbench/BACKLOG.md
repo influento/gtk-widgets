@@ -11,3 +11,9 @@
   of each file it installs (helpers, rules, unit); the next run skips sudo when
   the repo copies hash the same. The user's pick (2026-11-14). An item once the
   gate passes.
+- **bluetooth: an action's result is lost when the adapter is off.** If
+  Bluetooth is powered off while connect, pair, remove or disconnect runs, the
+  redraw at its end shows only "Bluetooth is powered off" and has no status
+  line: the result ("Connected", "Pairing failed", a bug line) goes to the old,
+  removed label and nobody sees it. Found in gap 5 (types), left as it was
+  (2026-11-14).

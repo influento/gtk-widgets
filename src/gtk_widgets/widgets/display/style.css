@@ -60,3 +60,8 @@ scale indicator {
 scale marks mark label {
   font-family: initial;
 }
+
+.display-error {
+  font-size: 11px;
+  color: @@ERROR@@;
+}
