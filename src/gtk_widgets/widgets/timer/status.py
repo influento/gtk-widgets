@@ -16,7 +16,7 @@ ICON_PAUSED = ""  # nf-fa-pause
 ICON_DONE = ""  # nf-fa-bell
 
 
-def main():
+def main() -> None:
     state = ts.load()
     ts.check_expired(state)
 
@@ -25,16 +25,12 @@ def main():
         return
 
     secs = ts.display_seconds(state)
-    text = f"{ICON_RUNNING if state['running'] else ICON_PAUSED}  {ts.format_hms(secs)}"
+    text = f"{ICON_RUNNING if state.running else ICON_PAUSED}  {ts.format_hms(secs)}"
 
-    cls = "running" if state["running"] else "paused"
-    tooltip = f"{state['mode'].capitalize()} ({cls})"
+    cls = "running" if state.running else "paused"
+    tooltip = f"{state.mode.capitalize()} ({cls})"
 
-    if (
-        state["mode"] == "timer"
-        and ts.remaining(state) == 0.0
-        and state["duration"] > 0
-    ):
+    if state.mode == "timer" and ts.remaining(state) == 0.0 and state.duration > 0:
         text = f"{ICON_DONE}  00:00:00"
         cls = "alarm"
         tooltip = "Timer finished"

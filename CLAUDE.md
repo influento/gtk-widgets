@@ -147,6 +147,11 @@ Defined in `themes/catppuccin-mocha.json`:
 - Python widgets use standard library only (+ PyGObject). No third-party Python packages:
   if a binding is unavoidable, vendor a pinned, audited copy under `src/gtk_widgets/lib/` (as `lib/pulsectl/`,
   ctypes over libpulse, used by `audio`) with its license and a note of local changes
+- Outside data (JSON files, tool output) is parsed with `lib/parse.py`'s readers into
+  dataclasses, the stand-in for a schema library, and only in modules named `parse.py`
+  (`lib/parse.py`, `widgets/<name>/parse.py`): the gate lets only those take `object`
+  (`py-gate.off.no-object-signature` in `.claude/workshop.conf`). A parser returns
+  `ParseError` (a `ValueError`) instead of raising; the code that reads the file only sees the model
 - Before every commit/push, audit the staged diff for sensitive information leaks
 
 ## File Structure
@@ -167,6 +172,7 @@ gtk-widgets/
 ├── src/gtk_widgets/
 │   ├── __init__.py        # Empty: launcher's CLI imports it
 │   ├── lib/
+│   │   ├── parse.py       # JSON readers (object guard, str/bool/float) returning ParseError; the theme file's parser (stdlib)
 │   │   ├── paths.py       # SRC, module_child(): run one of our modules in a child Python (stdlib)
 │   │   ├── theme.py       # Theme file lookup, colours, @@TOKEN@@ rendering (stdlib, no GTK)
 │   │   ├── wayland.py     # Minimal Wayland wire client (stdlib): ids, dispatch with fds, registry
@@ -207,7 +213,8 @@ gtk-widgets/
 │       │   └── status         # JSON: USB icon, event-driven via udevadm
 │       ├── timer/
 │       │   ├── main.py
-│       │   ├── state.py       # Shared state model (popup + status script), alarm fires once
+│       │   ├── parse.py       # State dataclass + the state file's parser (a field it lacks takes its default)
+│       │   ├── state.py       # Shared state (popup + status script): load/save, transitions, alarm fires once
 │       │   ├── style.css
 │       │   └── status.py      # JSON: hh:mm:ss, fires alarm at zero
 │       ├── audio/

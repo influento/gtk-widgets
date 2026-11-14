@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Timer widget — timer + stopwatch with session-scoped state."""
 
+from typing import override
+
 from gi.repository import GLib
 
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
 from gtk_widgets.widgets.timer import state as ts
+from gtk_widgets.widgets.timer.parse import Mode
 
-PRESETS = [
+PRESETS: list[tuple[str, int]] = [
     ("1m", 60),
     ("5m", 5 * 60),
     ("10m", 10 * 60),
@@ -16,13 +19,14 @@ PRESETS = [
 
 
 class TimerPopup(WidgetPopup):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(application_id="dev.dotfiles.timer")
         self.state = ts.load()
-        self._tick_id = None
+        self._tick_id: int | None = None
         self._suppress_spin = False  # True while spinners are being synced from state
 
-    def build_ui(self):
+    @override
+    def build_ui(self) -> Gtk.Widget:
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         container.add_css_class("timer-container")
 
@@ -31,8 +35,12 @@ class TimerPopup(WidgetPopup):
             orientation=Gtk.Orientation.HORIZONTAL, spacing=0, homogeneous=True
         )
         mode_row.add_css_class("mode-switcher")
-        self.mode_buttons = {}
-        for mode, label in (("timer", "Timer"), ("stopwatch", "Stopwatch")):
+        self.mode_buttons: dict[Mode, Gtk.Button] = {}
+        modes: tuple[tuple[Mode, str], ...] = (
+            ("timer", "Timer"),
+            ("stopwatch", "Stopwatch"),
+        )
+        for mode, label in modes:
             btn = Gtk.Button(label=label)
             btn.add_css_class("mode-button")
             btn.connect("clicked", self._on_mode_clicked, mode)
@@ -97,7 +105,7 @@ class TimerPopup(WidgetPopup):
         self._start_tick()
         return container
 
-    def _make_spin(self, lo, hi):
+    def _make_spin(self, lo: int, hi: int) -> Gtk.SpinButton:
         adj = Gtk.Adjustment(lower=lo, upper=hi, step_increment=1, page_increment=5)
         spin = Gtk.SpinButton(adjustment=adj, numeric=True)
         spin.set_orientation(Gtk.Orientation.VERTICAL)
@@ -107,18 +115,18 @@ class TimerPopup(WidgetPopup):
 
     # ----- Event handlers -----
 
-    def _on_mode_clicked(self, _btn, mode):
+    def _on_mode_clicked(self, _btn: Gtk.Button, mode: Mode) -> None:
         ts.set_mode(self.state, mode)
         ts.save(self.state)
         self._refresh_ui()
 
-    def _on_preset_clicked(self, _btn, seconds):
+    def _on_preset_clicked(self, _btn: Gtk.Button, seconds: int) -> None:
         ts.set_duration(self.state, seconds)
         ts.save(self.state)
         self._sync_spinners_from_state()
         self._refresh_ui()
 
-    def _on_spinner_changed(self, _spin):
+    def _on_spinner_changed(self, _spin: Gtk.SpinButton) -> None:
         if self._suppress_spin:
             return
         seconds = (
@@ -130,21 +138,21 @@ class TimerPopup(WidgetPopup):
         ts.save(self.state)
         self._refresh_ui()
 
-    def _on_start_pause(self, _btn):
-        if self.state["mode"] == "timer" and self.state["duration"] == 0.0:
+    def _on_start_pause(self, _btn: Gtk.Button) -> None:
+        if self.state.mode == "timer" and self.state.duration == 0.0:
             return
-        if self.state["running"]:
+        if self.state.running:
             ts.pause(self.state)
         else:
-            if self.state["mode"] == "timer" and ts.remaining(self.state) == 0.0:
+            if self.state.mode == "timer" and ts.remaining(self.state) == 0.0:
                 # Restart a finished timer with the same duration
-                self.state["accumulated"] = 0.0
-                self.state["fired"] = False
+                self.state.accumulated = 0.0
+                self.state.fired = False
             ts.start(self.state)
         ts.save(self.state)
         self._refresh_ui()
 
-    def _on_reset(self, _btn):
+    def _on_reset(self, _btn: Gtk.Button) -> None:
         ts.reset(self.state)
         ts.save(self.state)
         self._sync_spinners_from_state()
@@ -152,10 +160,10 @@ class TimerPopup(WidgetPopup):
 
     # ----- UI refresh / ticking -----
 
-    def _sync_spinners_from_state(self):
+    def _sync_spinners_from_state(self) -> None:
         self._suppress_spin = True
         try:
-            total = int(self.state["duration"])
+            total = int(self.state.duration)
             h, rem = divmod(total, 3600)
             m, s = divmod(rem, 60)
             self.spin_h.set_value(h)
@@ -164,48 +172,42 @@ class TimerPopup(WidgetPopup):
         finally:
             self._suppress_spin = False
 
-    def _refresh_ui(self):
-        # Reload state in case the status script has updated `fired`
-        on_disk = ts.load()
+    def _refresh_ui(self) -> None:
         # Preserve mode/running/duration from in-memory (UI is the writer);
-        # but pull the `fired` flag in case status script set it.
-        self.state["fired"] = on_disk.get("fired", self.state["fired"])
+        # but pull the `fired` flag in case the status script set it.
+        self.state.fired = ts.load().fired
 
         self.display.set_label(ts.format_hms(ts.display_seconds(self.state)))
 
         for mode, btn in self.mode_buttons.items():
-            if mode == self.state["mode"]:
+            if mode == self.state.mode:
                 btn.add_css_class("active")
             else:
                 btn.remove_css_class("active")
 
-        is_timer = self.state["mode"] == "timer"
+        is_timer = self.state.mode == "timer"
         self.config_box.set_visible(is_timer)
         if is_timer:
             self._sync_spinners_from_state()
 
-        if self.state["running"]:
+        if self.state.running:
             self.start_button.set_label("Pause")
-        elif (
-            is_timer and ts.remaining(self.state) == 0.0 and self.state["duration"] > 0
-        ):
+        elif is_timer and ts.remaining(self.state) == 0.0 and self.state.duration > 0:
             self.start_button.set_label("Restart")
         else:
             self.start_button.set_label(
-                "Start" if self.state["accumulated"] == 0 else "Resume"
+                "Start" if self.state.accumulated == 0 else "Resume"
             )
 
         # Disable start when timer has no duration set
-        self.start_button.set_sensitive(
-            not (is_timer and self.state["duration"] == 0.0)
-        )
+        self.start_button.set_sensitive(not (is_timer and self.state.duration == 0.0))
 
-    def _start_tick(self):
+    def _start_tick(self) -> None:
         if self._tick_id is None:
             self._tick_id = GLib.timeout_add(250, self._on_tick)
 
-    def _on_tick(self):
-        if self.state["running"]:
+    def _on_tick(self) -> bool:
+        if self.state.running:
             self.display.set_label(ts.format_hms(ts.display_seconds(self.state)))
             # Pauses at zero and fires the alarm once; the status script does
             # the same when the popup is closed.

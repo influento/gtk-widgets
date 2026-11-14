@@ -8,17 +8,13 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import TypeIs
 
+from gtk_widgets.lib.parse import ParseError, parse_colors
 from gtk_widgets.lib.paths import SRC
 
 _THEMES_DIR = SRC.parent / "themes"
 _CURRENT_THEME = _THEMES_DIR / "current.json"  # symlink set by install.sh
 _FALLBACK_THEME = _THEMES_DIR / "catppuccin-mocha.json"
-
-
-class ThemeError(ValueError):
-    """The theme file is not {"colors": {NAME: hex, ...}}."""
 
 
 def theme_path() -> Path:
@@ -32,23 +28,15 @@ def theme_path() -> Path:
 
 
 def colors() -> dict[str, str]:
-    """The theme's colours: {NAME: hex without the #}."""
+    """The theme's colours: {NAME: hex without the #}. A theme file that is
+    not {"colors": {NAME: hex, ...}} raises ParseError: no widget can be
+    drawn without it."""
     path = theme_path()
-    data: object = json.loads(path.read_text(encoding="utf-8"))
-    found = data.get("colors") if _is_json_object(data) else None
-    if not _is_json_object(found):
-        raise ThemeError(f"{path}: no colors object")
-    palette: dict[str, str] = {}
-    for name, value in found.items():
-        if not isinstance(value, str):
-            raise ThemeError(f"{path}: colour {name} is not a string")
-        palette[name] = value
-    return palette
-
-
-def _is_json_object(value: object) -> TypeIs[dict[str, object]]:
-    """A JSON object from json.loads: its keys are always strings."""
-    return isinstance(value, dict)
+    match parse_colors(json.loads(path.read_text(encoding="utf-8"))):
+        case ParseError() as e:
+            raise ParseError(f"{path}: {e}")
+        case palette:
+            return palette
 
 
 def render_css(css: str) -> str:
