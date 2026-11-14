@@ -20,12 +20,12 @@ _SEPARATORS = re.compile(r"[\s\-_.,:;/\\|()\[\]{}]+")
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")
 
 
-def us_keys(text):
+def us_keys(text: str) -> str:
     """text with ЙЦУКЕН letters replaced by their us-layout Latin keys."""
     return text.translate(_RU_TO_US)
 
 
-def query_variants(query):
+def query_variants(query: str) -> tuple[str, ...]:
     """The casefolded query, plus its us-layout mapping when that differs."""
     q = query.strip().casefold()
     if not q:
@@ -41,13 +41,13 @@ class Field:
 
     __slots__ = ("_words", "low", "text")
 
-    def __init__(self, text):
+    def __init__(self, text: str) -> None:
         self.text = text
         self.low = text.casefold()
-        self._words = None
+        self._words: str | None = None
 
     @property
-    def words(self):
+    def words(self) -> str:
         if self._words is None:
             self._words = (
                 " " + _SEPARATORS.sub(" ", _CAMEL.sub(" ", self.text)).casefold()
@@ -55,7 +55,7 @@ class Field:
         return self._words
 
 
-def _subsequence(q, s):
+def _subsequence(q: str, s: str) -> bool:
     pos = -1
     for ch in q:
         pos = s.find(ch, pos + 1)
@@ -64,7 +64,7 @@ def _subsequence(q, s):
     return True
 
 
-def tier(q, field, fuzzy=True):
+def tier(q: str, field: Field, *, fuzzy: bool = True) -> int | None:
     """Best tier q reaches in field, or None."""
     low = field.low
     if low == q:
@@ -80,7 +80,9 @@ def tier(q, field, fuzzy=True):
     return None
 
 
-def rank(variants, name, extra=()):
+def rank(
+    variants: tuple[str, ...], name: Field, extra: tuple[Field, ...] = ()
+) -> int | None:
     """Sort key of the best match (lower is better), or None. A name match of
     tier t ranks 2t, a secondary-field match 2t + 1."""
     best = None

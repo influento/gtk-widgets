@@ -22,6 +22,7 @@ runs as a one-shot process of its own.
 """
 
 import os
+import socket
 import sys
 
 from gtk_widgets.widgets.launcher import protocol
@@ -33,41 +34,43 @@ USAGE = (
 _PRELOAD = "libgtk4-layer-shell.so.0"
 
 
-def parse_args(argv):
+# an option that takes a value (as the next argument, or after "=" when long)
+_VALUE_OPTIONS = {
+    "--prompt": "prompt",
+    "-p": "prompt",
+    "--action": "action",
+    "--delete": "delete",
+}
+
+
+def parse_args(argv: list[str]) -> tuple[str, str, bool, str, str]:
     """-> (mode, prompt, after_tab, action, delete); mode is toggle, daemon or dmenu."""
-    mode, prompt, after_tab, action, delete = "toggle", "", False, "", ""
+    mode, after_tab = "toggle", False
+    values = {"prompt": "", "action": "", "delete": ""}
     args = list(argv)
     while args:
         arg = args.pop(0)
-        if arg == "--daemon" and mode == "toggle":
-            mode = "daemon"
-        elif arg == "--dmenu" and mode == "toggle":
-            mode = "dmenu"
-        elif arg in ("--prompt", "-p") and args:
-            prompt = args.pop(0)
-        elif arg.startswith("--prompt="):
-            prompt = arg.split("=", 1)[1]
+        name, eq, inline = arg.partition("=")
+        if arg in ("--daemon", "--dmenu") and mode == "toggle":
+            mode = arg.removeprefix("--")
+        elif arg in _VALUE_OPTIONS and args:
+            values[_VALUE_OPTIONS[arg]] = args.pop(0)
+        elif eq and name.startswith("--") and name in _VALUE_OPTIONS:
+            values[_VALUE_OPTIONS[name]] = inline
         elif arg == "--after-tab":
             after_tab = True
-        elif arg == "--action" and args:
-            action = args.pop(0)
-        elif arg.startswith("--action="):
-            action = arg.split("=", 1)[1]
-        elif arg == "--delete" and args:
-            delete = args.pop(0)
-        elif arg.startswith("--delete="):
-            delete = arg.split("=", 1)[1]
         elif arg in ("-h", "--help"):
-            print(__doc__.strip())
+            print((__doc__ or "").strip())
             sys.exit(0)
         else:
             sys.exit(USAGE)
+    prompt, action, delete = values["prompt"], values["action"], values["delete"]
     if (prompt or after_tab or action or delete) and mode != "dmenu":
         sys.exit(USAGE)
     return mode, prompt, after_tab, action, delete
 
 
-def _reply(sock, lines, delete):
+def _reply(sock: socket.socket, lines: list[bytes], delete: str) -> bytes | None:
     """Read the instance's answer, running --delete for each "del" before it.
     -> the final line, or None when the instance went away."""
     with sock.makefile("rb") as f:
@@ -85,7 +88,9 @@ def _reply(sock, lines, delete):
                 protocol.run_delete(delete, lines[index])
 
 
-def client(mode, prompt, after_tab, action, delete):
+def client(
+    mode: str, prompt: str, *, after_tab: bool, action: str, delete: str
+) -> int | None:
     """Hand the request to the running instance. Returns the exit status, or
     None when no instance is listening."""
     sock = protocol.connect()
@@ -133,7 +138,7 @@ def client(mode, prompt, after_tab, action, delete):
     return 0
 
 
-def detach():
+def detach() -> None:
     """Continue as the resident instance in a forked child with a session of
     its own: the caller (a terminal, sway's exec) returns at once, and the
     apps launched later outlive a Ctrl+C or a closed terminal there."""
@@ -142,10 +147,10 @@ def detach():
     os.setsid()
 
 
-def _main():
+def _main() -> int:
     mode, prompt, after_tab, action, delete = parse_args(sys.argv[1:])
     try:
-        status = client(mode, prompt, after_tab, action, delete)
+        status = client(mode, prompt, after_tab=after_tab, action=action, delete=delete)
     except KeyboardInterrupt:
         return 130
     if status is not None:
@@ -157,11 +162,13 @@ def _main():
     preload = os.environ.get("LD_PRELOAD", "")
     if _PRELOAD not in preload:
         os.environ["LD_PRELOAD"] = f"{preload}:{_PRELOAD}" if preload else _PRELOAD
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        os.execv(sys.executable, [sys.executable, *sys.argv])
     from gtk_widgets.widgets.launcher.ui import app
 
     if mode == "dmenu":
-        return app.run_dmenu_once(prompt, after_tab, action, delete)
+        return app.run_dmenu_once(
+            prompt, after_tab=after_tab, action=action, delete=delete
+        )
     return app.run_resident(hidden=mode == "daemon")
 
 

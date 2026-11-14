@@ -237,7 +237,8 @@ gtk-widgets/
 │       │   ├── main.py        # CLI: stdlib fast path to the instance; else detach, preload layer-shell, start it
 │       │   ├── match.py       # Match tiers, secondary fields, ru->us key mapping (no GTK)
 │       │   ├── protocol.py    # CLI <-> instance wire format (stdlib)
-│       │   ├── options.py     # dmenu row options after a NUL, GIF frame count (stdlib)
+│       │   ├── options.py     # dmenu row options after a NUL, GIF frame count, label text helpers (stdlib)
+│       │   ├── parse.py       # usage.json's launch counts: model and parser
 │       │   ├── clipboard.py   # launcher-clipboard: cliphist list -> rows with options; --restore/--offer (stdlib; tests/launcher_clipboard_test.py)
 │       │   ├── selection.py   # Own the clipboard with several forms of one item over ext/wlr data-control (stdlib, forks to serve; tests/launcher_selection_test.py runs the CLI against a fake compositor)
 │       │   └── ui/

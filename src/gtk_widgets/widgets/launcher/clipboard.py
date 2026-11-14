@@ -45,17 +45,32 @@ the entry where it is and any other copy alone (no wl-copy: that would be
 stored again and loop).
 """
 
+import contextlib
 import os
-import pathlib
 import re
 import subprocess
 import sys
 import urllib.parse
+from collections.abc import Callable
+from pathlib import Path
+from typing import Literal, Protocol
 
-CACHE = os.path.join(
-    os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-    "launcher",
-    "clipboard",
+from gtk_widgets.lib.wayland import WaylandError
+from gtk_widgets.widgets.launcher import selection
+from gtk_widgets.widgets.launcher.options import (
+    TIMES,
+    Options,
+    human,
+    name_of,
+    parent,
+    short,
+)
+from gtk_widgets.widgets.launcher.selection import Forms
+
+CACHE = str(
+    Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    / "launcher"
+    / "clipboard"
 )
 BINARY = re.compile(r"^\[\[ binary data (\S+ \S+) (\w+) (\d+)x(\d+) \]\]$")
 MARKER = "application/x-launcher-clipboard"
@@ -90,24 +105,21 @@ IMAGE_EXT = {
     ".qoi",
     ".tga",
 }
+CLIPHIST_TIMEOUT_S = 10
+
+# (kind, label, detail, options) of one entry: options.py has the kinds
+type Entry = tuple[str, str, str, Options]
+# how --restore puts an entry up: image data of a format, or file links
+type RestoreKind = tuple[Literal["image"], str] | tuple[Literal["files"], list[str]]
 
 
-def human(n):
-    for unit in ("B", "KiB", "MiB"):
-        if n < 1024:
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} GiB"
+class Cliphist(Protocol):
+    """Runs `cliphist ARGS` with data on stdin; its stdout."""
+
+    def __call__(self, *args: str, data: bytes | None = None) -> bytes: ...
 
 
-def short(path):
-    home = os.path.expanduser("~")
-    return (
-        "~" + path[len(home) :] if path == home or path.startswith(home + "/") else path
-    )
-
-
-def sniff(raw):
+def sniff(raw: bytes) -> str | None:
     """The image format of raw bytes, or None."""
     if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
         return "webp"
@@ -128,80 +140,90 @@ def sniff(raw):
     return None
 
 
-def is_image(path):
-    return os.path.splitext(path)[1].lower() in IMAGE_EXT
+def is_image(path: str) -> bool:
+    return Path(path).suffix.lower() in IMAGE_EXT
 
 
 class Cache:
     """Decoded entries in CACHE by id; keep() marks what is still listed."""
 
-    def __init__(self, root, decode):
-        self.root, self.decode = root, decode
-        self.kept = set()
-        pathlib.Path(root).mkdir(mode=0o700, exist_ok=True, parents=True)
-        pathlib.Path(root).chmod(0o700)
-        self.files = {}
-        for name in os.listdir(root):
-            if not name.endswith(".tmp"):  # a write cut short; prune() drops it
-                self.files.setdefault(name.split(".", 1)[0], name)
+    def __init__(self, root: str, decode: Callable[[str], bytes]) -> None:
+        self.root, self.decode = Path(root), decode
+        self.kept: set[str] = set()
+        self.root.mkdir(mode=0o700, exist_ok=True, parents=True)
+        self.root.chmod(0o700)
+        self.files: dict[str, str] = {}  # entry id -> file name
+        for entry in self.root.iterdir():
+            if not entry.name.endswith(".tmp"):  # a write cut short; prune() drops it
+                self.files.setdefault(entry.name.split(".", 1)[0], entry.name)
 
-    def data(self, cid, fmt=None):
+    def data(self, cid: str, fmt: str | None = None) -> str:
         """The path of entry cid's bytes, decoded on the first call."""
         name = self.files.get(cid)
         if name is None:
             raw = self.decode(cid)
             name = f"{cid}.{fmt or sniff(raw) or 'bin'}"
-            tmp = os.path.join(self.root, name + ".tmp")
+            tmp = self.root / f"{name}.tmp"
             with os.fdopen(
                 os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb"
             ) as f:
                 f.write(raw)
-            pathlib.Path(tmp).replace(os.path.join(self.root, name))
+            tmp.replace(self.root / name)
             self.files[cid] = name
         self.kept.add(name)
-        return os.path.join(self.root, name)
+        return str(self.root / name)
 
-    def prune(self):
-        for name in os.listdir(self.root):
-            if name not in self.kept:
-                try:
-                    pathlib.Path(os.path.join(self.root, name)).unlink()
-                except OSError:
-                    pass
+    def prune(self) -> None:
+        for entry in self.root.iterdir():
+            if entry.name not in self.kept:
+                with contextlib.suppress(OSError):
+                    entry.unlink()
 
 
-def from_paths(paths):
+def _expand_home(text: str) -> str:
+    """A leading ~ or ~user as the home folder, as os.path.expanduser does."""
+    if text == "~" or text.startswith("~/"):
+        return (str(Path.home()).rstrip("/") + text[1:]) or "/"
+    if not text.startswith("~"):
+        return text
+    try:
+        return str(Path(text).expanduser())
+    except RuntimeError:  # no such user
+        return text
+
+
+def from_paths(paths: list[str]) -> Entry:
     """(kind, label, detail, options) for file paths."""
     if len(paths) == 1:
         p = paths[0]
-        name = os.path.basename(p.rstrip("/")) or p
-        if not pathlib.Path(p).exists():
+        name = name_of(p.rstrip("/")) or p
+        if not Path(p).exists():
             return (
                 "missing",
                 name,
-                f"{short(os.path.dirname(p))} · missing",
+                f"{short(parent(p))} · missing",
                 {"preview": [p]},
             )
-        if pathlib.Path(p).is_dir():
+        if Path(p).is_dir():
             return (
                 "folder",
                 name + "/",
-                short(os.path.dirname(p.rstrip("/"))),
+                short(parent(p.rstrip("/"))),
                 {"preview": [p]},
             )
         if is_image(p):
             kind = "gif" if p.lower().endswith(".gif") else "image"
-            return kind, name, short(os.path.dirname(p)), {"preview": [p], "icon": [p]}
-        return "file", name, short(os.path.dirname(p)), {"preview": [p]}
-    opts = {"preview": list(paths), "count": [str(len(paths))]}
-    thumb = next((p for p in paths if is_image(p) and pathlib.Path(p).is_file()), None)
+            return kind, name, short(parent(p)), {"preview": [p], "icon": [p]}
+        return "file", name, short(parent(p)), {"preview": [p]}
+    opts: Options = {"preview": list(paths), "count": [str(len(paths))]}
+    thumb = next((p for p in paths if is_image(p) and Path(p).is_file()), None)
     if thumb:
         opts["icon"] = [thumb]
-    label = f"{len(paths)} files: " + ", ".join(os.path.basename(p) for p in paths)
+    label = f"{len(paths)} files: " + ", ".join(name_of(p) for p in paths)
     return "files", label, short(os.path.commonpath(paths)), opts
 
 
-def uri_paths(text):
+def uri_paths(text: str) -> list[str]:
     return [
         urllib.parse.unquote(u[len("file://") :])
         for u in re.split(r"[\r\n ]+", text)
@@ -209,7 +231,7 @@ def uri_paths(text):
     ]
 
 
-def classify(cid, text, cache):
+def classify(cid: str, text: str, cache: Cache) -> Entry:
     """(kind, label, detail, options) for one `cliphist list` entry."""
     m = BINARY.match(text)
     if m:
@@ -217,7 +239,7 @@ def classify(cid, text, cache):
         path = cache.data(cid, fmt)
         return (
             ("gif" if fmt == "gif" else "image"),
-            f"{fmt.upper()} image · {w}×{h}",
+            f"{fmt.upper()} image · {w}{TIMES}{h}",
             size,
             {
                 "preview": [path],
@@ -229,7 +251,7 @@ def classify(cid, text, cache):
     if "�" in text or any(ord(c) < 32 and c != "\t" for c in text):
         path = cache.data(cid)  # bytes cliphist couldn't name
         fmt = path.rsplit(".", 1)[-1]
-        size = human(pathlib.Path(path).stat().st_size)
+        size = human(Path(path).stat().st_size)
         if fmt == "bin":
             return "binary", f"Binary data · {size}", "", {"meta": ["binary"]}
         return (
@@ -251,18 +273,14 @@ def classify(cid, text, cache):
         paths = uri_paths(full)
         if paths:
             return from_paths(paths)
-    plain = os.path.expanduser(text)
-    if (
-        plain.startswith("/")
-        and not text.endswith("…")
-        and pathlib.Path(plain).exists()
-    ):
+    plain = _expand_home(text)
+    if plain.startswith("/") and not text.endswith("…") and Path(plain).exists():
         return from_paths([plain])
     return "text", text, "", {"text": [cache.data(cid, "txt")]}
 
 
-def line(cid, kind, label, detail, opts):
-    opts = dict(opts, kind=[kind])
+def line(cid: str, kind: str, label: str, detail: str, opts: Options) -> str:
+    opts = {**opts, "kind": [kind]}
     if detail:
         opts["detail"] = [detail]
     fields = "\x1f".join(
@@ -272,15 +290,15 @@ def line(cid, kind, label, detail, opts):
     return f"{cid}\t{label}\0{fields}"
 
 
-def run(listing, decode, root=CACHE):
+def run(listing: bytes, decode: Callable[[str], bytes], root: str = CACHE) -> list[str]:
     """dmenu lines for `cliphist list` output (bytes); decode(id) -> bytes."""
     cache = Cache(root, decode)
-    out = []
+    out: list[str] = []
     for raw in listing.split(b"\n"):
-        cid, tab, text = raw.partition(b"\t")
+        raw_id, tab, raw_text = raw.partition(b"\t")
         if not tab:
             continue
-        cid, text = cid.decode(), text.decode("utf-8", "replace")
+        cid, text = raw_id.decode(), raw_text.decode("utf-8", "replace")
         try:
             out.append(line(cid, *classify(cid, text, cache)))
         except OSError, ValueError, subprocess.SubprocessError:
@@ -289,7 +307,7 @@ def run(listing, decode, root=CACHE):
     return out
 
 
-def restore_kind(text, raw):
+def restore_kind(text: str, raw: bytes) -> RestoreKind | None:
     """("image", fmt), ("files", [paths]) or None (wl-copy as is) for an entry
     whose `cliphist list` text is text and whose bytes are raw."""
     m = BINARY.match(text)
@@ -303,35 +321,42 @@ def restore_kind(text, raw):
     return None
 
 
-def _text_forms(text):
+def _text_forms(text: str) -> Forms:
     return [(t, text.encode()) for t in TEXT_TYPES]
 
 
-def image_forms(raw, fmt, path):
+def image_forms(raw: bytes, fmt: str, path: str) -> Forms:
     """Image data: its bytes (still formats only), the cached file, the
     file's path."""
-    forms = [(STILL_MIME[fmt], raw)] if fmt in STILL_MIME else []
-    return (
-        forms
-        + [("text/uri-list", pathlib.Path(path).as_uri().encode())]
-        + _text_forms(path)
-        + [(MARKER, b"")]
-    )
+    forms: Forms = [(STILL_MIME[fmt], raw)] if fmt in STILL_MIME else []
+    return [
+        *forms,
+        ("text/uri-list", Path(path).as_uri().encode()),
+        *_text_forms(path),
+        (MARKER, b""),
+    ]
 
 
-def file_forms(raw, paths):
+def file_forms(raw: bytes, paths: list[str]) -> Forms:
     """File links: the files as they were copied, their paths one per line,
     and a single still image's bytes too."""
-    forms = [("text/uri-list", raw)]
+    forms: Forms = [("text/uri-list", raw)]
     if len(paths) == 1:
-        ext = os.path.splitext(paths[0])[1].lower().lstrip(".")
-        if ext in STILL_MIME and pathlib.Path(paths[0]).is_file():
-            with pathlib.Path(paths[0]).open("rb") as f:
-                forms.append((STILL_MIME[ext], f.read()))
+        ext = Path(paths[0]).suffix.lower().lstrip(".")
+        if ext in STILL_MIME and Path(paths[0]).is_file():
+            forms.append((STILL_MIME[ext], Path(paths[0]).read_bytes()))
     return forms + _text_forms("\n".join(paths)) + [(MARKER, b"")]
 
 
-def restore(cid, cliphist, serve, wl_copy, root=CACHE, offer=False):
+def restore(
+    cid: str,
+    cliphist: Cliphist,
+    serve: Callable[[Forms], None],
+    wl_copy: Callable[[bytes], None],
+    root: str = CACHE,
+    *,
+    offer: bool = False,
+) -> None:
     """Put entry cid back on the clipboard (see the module notes). With
     offer (a copy cliphist-store has just stored), only image data and file
     links go up, without moving the entry: anything else is left as the app
@@ -365,15 +390,14 @@ def restore(cid, cliphist, serve, wl_copy, root=CACHE, offer=False):
             ),
             cid,
         )
-    if kind[0] == "image":
-        path = Cache(root, lambda _: raw).data(cid, kind[1])
-        if top != cid:
-            new = os.path.join(root, f"{top}.{kind[1]}")
-            pathlib.Path(path).replace(new)
-            path = new
-        forms = image_forms(raw, kind[1], path)
-    else:
-        forms = file_forms(raw, kind[1])
+    match kind:
+        case "image", fmt:
+            path = Cache(root, lambda _: raw).data(cid, fmt)
+            if top != cid:
+                path = str(Path(path).replace(Path(root) / f"{top}.{fmt}"))
+            forms = image_forms(raw, fmt, path)
+        case "files", paths:
+            forms = file_forms(raw, paths)
     try:
         serve(forms)
     except OSError:
@@ -381,23 +405,25 @@ def restore(cid, cliphist, serve, wl_copy, root=CACHE, offer=False):
             wl_copy(raw)
 
 
-def _main():
-    def cliphist(*args, data=None):
+def _main() -> None:
+    def cliphist(*args: str, data: bytes | None = None) -> bytes:
         return subprocess.run(
-            ["cliphist", *args], input=data, capture_output=True, timeout=10
+            ["cliphist", *args],
+            input=data,
+            capture_output=True,
+            timeout=CLIPHIST_TIMEOUT_S,
+            check=False,
         ).stdout
 
     if sys.argv[1:2] in (["--restore"], ["--offer"]) and len(sys.argv) == 3:
 
-        def wl_copy(raw):
+        def wl_copy(raw: bytes) -> None:
             subprocess.run(["wl-copy"], input=raw, check=False)
 
-        def serve(forms):
-            from gtk_widgets.widgets.launcher import selection
-
+        def serve(forms: Forms) -> None:
             try:
                 selection.serve(forms)
-            except selection.WaylandError as e:
+            except WaylandError as e:
                 raise OSError(str(e)) from None
 
         try:

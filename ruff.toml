@@ -19,9 +19,13 @@ ignore = [
 "threading.Thread".msg = "use lib/ui/background.in_background: a bug in a bare thread hangs the popup"
 
 [lint.extend-per-file-ignores]
-# Both restart the process with gtk4-layer-shell in LD_PRELOAD.
+# Restarts the process with gtk4-layer-shell in LD_PRELOAD.
 "src/gtk_widgets/lib/ui/__init__.py" = ["S606"]
-"src/gtk_widgets/widgets/launcher/main.py" = ["S606"]
+# The launcher CLI restarts the same way (S606), and starts in ~3 ms: gi
+# (~60 ms) is imported only when it must become the instance, subprocess
+# (~6 ms) only to run a --delete command.
+"src/gtk_widgets/widgets/launcher/main.py" = ["S606", "PLC0415"]
+"src/gtk_widgets/widgets/launcher/protocol.py" = ["PLC0415"]
 # in_background itself.
 "src/gtk_widgets/lib/ui/background.py" = ["TID251"]
 # Stdlib only, no GLib loop for in_background: its threads write a clipboard

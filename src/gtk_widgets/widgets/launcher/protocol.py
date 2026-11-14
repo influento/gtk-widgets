@@ -24,12 +24,13 @@ ACTION = -2  # dmenu reply: the --action button was pressed
 ACTION_STATUS = 10  # the CLI's exit status for it (rofi's first custom key)
 
 
-def socket_path():
+def socket_path() -> str:
+    # a string, not a pathlib path: importing pathlib costs the CLI ~6 ms
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return os.path.join(runtime, "gtk-widgets-launcher.sock")
+    return f"{runtime.rstrip('/')}/gtk-widgets-launcher.sock"
 
 
-def connect():
+def connect() -> socket.socket | None:
     """A socket connected to the running instance, or None."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -40,16 +41,16 @@ def connect():
     return sock
 
 
-def header(*fields):
+def header(*fields: str | int) -> bytes:
     clean = (str(f).replace("\t", " ").replace("\n", " ") for f in fields)
     return ("\t".join(clean) + "\n").encode("utf-8", "surrogateescape")
 
 
-def parse_header(line):
+def parse_header(line: bytes) -> list[str]:
     return line.decode("utf-8", "replace").split("\t")
 
 
-def split_lines(data):
+def split_lines(data: bytes) -> list[bytes]:
     """stdin bytes -> lines without their newline, exactly as read otherwise."""
     lines = data.split(b"\n")
     if lines[-1] == b"":
@@ -57,7 +58,7 @@ def split_lines(data):
     return lines
 
 
-def run_delete(cmd, line):
+def run_delete(cmd: str, line: bytes) -> None:
     """Run a --delete command (split like a shell would, run without one)
     with the deleted line and a newline on stdin; its stdout goes to stderr,
     so it can't end up in the pick."""
