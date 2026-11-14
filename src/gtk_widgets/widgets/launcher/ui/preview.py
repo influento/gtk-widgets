@@ -9,9 +9,11 @@ at the pane's pixel size, one frame in memory at a time.
 
 import os
 import subprocess
+import sys
+import traceback
 from collections import OrderedDict
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Protocol, override
 
@@ -40,6 +42,15 @@ type ImageInfo = tuple[str, int, int]  # (format name, width, height)
 type TextureKey = tuple[str, int, tuple[int, int] | None]
 
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="launcher-preview")
+
+
+def _report(done: Future[None]) -> None:
+    """Print a bug in a decode: a pool keeps a worker's exception to itself."""
+    error = done.exception()
+    if error is not None:
+        print("launcher: bug in a preview decode:", file=sys.stderr)
+        traceback.print_exception(error, file=sys.stderr)
+        sys.stderr.flush()
 
 
 class Shown(Protocol):
@@ -176,7 +187,7 @@ class TextureCache:
             done(tex)
             return GLib.SOURCE_REMOVE
 
-        _pool.submit(work)
+        _pool.submit(work).add_done_callback(_report)
 
 
 THUMBS = TextureCache(300, box=(THUMB_W * 2, THUMB_H * 2))
