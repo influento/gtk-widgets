@@ -113,6 +113,8 @@ def unread(words):
         # text (-ec) or an argument (-s), so every word counts.
         return words[:1] + words[2:]
     name = words[i] if i < len(words) else ""
+    if name == "cp":
+        return words[:i + 1] + cp_target(words[i + 1:])
     if name.startswith(("node_modules/.bin/", "./node_modules/.bin/")) or re.search(r"(^|/)\.venv/bin/[^/]+$", name):
         name = os.path.basename(name)
     flags = CONFIG_FLAGS.get(name)
@@ -254,6 +256,27 @@ def pipes(cmd):
     pipe.append((words, outs, ins))
     pipelines.append(pipe)
     return pipelines
+
+def cp_target(args):
+    # The words of cp's arguments that it can write: its options and its
+    # destination, the last path or -t's. Every word when a short option
+    # cluster holds t or S, whose value the hook would have to find.
+    opts, paths, dest, it, ends = [], [], None, iter(args), False
+    for w in it:
+        if ends or not w.startswith("-") or w == "-":
+            paths.append(w)
+        elif w == "--":
+            ends = True
+        elif w in ("--target-directory", "--suffix"):
+            v = next(it, "")
+            dest, opts = (v, opts) if w == "--target-directory" else (dest, [*opts, v])
+        elif w.startswith("--target-directory="):
+            dest = w.split("=", 1)[1]
+        elif not w.startswith("--") and ("t" in w or "S" in w):
+            return args
+        else:
+            opts.append(w)
+    return [*opts, dest if dest is not None else (paths[-1] if paths else "")]
 
 def parse(cmd):
     # The pipelines of the command and of each $( ) in it, and the texts

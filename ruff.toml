@@ -4,10 +4,6 @@ extend = "py-gate/ruff.gate.toml"
 
 [lint]
 ignore = [
-  # Fires on every subprocess call whose argv holds a variable, which no code
-  # can avoid. Off in py-gate's ruff.gate.toml too once the workshop's change
-  # is installed; drop it here then.
-  "S603",
   # The tools (wl-copy, nmcli, ffmpeg, ...) come from the user's PATH by design.
   "S607",
 ]

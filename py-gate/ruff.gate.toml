@@ -15,7 +15,7 @@ ignore = [
   # fire on correct code
   "D", "CPY001", "TRY003", "EM101", "EM102", "T201", "TRY004", "N818", "PLR2004",
   "PLR0911", "TC001", "TC002", "TC003", "C901", "RUF029", "PLW0717", "ASYNC109",
-  "PLR0913",
+  "PLR0913", "S603",
 ]
 
 [lint.per-file-ignores]
