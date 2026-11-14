@@ -340,12 +340,18 @@ class EzpickPopup(WidgetPopup):
         request_id = self._request_id
 
         def do_work() -> None:
-            if action_idx == 0:
-                result = run_translate(text, target_lang)
-            elif action_idx == 1:
-                result = run_fix_english(text)
-            else:
-                result = run_dictionary(text)
+            # The thread's boundary: a bug shows on the status line, then raises
+            # for its traceback, since nobody waits on this thread.
+            try:
+                if action_idx == 0:
+                    result = run_translate(text, target_lang)
+                elif action_idx == 1:
+                    result = run_fix_english(text)
+                else:
+                    result = run_dictionary(text)
+            except Exception as e:
+                GLib.idle_add(self._on_action_error, request_id, f"bug: {e}")
+                raise
             match result:
                 case ClaudeFailed():
                     GLib.idle_add(self._on_action_error, request_id, str(result))
