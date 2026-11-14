@@ -63,6 +63,9 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
   is a label that copies its text (or a longer copy text) to the clipboard on click;
   `copyable(label, on=...)` gives a plain label the same click-to-copy. Every error line
   shown in a widget is copyable (status labels switch it on only while showing an error).
+  Every widget's background work runs through `in_background(task, on_bug)`
+  (`lib/ui/background.py`): a bug in the thread shows as "bug: ..." on the widget's error
+  line and still raises for its traceback, instead of leaving the progress text up.
   `popup_window()`/`show_popup()`/`install_css()` in `lib/ui/widget_base.py` build the same
   layer-shell overlay for long-running apps that open popups on demand (`network-agent`);
   `place_popup()` places the container without presenting, for an app that builds its
@@ -180,6 +183,7 @@ gtk-widgets/
 │   │   └── ui/
 │   │       ├── __init__.py      # LD_PRELOAD re-exec, gi versions
 │   │       ├── widget_base.py   # Shared GTK4 popup base class
+│   │       ├── background.py    # in_background(): daemon thread whose bug shows on the error line
 │   │       └── copy_label.py    # CopyLabel + copyable(): click copies text via wl-copy, flashes "Copied"
 │   └── widgets/
 │       ├── bluetooth/

@@ -5,12 +5,12 @@ import os
 import pathlib
 import shutil
 import subprocess
-import threading
 from collections.abc import Callable
 from typing import Literal, override
 
 from gi.repository import GLib
 
+from gtk_widgets.lib.ui.background import in_background
 from gtk_widgets.lib.ui.copy_label import CopyLabel, copyable
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
 
@@ -305,7 +305,7 @@ class BluetoothPopup(WidgetPopup):
             bt_run("disconnect", mac)
             GLib.idle_add(self._after_action, "Disconnected", "bt-status-ok")
 
-        threading.Thread(target=task, daemon=True).start()
+        in_background(task, self._on_bug)
 
     def _on_remove(self, mac: str) -> None:
         self._set_status("Removing...")
@@ -316,7 +316,7 @@ class BluetoothPopup(WidgetPopup):
             bt_run("remove", mac)
             GLib.idle_add(self._after_action, "Removed", "bt-status-ok")
 
-        threading.Thread(target=task, daemon=True).start()
+        in_background(task, self._on_bug)
 
     def _on_connect(self, mac: str) -> None:
         self._set_status("Connecting...")
@@ -328,7 +328,7 @@ class BluetoothPopup(WidgetPopup):
             else:
                 GLib.idle_add(self._after_action, "Connection failed", "bt-status-err")
 
-        threading.Thread(target=task, daemon=True).start()
+        in_background(task, self._on_bug)
 
     def _on_pair(self, mac: str) -> None:
         self._set_status("Pairing...")
@@ -349,13 +349,16 @@ class BluetoothPopup(WidgetPopup):
             else:
                 GLib.idle_add(self._after_action, "Pairing failed", "bt-status-err")
 
-        threading.Thread(target=task, daemon=True).start()
+        in_background(task, self._on_bug)
 
     def _after_action(self, msg: str, css_class: str) -> bool:
         refresh_waybar()
         self._build_ui()
         self._set_status(msg, css_class)
         return GLib.SOURCE_REMOVE
+
+    def _on_bug(self, msg: str) -> bool:
+        return self._after_action(msg, "bt-status-err")
 
     def _on_scan(self, _btn: Gtk.Button) -> None:
         self._scan_btn.set_label("Scanning...")
@@ -376,7 +379,7 @@ class BluetoothPopup(WidgetPopup):
             finally:
                 GLib.idle_add(self._stop_scan)
 
-        threading.Thread(target=scan_task, daemon=True).start()
+        in_background(scan_task, self._on_bug)
 
         self._scan_timeout = GLib.timeout_add(2000, self._refresh_nearby)
 

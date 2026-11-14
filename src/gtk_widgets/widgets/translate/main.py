@@ -2,11 +2,12 @@
 """ezpick — multi-action text tool using Claude Sonnet via claude CLI."""
 
 import subprocess
-import threading
+from functools import partial
 from typing import override
 
 from gi.repository import GLib, GObject
 
+from gtk_widgets.lib.ui.background import in_background
 from gtk_widgets.lib.ui.copy_label import copyable
 from gtk_widgets.lib.ui.widget_base import Gdk, Gtk, WidgetPopup
 
@@ -340,26 +341,19 @@ class EzpickPopup(WidgetPopup):
         request_id = self._request_id
 
         def do_work() -> None:
-            # The thread's boundary: a bug shows on the status line, then raises
-            # for its traceback, since nobody waits on this thread.
-            try:
-                if action_idx == 0:
-                    result = run_translate(text, target_lang)
-                elif action_idx == 1:
-                    result = run_fix_english(text)
-                else:
-                    result = run_dictionary(text)
-            except Exception as e:
-                GLib.idle_add(self._on_action_error, request_id, f"bug: {e}")
-                raise
+            if action_idx == 0:
+                result = run_translate(text, target_lang)
+            elif action_idx == 1:
+                result = run_fix_english(text)
+            else:
+                result = run_dictionary(text)
             match result:
                 case ClaudeFailed():
                     GLib.idle_add(self._on_action_error, request_id, str(result))
                 case str():
                     GLib.idle_add(self._on_action_done, request_id, result)
 
-        thread = threading.Thread(target=do_work, daemon=True)
-        thread.start()
+        in_background(do_work, partial(self._on_action_error, request_id))
 
     def _on_action_done(self, request_id: int, result: str) -> bool:
         if request_id != self._request_id:
