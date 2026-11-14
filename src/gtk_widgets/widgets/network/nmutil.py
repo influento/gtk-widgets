@@ -511,7 +511,7 @@ def apply_eap(
 
 
 def eap_problem(
-    values: EapValues, password: str, *, password_known: bool
+    values: EapValues, password: str | None, *, password_known: bool
 ) -> str | None:
     """Why these Enterprise fields can't work, or None. password_known: a
     password is stored already (editing) and the field was left alone."""
