@@ -7,3 +7,6 @@ pytest-asyncio
 pytest-randomly
 pytest-timeout
 ruff
+pygobject
+pygobject-stubs
+gtk4-layer-shell-stubs

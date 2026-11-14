@@ -429,3 +429,18 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   wizard (country → provider → APN from the provider database), SIM PIN/PUK unlock through
   `network-agent`, signal/operator/roaming state, an on/off switch in the popup, and a
   data-usage/metered hint. Hard; the user has USB modems to test with.
+
+<!-- stack:start -->
+## Stack
+
+Chosen for this project with `stack add`. How to work with each is in
+its rule and skills.
+A dependency you add comes from the registry that `stack list` shows.
+When a package there covers a need, run `stack add <name>`; the user
+approves it first. When none does, ask the user before you write that
+code yourself.
+
+- **py-errors** (practices) — Errors: the project's exception classes; an expected failure is returned (Value | Error) and matched. Rule `.claude/rules/py-errors.md`.
+- **pygobject** (ui) — Sway panels and popups with GTK 4 (PyGObject) and gtk4-layer-shell; tests run on a private headless Sway (tests/conftest.py). Rule `.claude/rules/pygobject.md`.
+- **py-practices** (practices) — Before you write or change Python code, load the py-practices skill with the Skill tool. Skills `py-practices`.
+<!-- stack:end -->

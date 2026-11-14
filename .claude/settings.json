@@ -57,7 +57,10 @@
       "Edit(/pytest.toml)",
       "Edit(/py-gate/**)",
       "Edit(/pyproject.toml)",
-      "Edit(/uv.lock)"
+      "Edit(/uv.lock)",
+      "Bash(stack add *)",
+      "Bash(stack rm *)",
+      "Bash(stack update *)"
     ]
   }
 }

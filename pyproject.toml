@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "GTK4 popup widgets for Sway (Wayland), themed via Catppuccin Mocha tokens"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "pygobject>=3.58.1,<4",
+]
 
 [project.scripts]
 gtk-widgets = "gtk_widgets:main"
@@ -16,11 +18,16 @@ build-backend = "uv_build"
 [tool.uv]
 package = true
 
+[tool.uv.sources]
+gtk4-layer-shell-stubs = { path = "stubs/gtk4-layer-shell-stubs" }
+
 [dependency-groups]
 dev = [
     "basedpyright>=1.40.2,<2",
     "deptry>=0.25.1,<0.26",
+    "gtk4-layer-shell-stubs",
     "import-linter>=2.16,<3",
+    "pygobject-stubs>=2.20,<3",
     "pytest>=9.2,<10",
     "pytest-asyncio>=1.4,<2",
     "pytest-randomly>=5.1,<6",

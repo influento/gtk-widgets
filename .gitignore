@@ -7,4 +7,5 @@ __pycache__/
 !.claude/workshop.conf
 !.claude/rules/
 !.claude/skills/
+!.claude/stack.conf
 .venv
