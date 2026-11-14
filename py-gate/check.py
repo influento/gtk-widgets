@@ -450,6 +450,45 @@ def parse(paths: list[Path], problems: list[str], globs: list[str]) -> dict[Path
     return trees
 
 
+def ruff_config() -> list[str]:
+    """Settings in ruff.toml that replace py-gate's instead of adding to them. Across `extend`, ruff adds a
+    project's ignore and extend-* settings to py-gate's, but its select, per-file-ignores or banned-api takes the
+    place of py-gate's, and the rules or bans py-gate set are off without a word (probed, ruff 0.17.4)."""
+    try:
+        text = Path("ruff.toml").read_text(encoding="utf-8")
+        project = tomllib.loads(text)
+        gate = tomllib.loads(Path(__file__).with_name("ruff.gate.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    rows = text.splitlines()
+
+    def line(pattern: str) -> int:
+        return next((i for i, row in enumerate(rows, 1) if re.match(pattern, row.strip())), 1)
+
+    def setting(table: dict[str, Any], key: str) -> object:
+        lint = table.get("lint", {})
+        return lint.get(key, table.get(key)) if isinstance(lint, dict) else table.get(key)
+
+    out: list[str] = []
+    where = "ruff.toml:{}: ruff-config: "
+    if setting(project, "select") is not None:
+        out.append(where.format(line(r"select\s*=")) + "select replaces py-gate's `ALL`. Turn a rule off with "
+                   "ignore, or add one with extend-select")
+    if setting(project, "per-file-ignores") is not None:
+        out.append(where.format(line(r"\[(lint\.)?per-file-ignores\]|per-file-ignores\s*=")) + "per-file-ignores "
+                   "replaces py-gate's, which keeps the test rules off. Use [lint.extend-per-file-ignores]")
+    tidy, gate_tidy = setting(project, "flake8-tidy-imports"), setting(gate, "flake8-tidy-imports")
+    banned = tidy.get("banned-api") if isinstance(tidy, dict) else None
+    gate_banned = gate_tidy.get("banned-api", {}) if isinstance(gate_tidy, dict) else {}
+    if isinstance(banned, dict) and isinstance(gate_banned, dict):
+        missing = [k for k in gate_banned if k not in banned]
+        if missing:
+            out.append(where.format(line(r"\[(lint\.)?flake8-tidy-imports\.banned-api\]|banned-api\s*="))
+                       + "ruff replaces py-gate's banned-api with this table, so its bans are off: copy "
+                       f"py-gate/ruff.gate.toml's entries into it ({', '.join(missing)})")
+    return out
+
+
 def main() -> int:
     globs = exclude(Path())
     problems: list[str] = []
@@ -457,7 +496,7 @@ def main() -> int:
     # pytest loads a conftest.py in the rootdir, beside pytest.toml, as it does those in tests/.
     root_conftest = [Path("conftest.py")] if Path("conftest.py").is_file() else []
     tests = parse(files("tests", globs) + root_conftest, problems, globs)
-    problems += only_tests(src, tests) + scripts(read_project())
+    problems += only_tests(src, tests) + scripts(read_project()) + ruff_config()
     rules_off = off(Path())
 
     def kept(line: str) -> bool:
