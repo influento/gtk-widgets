@@ -3,13 +3,14 @@
 
 import subprocess
 import threading
+from typing import override
 
-from gi.repository import GLib
+from gi.repository import GLib, GObject
 
 from gtk_widgets.lib.ui.copy_label import copyable
 from gtk_widgets.lib.ui.widget_base import Gdk, Gtk, WidgetPopup
 
-LANGUAGES = [
+LANGUAGES: list[tuple[str, str]] = [
     ("auto", "Auto"),
     ("en", "English"),
     ("ru", "Russian"),
@@ -31,7 +32,11 @@ LANGUAGES = [
 ACTIONS = ["Translate", "Fix English", "Dictionary"]
 
 
-def get_selected_text():
+class ClaudeFailed(RuntimeError):
+    """The claude CLI could not run, timed out, or exited non-zero."""
+
+
+def get_selected_text() -> str:
     """Get the currently selected text via primary selection."""
     try:
         result = subprocess.run(
@@ -39,15 +44,26 @@ def get_selected_text():
             capture_output=True,
             text=True,
             timeout=2,
+            check=False,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
-    except Exception:
+    except OSError, subprocess.SubprocessError, ValueError:
         return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def call_claude(prompt, text):
+def call_claude(prompt: str, text: str) -> str | ClaudeFailed:
     """Run a prompt through claude CLI with input text."""
-    result = subprocess.run(
+    try:
+        result = _run_claude(prompt, text)
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        return ClaudeFailed(str(e))
+    if result.returncode != 0:
+        return ClaudeFailed(result.stderr.strip() or "claude CLI failed")
+    return result.stdout.strip()
+
+
+def _run_claude(prompt: str, text: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         [
             "claude",
             "-p",
@@ -60,13 +76,11 @@ def call_claude(prompt, text):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "claude CLI failed")
-    return result.stdout.strip()
 
 
-def run_translate(text, target_lang):
+def run_translate(text: str, target_lang: str) -> str | ClaudeFailed:
     """Translate text."""
     if target_lang == "auto":
         lang_instruction = (
@@ -87,7 +101,7 @@ def run_translate(text, target_lang):
     return call_claude(prompt, text)
 
 
-def run_fix_english(text):
+def run_fix_english(text: str) -> str | ClaudeFailed:
     """Fix English grammar and style."""
     prompt = (
         "You are a grammar and style corrector. "
@@ -101,7 +115,7 @@ def run_fix_english(text):
     return call_claude(prompt, text)
 
 
-def run_dictionary(text):
+def run_dictionary(text: str) -> str | ClaudeFailed:
     """Look up a word or short phrase."""
     prompt = (
         "You are a dictionary. For the given word or phrase, provide:\n"
@@ -115,19 +129,46 @@ def run_dictionary(text):
 
 
 class EzpickPopup(WidgetPopup):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(application_id="dev.dotfiles.ezpick")
         self._request_id = 0  # bumps per request so a slow, superseded reply is dropped
         self._result_content = ""
         self._active_action = 0  # Translate by default
-        self._action_buttons = []
+        self._action_buttons: list[Gtk.Button] = []
         self._has_input_field = False
 
-    def build_ui(self):
+    @override
+    def build_ui(self) -> Gtk.Widget:
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         container.add_css_class("translate-container")
+        self._build_action_row(container)
+        self._build_lang_row(container)
+        self._build_source(container)
+        self._build_result(container)
+        self._build_bottom_row(container)
 
-        # Action switcher row
+        # Determine input mode
+        selected = get_selected_text()
+        if selected:
+            self._source_text.set_text(selected)
+            self._source_text.set_visible(True)
+            self._input_scroll.set_visible(False)
+            self._submit_btn.set_visible(False)
+            self._has_input_field = False
+            self._run_action(selected)
+        else:
+            self._source_text.set_visible(False)
+            self._input_scroll.set_visible(True)
+            self._submit_btn.set_visible(True)
+            self._has_input_field = True
+            self._status.set_text("type or paste text, then press Go")
+
+        self._update_result_label()
+
+        return container
+
+    def _build_action_row(self, container: Gtk.Box) -> None:
+        """The action switcher row."""
         action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         action_row.add_css_class("ezpick-action-row")
         for i, name in enumerate(ACTIONS):
@@ -140,7 +181,8 @@ class EzpickPopup(WidgetPopup):
             self._action_buttons.append(btn)
         container.append(action_row)
 
-        # Language selector (only visible for Translate action)
+    def _build_lang_row(self, container: Gtk.Box) -> None:
+        """The language selector (only visible for Translate action)."""
         self._lang_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         lang_label = Gtk.Label(label="to:")
         lang_label.add_css_class("translate-section-label")
@@ -156,7 +198,8 @@ class EzpickPopup(WidgetPopup):
         self._lang_row.append(self._lang_dropdown)
         container.append(self._lang_row)
 
-        # Source section label
+    def _build_source(self, container: Gtk.Box) -> None:
+        """The source label, selected text, input view and Go button."""
         self._source_label = Gtk.Label(label="source")
         self._source_label.add_css_class("translate-section-label")
         self._source_label.set_halign(Gtk.Align.START)
@@ -193,6 +236,8 @@ class EzpickPopup(WidgetPopup):
         self._submit_btn.connect("clicked", self._on_submit)
         container.append(self._submit_btn)
 
+    def _build_result(self, container: Gtk.Box) -> None:
+        """The separator, result label and result text."""
         separator = Gtk.Separator()
         separator.add_css_class("translate-separator")
         container.append(separator)
@@ -213,7 +258,8 @@ class EzpickPopup(WidgetPopup):
         self._result_text.set_selectable(True)
         container.append(self._result_text)
 
-        # Status / copy row
+    def _build_bottom_row(self, container: Gtk.Box) -> None:
+        """The status / copy row."""
         bottom_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
         self._status = Gtk.Label()
@@ -230,34 +276,16 @@ class EzpickPopup(WidgetPopup):
 
         container.append(bottom_row)
 
-        # Determine input mode
-        selected = get_selected_text()
-        if selected:
-            self._source_text.set_text(selected)
-            self._source_text.set_visible(True)
-            self._input_scroll.set_visible(False)
-            self._submit_btn.set_visible(False)
-            self._has_input_field = False
-            self._run_action(selected)
-        else:
-            self._source_text.set_visible(False)
-            self._input_scroll.set_visible(True)
-            self._submit_btn.set_visible(True)
-            self._has_input_field = True
-            self._status.set_text("type or paste text, then press Go")
-
-        self._update_result_label()
-
-        return container
-
-    def _get_input_text(self):
+    def _get_input_text(self) -> str:
         """Get current input text from whichever source is active."""
         if self._has_input_field:
             buf = self._input_view.get_buffer()
-            return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
+            return buf.get_text(
+                buf.get_start_iter(), buf.get_end_iter(), include_hidden_chars=False
+            ).strip()
         return self._source_text.get_text().strip()
 
-    def _on_action_clicked(self, _btn, action_idx):
+    def _on_action_clicked(self, _btn: Gtk.Button, action_idx: int) -> None:
         """Switch active action and re-run."""
         if action_idx == self._active_action:
             return
@@ -276,12 +304,14 @@ class EzpickPopup(WidgetPopup):
         if text:
             self._run_action(text)
 
-    def _update_result_label(self):
+    def _update_result_label(self) -> None:
         """Update the result section label based on active action."""
         labels = ["translation", "corrected text", "definition"]
         self._result_label.set_text(labels[self._active_action])
 
-    def _on_lang_changed(self, dropdown, _param):
+    def _on_lang_changed(
+        self, _dropdown: Gtk.DropDown, _param: GObject.ParamSpec
+    ) -> None:
         """Re-translate when language changes."""
         if self._active_action != 0:
             return
@@ -289,13 +319,13 @@ class EzpickPopup(WidgetPopup):
         if text:
             self._run_action(text)
 
-    def _on_submit(self, _button):
+    def _on_submit(self, _button: Gtk.Button | None) -> None:
         """Handle Go button click for manual input mode."""
         text = self._get_input_text()
         if text:
             self._run_action(text)
 
-    def _run_action(self, text):
+    def _run_action(self, text: str) -> None:
         """Run the active action in a background thread."""
         action_names = ["translating...", "fixing...", "looking up..."]
         self._status.set_text(action_names[self._active_action])
@@ -309,22 +339,23 @@ class EzpickPopup(WidgetPopup):
         self._request_id += 1
         request_id = self._request_id
 
-        def do_work():
-            try:
-                if action_idx == 0:
-                    result = run_translate(text, target_lang)
-                elif action_idx == 1:
-                    result = run_fix_english(text)
-                else:
-                    result = run_dictionary(text)
-                GLib.idle_add(self._on_action_done, request_id, result)
-            except Exception as e:
-                GLib.idle_add(self._on_action_error, request_id, str(e))
+        def do_work() -> None:
+            if action_idx == 0:
+                result = run_translate(text, target_lang)
+            elif action_idx == 1:
+                result = run_fix_english(text)
+            else:
+                result = run_dictionary(text)
+            match result:
+                case ClaudeFailed():
+                    GLib.idle_add(self._on_action_error, request_id, str(result))
+                case str():
+                    GLib.idle_add(self._on_action_done, request_id, result)
 
         thread = threading.Thread(target=do_work, daemon=True)
         thread.start()
 
-    def _on_action_done(self, request_id, result):
+    def _on_action_done(self, request_id: int, result: str) -> bool:
         if request_id != self._request_id:
             return GLib.SOURCE_REMOVE
         self._result_content = result
@@ -333,7 +364,7 @@ class EzpickPopup(WidgetPopup):
         self._copy_btn.set_sensitive(True)
         return GLib.SOURCE_REMOVE
 
-    def _on_action_error(self, request_id, error):
+    def _on_action_error(self, request_id: int, error: str) -> bool:
         if request_id != self._request_id:
             return GLib.SOURCE_REMOVE
         self._status.set_text(f"error: {error}")
@@ -341,7 +372,7 @@ class EzpickPopup(WidgetPopup):
         copyable(self._status)
         return GLib.SOURCE_REMOVE
 
-    def _on_copy(self, _button):
+    def _on_copy(self, _button: Gtk.Button) -> None:
         if self._result_content:
             subprocess.run(
                 ["wl-copy", "--", self._result_content],
@@ -349,7 +380,14 @@ class EzpickPopup(WidgetPopup):
             )
             self._status.set_text("copied!")
 
-    def _on_key(self, controller, keyval, keycode, state):
+    @override
+    def _on_key(
+        self,
+        _controller: Gtk.EventControllerKey,
+        keyval: int,
+        _keycode: int,
+        state: Gdk.ModifierType,
+    ) -> bool:
         # In input mode 'q' is text, never a close key (Esc still closes)
         if keyval == Gdk.KEY_q and self._has_input_field:
             return False
@@ -357,10 +395,12 @@ class EzpickPopup(WidgetPopup):
             self.quit()
             return True
         # Ctrl+Enter to submit
-        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-            if state & Gdk.ModifierType.CONTROL_MASK:
-                self._on_submit(None)
-                return True
+        if (
+            keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter)
+            and state & Gdk.ModifierType.CONTROL_MASK
+        ):
+            self._on_submit(None)
+            return True
         return False
 
 
