@@ -20,6 +20,8 @@ Local changes against upstream:
   `POINTER(c_size_t)` and `get_peak_sample()` passes a `c_size_t`.
 - `_pulsectl.py`: added `pa_stream_get_state()` and the `PA_STREAM_*` state constants
   (the audio meters must not disconnect a stream that is still being created).
+- `pulsectl.py`: added the read-only properties `Pulse.mainloop` and `Pulse.context`
+  (the audio meters run their streams on the connection's own mainloop and context).
 
 Upstream quirk kept as is: `Pulse.connect(timeout=...)` always waits the full timeout, so
 callers connect without one.

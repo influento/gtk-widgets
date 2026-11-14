@@ -325,3 +325,9 @@ spinbutton.au-spin > button:hover {
   color: @@OVERLAY0@@;
   margin-bottom: 8px;
 }
+
+/* A worker thread's bug */
+.au-bug {
+  font-size: 11px;
+  color: @@ERROR@@;
+}

@@ -464,6 +464,11 @@ class Pulse(object):
 	def __enter__(self): return self
 	def __exit__(self, err_t, err, err_tb): self.close()
 
+	@property
+	def mainloop(self): return self._loop
+	@property
+	def context(self): return self._ctx
+
 
 	def _pulse_state_cb(self, ctx, userdata):
 		state = c.pa.context_get_state(ctx)

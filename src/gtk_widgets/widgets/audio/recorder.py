@@ -12,17 +12,21 @@ are ignored.
 """
 
 import subprocess
-import threading
 import time
+from collections.abc import Callable
+from functools import partial
+from typing import Literal
 
 from gi.repository import GLib
 
-from gtk_widgets.widgets.audio.meters import APP_ID
+from gtk_widgets.lib.ui.background import in_background
+from gtk_widgets.widgets.audio.parts import APP_ID
 
 MAX_SECONDS = 30
 RATE, CHANNELS, SAMPLE_BYTES = 48000, 2, 2  # s16le stereo: ~5.5 MB for 30 s
 BYTES_PER_SECOND = RATE * CHANNELS * SAMPLE_BYTES
 MAX_BYTES = MAX_SECONDS * BYTES_PER_SECOND
+READ_BYTES = 65536
 # Low latency: little is lost when parec is stopped, little plays on after pacat is killed.
 STREAM_ARGS = [
     "--raw",
@@ -34,27 +38,32 @@ STREAM_ARGS = [
     "--stream-name=Test recording",
 ]
 
+type RecordState = Literal["idle", "recording", "playing"]
+
 
 class Recorder:
     """At most one test recording at a time. on_change() runs after every state change."""
 
-    def __init__(self, on_change):
+    def __init__(
+        self, on_change: Callable[[], None], on_bug: Callable[[str], bool | None]
+    ) -> None:
         self._on_change = on_change
-        self.state = "idle"  # idle | recording | playing
-        self.source = None  # pulse index of the source being recorded or played back
-        self._proc = None
+        self._on_bug = on_bug
+        self.state: RecordState = "idle"
+        self.source: int | None = None  # pulse index of the source recorded or played
+        self._proc: subprocess.Popen[bytes] | None = None
         self._gen = 0
         self._started = 0.0
         self._length = 0.0  # seconds recorded, while playing
 
-    def seconds(self):
+    def seconds(self) -> float:
         """Elapsed while recording, remaining while playing."""
         elapsed = time.monotonic() - self._started
         if self.state == "playing":
             return max(self._length - elapsed, 0.0)
         return min(elapsed, MAX_SECONDS)
 
-    def record(self, source_name, source_index):
+    def record(self, source_name: str, source_index: int) -> None:
         self.cancel()
         try:
             proc = subprocess.Popen(
@@ -66,19 +75,17 @@ class Recorder:
             return  # libpulse's parec missing
         self._proc, self.state, self.source = proc, "recording", source_index
         self._started = time.monotonic()
-        threading.Thread(
-            target=self._drain, args=(proc, self._gen), daemon=True
-        ).start()
+        in_background(partial(self._drain, proc, self._gen), self._on_bug)
         self._on_change()
 
-    def stop(self):
+    def stop(self) -> None:
         """Recording: stop and play it back. Playing: stop and discard."""
-        if self.state == "recording":
+        if self.state == "recording" and self._proc is not None:
             self._proc.terminate()  # the drain thread sees EOF and hands the audio over
         elif self.state == "playing":
             self.cancel()
 
-    def cancel(self):
+    def cancel(self) -> None:
         self._gen += 1
         if self._proc is not None:
             self._proc.kill()
@@ -89,31 +96,25 @@ class Recorder:
 
     # --- worker threads ---
 
-    def _drain(self, proc, gen):
+    def _drain(self, proc: subprocess.Popen[bytes], gen: int) -> None:
         buf = bytearray()
-        while len(buf) < MAX_BYTES:
-            chunk = proc.stdout.read1(65536)
-            if not chunk:
-                break
-            buf += chunk
+        if proc.stdout is not None:  # always: stdout=PIPE
+            while len(buf) < MAX_BYTES and (chunk := proc.stdout.read(READ_BYTES)):
+                buf += chunk
         proc.kill()  # at the cap it is still running
         proc.wait()
         del buf[MAX_BYTES - MAX_BYTES % (CHANNELS * SAMPLE_BYTES) :]
         GLib.idle_add(self._recorded, gen, bytes(buf))
 
-    @staticmethod
-    def _feed(proc, data, done):
-        try:
-            proc.stdin.write(data)
-            proc.stdin.close()
-        except BrokenPipeError, ValueError:
-            pass  # killed by cancel()
-        proc.wait()
-        GLib.idle_add(done)
+    def _feed(self, proc: subprocess.Popen[bytes], data: bytes, gen: int) -> None:
+        proc.communicate(
+            data
+        )  # ignores the broken pipe of a pacat that cancel() killed
+        GLib.idle_add(self._played, gen)
 
     # --- main thread ---
 
-    def _recorded(self, gen, data):
+    def _recorded(self, gen: int, data: bytes) -> bool:
         if gen != self._gen:
             return GLib.SOURCE_REMOVE
         self._proc = None
@@ -132,13 +133,11 @@ class Recorder:
             return GLib.SOURCE_REMOVE
         self._proc, self.state = proc, "playing"
         self._length, self._started = len(data) / BYTES_PER_SECOND, time.monotonic()
-        threading.Thread(
-            target=self._feed, args=(proc, data, lambda: self._played(gen)), daemon=True
-        ).start()
+        in_background(partial(self._feed, proc, data, gen), self._on_bug)
         self._on_change()
         return GLib.SOURCE_REMOVE
 
-    def _played(self, gen):
+    def _played(self, gen: int) -> bool:
         if gen == self._gen:
             self._proc = None
             self.cancel()

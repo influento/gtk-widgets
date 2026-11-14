@@ -5,8 +5,8 @@ from typing import override
 
 from . import _pulsectl as _pulsectl
 
-class EnumValue:
-    _value: str
+# Not exported by the package: only its values reach the widgets.
+class _EnumValue:
     @override
     def __eq__(self, val: object) -> bool: ...
     @override
@@ -14,6 +14,7 @@ class EnumValue:
 
 class PulseError(Exception): ...
 class PulseIndexError(PulseError): ...
+class PulseDisconnected(Exception): ...
 
 class PulseVolumeInfo:
     values: list[float]
@@ -24,7 +25,7 @@ class PulseVolumeInfo:
 class PulsePortInfo:
     name: str
     description: str
-    available: EnumValue
+    available: _EnumValue
     priority: int
 
 class PulseCardProfileInfo:
@@ -46,7 +47,7 @@ class _Device:
     description: str
     mute: int
     card: int
-    state: EnumValue
+    state: _EnumValue
     proplist: dict[str, str]
     volume: PulseVolumeInfo
     base_volume: float
@@ -99,14 +100,16 @@ class PulseExtStreamRestoreInfo:
     ) -> None: ...
 
 class PulseEventInfo:
-    t: EnumValue
-    facility: EnumValue
+    t: _EnumValue
+    facility: _EnumValue
     index: int
 
 class Pulse:
     connected: bool
-    _loop: _pulsectl.MainloopPointer
-    _ctx: _pulsectl.ContextPointer
+    @property
+    def mainloop(self) -> _pulsectl.MainloopPointer: ...
+    @property
+    def context(self) -> _pulsectl.ContextPointer: ...
     def __init__(self, client_name: str) -> None: ...
     def close(self) -> None: ...
     def server_info(self) -> PulseServerInfo: ...

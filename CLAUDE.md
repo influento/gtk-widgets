@@ -226,7 +226,10 @@ gtk-widgets/
 │       │   ├── style.css
 │       │   └── status.py      # JSON: hh:mm:ss, fires alarm at zero
 │       ├── audio/
-│       │   ├── main.py        # pulsectl: event thread + main-thread command connection, rows updated in place
+│       │   ├── main.py        # Entry: the popup, or a "libpulse not found" popup when libpulse.so.0 won't load
+│       │   ├── popup.py       # pulsectl: event thread + main-thread command connection, rows updated in place
+│       │   ├── parts.py       # App id, glyphs, frame and error box shared by both popups
+│       │   ├── parse.py       # State dataclass (last tab, meters on) + the state file's parser
 │       │   ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
 │       │   ├── recorder.py    # Input test recording: parec into memory (30 s cap), pacat playback, discard
 │       │   └── style.css
