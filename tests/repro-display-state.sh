@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guards for the display popup's state files (widgets/display/main.py).
+# Guards for the display popup's state files (src/gtk_widgets/widgets/display/main.py).
 # The popup keeps the sway scale and the night light temperature in
 # ~/.local/state/dotfiles/{scale.conf,temperature}: sway includes scale.conf,
 # dotfiles' wlsunset.sh reads temperature at sway startup.
@@ -28,15 +28,14 @@ make_linked_home() {
   ln -s "${home}/dotfiles/wlsunset" "${home}/.config/wlsunset"
 }
 
-# A file, not stdin: lib/widget_base.py re-execs Python (LD_PRELOAD), and the
+# A file, not stdin: gtk_widgets.lib.ui re-execs Python (LD_PRELOAD), and the
 # re-exec would find stdin already read
 cat > "${work}/case.py" <<'EOF'
 import os, resource, sys
 
-sys.path.insert(0, sys.argv[1])
-import main  # noqa: E402
+from gtk_widgets.widgets.display import main
 
-case = sys.argv[2]
+case = sys.argv[1]
 home = os.environ["HOME"]
 state = os.path.join(home, ".local", "state", "dotfiles")
 
@@ -121,7 +120,7 @@ run_case() {
   local name="$1" home="$2"
   if HOME="${home}" PATH="${work}/bin:${PATH}" \
     env -u WAYLAND_DISPLAY -u DISPLAY \
-    python3 "${work}/case.py" "${repo}/widgets/display" "${name}"; then
+    PYTHONPATH="${repo}/src" python3 "${work}/case.py" "${name}"; then
     echo "PASS ${name}"
   else
     echo "FAIL ${name}"

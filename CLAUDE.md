@@ -11,19 +11,37 @@ this repo provides the building blocks, dotfiles wires them up.
 
 ## Architecture
 
-Each widget lives in its own directory under `widgets/<name>/` with:
+The code is one package, `src/gtk_widgets/`. Each widget is a subpackage
+`gtk_widgets.widgets.<name>` (`claude-usage` is `claude_usage`) with:
 
-- `main.py` — popup UI, subclasses `WidgetPopup` from `lib/widget_base.py`
+- `main.py` — popup UI, subclasses `WidgetPopup` from `gtk_widgets/lib/ui/widget_base.py`
 - `style.css` — CSS with `@@TOKEN@@` placeholders, rendered at runtime by `load_css()`
-- `status` (optional) — outputs JSON for status bars or CLI use
+- `status` (bash) or `status.py` (optional) — outputs JSON for status bars or CLI use
 
-All widgets share a common base class (`lib/widget_base.py`) that handles layer-shell
+All widgets share a common base class (`lib/ui/widget_base.py`) that handles layer-shell
 setup, transparent backdrop, Esc/q dismiss, and CSS loading with theme token replacement.
+
+### Commands and imports
+
+- The installed commands are the `[project.scripts]` entries in `pyproject.toml`, each a
+  module's `main()`. `install.sh` writes a launcher per entry into `~/.local/bin` that puts
+  the checkout's `src/` on `sys.path` and calls it, so the commands run on the system
+  `python3` and `gi`, not the uv environment. The bash `status` scripts are symlinked as
+  `<widget>-status`. A child Python that runs one of our modules gets its argv and
+  `PYTHONPATH` from `gtk_widgets.lib.paths.module_child()`
+- `gi` versions are pinned in a package's `__init__.py`, never in a module, so a module
+  imports `gi.repository` at its top in any order: `lib/ui/` (which also restarts the
+  process with gtk4-layer-shell in `LD_PRELOAD` when it isn't there), `launcher/ui/`,
+  `capture/ui/`, `network`, `audio`, `usb`. GLib, Gio and GObject need no pin
+- The stdlib paths never import `gi` (it costs ~40 ms; pathlib ~8 ms stays out of `gtk_widgets/__init__.py` too): `gtk_widgets/__init__.py`,
+  `lib/` outside `ui/`, launcher's CLI (`main.py`, `protocol.py`) and `clipboard.py`/
+  `selection.py`, capture's grab (`main.py` up to `load_gtk()`), the Python status scripts
+  but network's, and `display-brightness`. Their GTK modules sit in a `ui/` subpackage
 
 ### Theming
 
 Theme colors are defined in `themes/<name>.json`. At runtime, `render_css()` (`lib/theme.py`,
-stdlib, re-exported by `lib/widget_base.py`) reads the theme file and replaces `@@TOKEN@@` placeholders in CSS with actual color values. The
+stdlib, re-exported by `lib/ui/widget_base.py`) reads the theme file and replaces `@@TOKEN@@` placeholders in CSS with actual color values. The
 theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 `themes/current.json` symlink created by `install.sh --theme <name>`, then the bundled
 `themes/catppuccin-mocha.json`.
@@ -41,16 +59,16 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
   final size instead of growing on screen (`network`)
 - `widget-toggle <name>` handles launch/dismiss via `flock` (prevents duplicates)
 - Close via Escape/q key or clicking outside the widget
-- Shared components live in `lib/` beside the base class: `CopyLabel` (`lib/copy_label.py`)
+- Shared components live in `lib/ui/` beside the base class: `CopyLabel` (`lib/ui/copy_label.py`)
   is a label that copies its text (or a longer copy text) to the clipboard on click;
   `copyable(label, on)` gives a plain label the same click-to-copy. Every error line
   shown in a widget is copyable (status labels switch it on only while showing an error).
-  `popup_window()`/`show_popup()`/`install_css()` in `lib/widget_base.py` build the same
+  `popup_window()`/`show_popup()`/`install_css()` in `lib/ui/widget_base.py` build the same
   layer-shell overlay for long-running apps that open popups on demand (`network-agent`);
   `place_popup()` places the container without presenting, for an app that builds its
   window once and shows/hides it (`launcher`)
 - Widgets with a `status` script (bash or Python) output JSON (`text`, `tooltip`, `class`) for status bars
-- Extra executable `<widget>/<name>.py` files are symlinked as `<widget>-<name>` CLI entry points (e.g. `display-brightness`, bound to XF86MonBrightness keys in dotfiles)
+- Extra CLI entry points are named `<widget>-<name>` in `[project.scripts]` (e.g. `display-brightness`, bound to XF86MonBrightness keys in dotfiles)
 
 ### Current widgets
 
@@ -127,7 +145,7 @@ Defined in `themes/catppuccin-mocha.json`:
 - Functions use `snake_case`
 - Quote all variable expansions
 - Python widgets use standard library only (+ PyGObject). No third-party Python packages:
-  if a binding is unavoidable, vendor a pinned, audited copy under `lib/` (as `lib/pulsectl/`,
+  if a binding is unavoidable, vendor a pinned, audited copy under `src/gtk_widgets/lib/` (as `lib/pulsectl/`,
   ctypes over libpulse, used by `audio`) with its license and a note of local changes
 - Before every commit/push, audit the staged diff for sensitive information leaks
 
@@ -137,92 +155,102 @@ Defined in `themes/catppuccin-mocha.json`:
 gtk-widgets/
 ├── CLAUDE.md
 ├── README.md
-├── install.sh             # Symlinks widgets + scripts into ~/.local/bin; installs root helpers, polkit rules, proxy unit (sudo)
+├── pyproject.toml         # [project.scripts]: the installed commands
+├── install.sh             # Writes command launchers + links bash status scripts into ~/.local/bin; installs root helpers, polkit rules, proxy unit (sudo)
 ├── widget-toggle          # Generic toggle for GTK4 popups (flock-based)
-├── lib/
-│   ├── widget_base.py     # Shared GTK4 popup base class
-│   ├── theme.py           # Theme file lookup, colours, @@TOKEN@@ rendering (stdlib, no GTK)
-│   ├── copy_label.py      # CopyLabel + copyable(): click copies text via wl-copy, flashes "Copied"
-│   ├── wayland.py         # Minimal Wayland wire client (stdlib): ids, dispatch with fds, registry
-│   └── pulsectl/          # Vendored libpulse ctypes bindings (upstream commit + changes in README.md)
 ├── polkit/
 │   ├── usb-helper         # Root helper for USB format/write, installed to /usr/lib/gtk-widgets/
 │   ├── 50-gtk-widgets-usb.rules  # Polkit rule that authorises only that helper
 │   ├── proxy-helper       # Root helper: validates a Proxy rules request, builds the sing-box config, starts/stops the unit
 │   ├── 50-gtk-widgets-proxy.rules  # Polkit rule that authorises only that helper
 │   └── gtk-widgets-proxy.service   # sing-box unit (User=sing-box), installed to /etc/systemd/system/, never enabled
-├── widgets/
-│   ├── bluetooth/
-│   │   ├── main.py
-│   │   ├── style.css
-│   │   └── status         # JSON: icon, connection count
-│   ├── calendar/
-│   │   ├── main.py
-│   │   ├── style.css
-│   │   └── status         # JSON: date/time with icon
-│   ├── claude-usage/
-│   │   ├── main.py
-│   │   ├── usage.py       # Shared formatting (reset/charge dates, severity) for popup + status
-│   │   ├── style.css
-│   │   └── status         # JSON: usage percentages, reset times
-│   ├── display/
-│   │   ├── main.py
-│   │   ├── brightness.py  # Backend (backlight/DDC on a cached bus) + CLI: display-brightness up|down|set|get
-│   │   ├── style.css
-│   │   └── status         # JSON: display icon
-│   ├── power/
-│   │   ├── main.py
-│   │   ├── style.css
-│   │   └── status         # JSON: power icon
-│   ├── translate/
-│   │   ├── main.py
-│   │   └── style.css
-│   ├── usb/
-│   │   ├── main.py
-│   │   ├── style.css
-│   │   └── status         # JSON: USB icon, event-driven via udevadm
-│   ├── timer/
-│   │   ├── main.py
-│   │   ├── state.py       # Shared state model (popup + status script), alarm fires once
-│   │   ├── style.css
-│   │   └── status         # JSON: hh:mm:ss, fires alarm at zero
-│   ├── audio/
-│   │   ├── main.py        # pulsectl: event thread + main-thread command connection, rows updated in place
-│   │   ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
-│   │   ├── recorder.py    # Input test recording: parec into memory (30 s cap), pacat playback, discard
-│   │   └── style.css
-│   ├── launcher/
-│   │   ├── main.py        # CLI: stdlib fast path to the instance; else detach, preload layer-shell, start it
-│   │   ├── app.py         # Picker popup (ListView, built once), resident Launcher + socket server, one-shot dmenu
-│   │   ├── apps.py        # Desktop entries, usage decay (atomic JSON), launch (terminal wrap, no LD_PRELOAD leak)
-│   │   ├── match.py       # Match tiers, secondary fields, ru->us key mapping (no GTK)
-│   │   ├── protocol.py    # CLI <-> instance wire format (stdlib)
-│   │   ├── options.py     # dmenu row options after a NUL, GIF frame count (stdlib)
-│   │   ├── preview.py     # Row thumbnails, the preview pane, GIF playback via ffmpeg (worker-thread decode, caches)
-│   │   ├── clipboard.py   # launcher-clipboard: cliphist list -> rows with options; --restore/--offer (stdlib; tests/launcher_clipboard_test.py)
-│   │   ├── selection.py   # Own the clipboard with several forms of one item over ext/wlr data-control (stdlib, forks to serve; tests/launcher_selection_test.py runs the CLI against a fake compositor)
-│   │   └── style.css
-│   ├── capture/
-│   │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy; gif flow, stop/cancel signals, clipboard order
-│   │   ├── screencopy.py  # wlr-screencopy of every output into one memfd (stdlib, over lib/wayland.py)
-│   │   ├── swayipc.py     # Exact output scales, logical rects and shown windows from sway IPC (stdlib)
-│   │   ├── geometry.py    # Logical -> physical selection and window placement maths (no GTK)
-│   │   ├── image.py       # Upright frames (lossless flips/turns), row-slice crops, PNG save
-│   │   ├── record.py      # gif: logical region + crop that record the exact physical pixels, wf-recorder start/stop (no GTK)
-│   │   ├── process.py     # gif: ffmpeg GIF, sheet frames, contact sheets; `python3 process.py DIR SCALE` reruns a failed one (no GTK)
-│   │   ├── app.py         # Overlay per output: frozen frame drawn 1:1, shade, selection frame; gif's recording indicator
-│   │   └── style.css
-│   └── network/
-│       ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page
-│       ├── editor.py      # Edit page: per-profile settings on a clone, verify(), full-secret saves, reapply on save (Reconnect now when refused)
-│       ├── ui.py          # Small GTK helpers shared by main.py and editor.py
-│       ├── agent.py       # network-agent: connection notifications + NM.SecretAgentOld password prompt
-│       ├── nmutil.py      # Shared libnm helpers: profile builders, reasons, connectivity, WireGuard .conf export
-│       ├── proxy.py       # Proxy rules model: state file (0600), paste parser, helper call, unit watch (D-Bus)
-│       ├── proxypage.py   # Proxy rules page: proxies (paste, check, Block QUIC), app rules, default exit, kill switch
-│       ├── socks5.py      # Minimal SOCKS5 client: login, CONNECT trace (exit IP, country, latency), UDP ASSOCIATE round trip
-│       ├── style.css      # Also styles network-agent's prompt
-│       └── status         # JSON: link, active VPN, Proxy rules, connectivity; long-running (one line per change)
+├── src/gtk_widgets/
+│   ├── __init__.py        # Empty: launcher's CLI imports it
+│   ├── lib/
+│   │   ├── paths.py       # SRC, module_child(): run one of our modules in a child Python (stdlib)
+│   │   ├── theme.py       # Theme file lookup, colours, @@TOKEN@@ rendering (stdlib, no GTK)
+│   │   ├── wayland.py     # Minimal Wayland wire client (stdlib): ids, dispatch with fds, registry
+│   │   ├── pulsectl/      # Vendored libpulse ctypes bindings (upstream commit + changes in README.md)
+│   │   └── ui/
+│   │       ├── __init__.py      # LD_PRELOAD re-exec, gi versions
+│   │       ├── widget_base.py   # Shared GTK4 popup base class
+│   │       └── copy_label.py    # CopyLabel + copyable(): click copies text via wl-copy, flashes "Copied"
+│   └── widgets/
+│       ├── bluetooth/
+│       │   ├── main.py
+│       │   ├── style.css
+│       │   └── status         # JSON: icon, connection count
+│       ├── calendar/
+│       │   ├── main.py
+│       │   ├── style.css
+│       │   └── status         # JSON: date/time with icon
+│       ├── claude_usage/
+│       │   ├── main.py
+│       │   ├── usage.py       # Shared formatting (reset/charge dates, severity) for popup + status
+│       │   ├── style.css
+│       │   └── status.py      # JSON: usage percentages, reset times
+│       ├── display/
+│       │   ├── main.py
+│       │   ├── brightness.py  # Backend (backlight/DDC on a cached bus) + CLI: display-brightness up|down|set|get
+│       │   ├── style.css
+│       │   └── status         # JSON: display icon
+│       ├── power/
+│       │   ├── main.py
+│       │   ├── style.css
+│       │   └── status         # JSON: power icon
+│       ├── translate/
+│       │   ├── main.py
+│       │   └── style.css
+│       ├── usb/
+│       │   ├── main.py
+│       │   ├── style.css
+│       │   └── status         # JSON: USB icon, event-driven via udevadm
+│       ├── timer/
+│       │   ├── main.py
+│       │   ├── state.py       # Shared state model (popup + status script), alarm fires once
+│       │   ├── style.css
+│       │   └── status.py      # JSON: hh:mm:ss, fires alarm at zero
+│       ├── audio/
+│       │   ├── main.py        # pulsectl: event thread + main-thread command connection, rows updated in place
+│       │   ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
+│       │   ├── recorder.py    # Input test recording: parec into memory (30 s cap), pacat playback, discard
+│       │   └── style.css
+│       ├── launcher/
+│       │   ├── main.py        # CLI: stdlib fast path to the instance; else detach, preload layer-shell, start it
+│       │   ├── match.py       # Match tiers, secondary fields, ru->us key mapping (no GTK)
+│       │   ├── protocol.py    # CLI <-> instance wire format (stdlib)
+│       │   ├── options.py     # dmenu row options after a NUL, GIF frame count (stdlib)
+│       │   ├── clipboard.py   # launcher-clipboard: cliphist list -> rows with options; --restore/--offer (stdlib; tests/launcher_clipboard_test.py)
+│       │   ├── selection.py   # Own the clipboard with several forms of one item over ext/wlr data-control (stdlib, forks to serve; tests/launcher_selection_test.py runs the CLI against a fake compositor)
+│       │   └── ui/
+│       │       ├── app.py     # Picker popup (ListView, built once), resident Launcher + socket server, one-shot dmenu
+│       │       ├── apps.py    # Desktop entries, usage decay (atomic JSON), launch (terminal wrap, no LD_PRELOAD leak)
+│       │       ├── preview.py # Row thumbnails, the preview pane, GIF playback via ffmpeg (worker-thread decode, caches)
+│       │       └── style.css
+│       ├── capture/
+│       │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy; gif flow, stop/cancel signals, clipboard order
+│       │   ├── screencopy.py  # wlr-screencopy of every output into one memfd (stdlib, over lib/wayland.py)
+│       │   ├── swayipc.py     # Exact output scales, logical rects and shown windows from sway IPC (stdlib)
+│       │   ├── geometry.py    # Logical -> physical selection and window placement maths (no GTK)
+│       │   ├── record.py      # gif: logical region + crop that record the exact physical pixels, wf-recorder start/stop (no GTK)
+│       │   ├── process.py     # gif: ffmpeg GIF, sheet frames, contact sheets; `python3 -m` with DIR SCALE reruns a failed one (no GTK)
+│       │   └── ui/
+│       │       ├── app.py     # Overlay per output: frozen frame drawn 1:1, shade, selection frame; gif's recording indicator
+│       │       ├── image.py   # Upright frames (lossless flips/turns), row-slice crops, PNG save
+│       │       └── style.css
+│       └── network/
+│           ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page
+│           ├── editor.py      # Edit page: per-profile settings on a clone, verify(), full-secret saves, reapply on save (Reconnect now when refused)
+│           ├── ui.py          # Small GTK helpers shared by main.py and editor.py
+│           ├── agent.py       # network-agent: connection notifications + NM.SecretAgentOld password prompt
+│           ├── nmutil.py      # Shared libnm helpers: profile builders, reasons, connectivity, WireGuard .conf export
+│           ├── proxy.py       # Proxy rules model: state file (0600), paste parser, helper call, unit watch (D-Bus)
+│           ├── proxypage.py   # Proxy rules page: proxies (paste, check, Block QUIC), app rules, default exit, kill switch
+│           ├── socks5.py      # Minimal SOCKS5 client: login, CONNECT trace (exit IP, country, latency), UDP ASSOCIATE round trip
+│           ├── style.css      # Also styles network-agent's prompt
+│           └── status.py      # JSON: link, active VPN, Proxy rules, connectivity; long-running (one line per change)
+├── tests/
+│   └── smoke/             # probe.sh: install.sh + every installed command on a private headless Sway, report + screenshots
 └── themes/
     ├── catppuccin-mocha.json
     └── current.json       # Symlink to the active theme (created by install.sh)
@@ -232,7 +260,7 @@ gtk-widgets/
 
 ### ezpick — Multi-Action Text Tool
 
-`widgets/translate` (application id `dev.dotfiles.ezpick`) is the multi-action text tool
+`gtk_widgets.widgets.translate` (application id `dev.dotfiles.ezpick`) is the multi-action text tool
 triggered by Super+T. Implemented actions: **Translate** (auto-detect EN↔RU, language
 dropdown override), **Fix English** (corrected text plus a list of changes) and
 **Dictionary** (definition, etymology, examples).

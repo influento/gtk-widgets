@@ -1,0 +1,756 @@
+"""launcher's GTK side: the picker popup, the resident instance, one-shot dmenu."""
+
+import os
+import signal
+import socket
+import struct
+import sys
+import time
+
+from gtk_widgets.lib.ui.widget_base import (BASE_CSS, Gdk, GLib, Gtk, VScroller, install_css,
+                             load_css, place_popup, popup_window, render_css)
+
+from gi.repository import Gio, GObject, Pango
+
+from gtk_widgets.widgets.launcher.ui import apps as appdb
+from gtk_widgets.widgets.launcher import match
+from gtk_widgets.widgets.launcher import options
+from gtk_widgets.widgets.launcher.ui import preview
+from gtk_widgets.widgets.launcher import protocol
+
+_DIR = os.path.dirname(os.path.realpath(__file__))
+
+APP_ID = "dev.dotfiles.launcher"
+MARGIN_TOP = 40
+WIDTH = 560
+ROWS = 10    # visible rows
+ROW_H = 34   # listview.launcher-list > row min-height in style.css
+FALLBACK_ICON = "application-x-executable"
+DISPLAY_CHARS = 200  # a dmenu row shows at most this much: Pango shapes all of it
+DRUN, DMENU = "drun", "dmenu"
+_NEXT = {"j", "n"}  # with Ctrl (the us-layout key, whatever the layout)
+_PREV = {"k", "p"}
+_PANE = {"l": True, "h": False}  # Ctrl+l opens the preview pane, Ctrl+h closes it
+_DELETE = "d"  # Ctrl+d deletes the selected row (dmenu --delete)
+DELETE_ICON = "\U000f0156"  # nf-md-close
+
+
+class Item(GObject.Object):
+    """One list entry. ref is the apps.App (drun) or the line index (dmenu)."""
+
+    __gtype_name__ = "LauncherItem"
+
+    def __init__(self, text, field, extra=(), icon=None, detail="", ref=None, opts=None):
+        super().__init__()
+        self.text, self.field, self.extra = text, field, extra
+        self.icon, self.detail, self.ref = icon, detail, ref
+        self.opts = opts or {}  # dmenu row options (options.py)
+
+
+class Row(Gtk.Box):
+    def __init__(self):
+        super().__init__(spacing=10)
+        self.icon = Gtk.Image(pixel_size=24)
+        self.append(self.icon)
+        self.slot = preview.Slot()  # dmenu rows with options
+        self.append(self.slot)
+        # max_width_chars=1: a long name can't widen the list, it ellipsizes
+        self.label = Gtk.Label(xalign=0, hexpand=True, max_width_chars=1,
+                               ellipsize=Pango.EllipsizeMode.END, single_line_mode=True)
+        self.label.add_css_class("launcher-name")
+        self.append(self.label)
+        self.detail = Gtk.Label(max_width_chars=28, ellipsize=Pango.EllipsizeMode.MIDDLE)
+        self.detail.add_css_class("launcher-detail")
+        self.append(self.detail)
+        # dmenu --delete; not focusable, so typing stays in the entry
+        self.delete = Gtk.Button(label=DELETE_ICON, focusable=False, focus_on_click=False,
+                                 valign=Gtk.Align.CENTER, tooltip_text="Delete (Ctrl+d)")
+        self.delete.add_css_class("launcher-delete")
+        self.append(self.delete)
+        self.item = None
+
+
+def display_lines(lines, after_tab=False):
+    """dmenu input lines as (text, options): the text shown and searched is
+    UTF-8 (invalid bytes replaced), without the options after a NUL
+    (options.py), with after_tab only what follows the first tab (cliphist's
+    "<id>\t<preview>"), other tabs as two spaces. The pick is printed from
+    the original bytes."""
+    rows = []
+    for line in lines:
+        text, opts = options.split(line.decode("utf-8", "replace"))
+        if after_tab:
+            text = text.split("\t", 1)[-1]
+        rows.append((text.replace("\t", "  "), opts))
+    return rows
+
+
+def _us_key(keyval):
+    """The us-layout letter of a key press (Ctrl+о on ru is Ctrl+j)."""
+    code = Gdk.keyval_to_unicode(keyval)
+    return match.us_keys(chr(code).lower()) if code else ""
+
+
+class Picker:
+    """The popup: a search entry over a lazily rendered list (Gtk.ListView),
+    built once and shown/hidden. drun lists desktop entries by match tier,
+    then usage, then name; dmenu lists lines by match tier, then input order,
+    with an optional action button (--action). dmenu rows with options get
+    thumbnails, and Right opens the preview pane beside the list (Left closes it).
+    Only Esc closes it: q and every other key go to the search entry."""
+
+    def __init__(self, app):
+        self.app = app
+        self.mode = None
+        self.items = []
+        self.drun_items = []
+        self.scores = {}      # drun: app id -> usage score, taken at show
+        self._on_pick = None  # dmenu: callback(line index, protocol.ACTION or None)
+        self._on_delete = None  # dmenu --delete: callback(line index)
+        self.pane_open = False
+        self._quiet = False
+
+        self.win, overlay = popup_window(app, self.dismiss, lambda *_: False)
+        # The compositor closes a layer surface whose output goes away: hide
+        # (and cancel a pick) instead of destroying the one window
+        self.win.connect("close-request", lambda *_: self.dismiss() or True)
+        # Capture phase: the entry would otherwise take Up/Down/Tab/Enter
+        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_key)
+        self.win.add_controller(keys)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("launcher")
+        box.set_size_request(WIDTH, -1)
+
+        search = Gtk.Box(spacing=8)
+        self.prompt = Gtk.Label()
+        self.prompt.add_css_class("launcher-prompt")
+        search.append(self.prompt)
+        self.entry = Gtk.Entry(hexpand=True)
+        self.entry.add_css_class("launcher-entry")
+        self.entry.connect("changed", self._on_changed)
+        search.append(self.entry)
+        # Not focusable: typing stays in the entry after a click
+        self.action = Gtk.Button(focusable=False, focus_on_click=False, visible=False)
+        self.action.add_css_class("launcher-action")
+        self.action.connect("clicked", lambda *_: self._finish(protocol.ACTION))
+        search.append(self.action)
+        box.append(search)
+
+        self.store = Gio.ListStore(item_type=Item)
+        self.selection = Gtk.SingleSelection(model=self.store, autoselect=True,
+                                             can_unselect=False)
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._setup_row)
+        factory.connect("bind", self._bind_row)
+        self.list = Gtk.ListView(model=self.selection, factory=factory, focusable=False)
+        self.list.add_css_class("launcher-list")
+        scroller = VScroller(ROWS * ROW_H, self.list)
+        scroller.set_min_content_height(ROWS * ROW_H)  # steady size while filtering
+        stack = Gtk.Overlay(child=scroller)
+        self.empty = Gtk.Label(label="No matches", visible=False,
+                               valign=Gtk.Align.START, margin_top=8)
+        self.empty.add_css_class("launcher-empty")
+        stack.add_overlay(self.empty)
+        self.box, self.scroller, self.liststack = box, scroller, stack
+        # The list and, while open, the preview pane beside it
+        self.body = Gtk.Box(spacing=10)
+        self.body.append(stack)
+        self.pane = preview.Pane()
+        self.body.append(self.pane)
+        box.append(self.body)
+        self.selection.connect("notify::selected", lambda *_: self._show_selected())
+
+        place_popup(self.win, overlay, box, MARGIN_TOP)
+
+    # --- rows ---
+
+    def _setup_row(self, _factory, li):
+        li.set_focusable(False)
+        row = Row()
+        click = Gtk.GestureClick()
+        click.connect("released", lambda *_: self._activate(li.get_position()))
+        row.add_controller(click)
+        row.delete.connect("clicked", lambda *_: self._delete(row.item))
+        li.set_child(row)
+
+    def _bind_row(self, _factory, li):
+        item, row = li.get_item(), li.get_child()
+        row.item = item
+        row.delete.set_visible(self._on_delete is not None)
+        row.label.set_text(item.text)
+        row.detail.set_text(item.detail)
+        row.detail.set_visible(bool(item.detail))
+        row.icon.set_visible(self.mode == DRUN)
+        thumbs = self.mode == DMENU and bool(item.opts)
+        row.slot.set_visible(thumbs)
+        row.set_size_request(-1, preview.THUMB_ROW_H if thumbs and row.slot.show(item.opts) else -1)
+        if thumbs and options.first(item.opts, "kind") == "missing":
+            row.label.add_css_class("launcher-missing")
+        else:
+            row.label.remove_css_class("launcher-missing")
+        if self.mode == DRUN:
+            if item.icon is not None:
+                row.icon.set_from_gicon(item.icon)
+            else:
+                row.icon.set_from_icon_name(FALLBACK_ICON)
+
+    # --- modes ---
+
+    def set_apps(self, apps):
+        self.drun_items = [Item(a.name, a.field, a.extra, a.icon, a.detail, a) for a in apps]
+        if self.mode == DRUN:
+            self.items = self.drun_items
+            if self.win.get_visible():
+                self._refilter()
+
+    def toggle(self, usage, t0=None):
+        if self.win.get_visible():
+            self.dismiss()
+        else:
+            self.show_drun(usage, t0)
+
+    def show_drun(self, usage, t0=None):
+        self._drop_pick()
+        self.mode = DRUN
+        self.pane_open = False
+        self._layout()
+        self.action.set_visible(False)
+        self.items = self.drun_items
+        now = time.time()
+        self.scores = {it.ref.id: usage.score(it.ref.id, now) for it in self.items}
+        self.prompt.set_text("")  # nf-fa-search
+        self.entry.set_placeholder_text("Search apps")
+        self._present(t0)
+
+    def show_dmenu(self, texts, prompt, on_pick, t0=None, action="", on_delete=None):
+        """on_pick(index, protocol.ACTION or None) is called once: pick, the
+        action button, Esc, or superseded. With on_delete, rows get a cross
+        (and Ctrl+d) that removes the row and calls on_delete(index)."""
+        self._drop_pick()
+        self.mode = DMENU
+        self._on_pick = on_pick
+        self._on_delete = on_delete
+        self.action.set_label(action)
+        self.action.set_visible(bool(action))
+        self.items = [Item(t[:DISPLAY_CHARS],
+                           match.Field(" ".join([t] + o.get("detail", []) + o.get("meta", []))),
+                           detail=options.first(o, "detail"), ref=i, opts=o)
+                      for i, (t, o) in enumerate(texts)]
+        self.pane_open = False  # every show starts compact
+        self._layout()
+        self.prompt.set_text(prompt or "")
+        self.entry.set_placeholder_text("Filter")
+        self._present(t0)
+        GLib.idle_add(self._warm, self.items, 0)
+
+    def _warm(self, items, start):
+        """Build a long list's word index between frames, so the first
+        keystroke doesn't pay for it."""
+        if items is not self.items:
+            return GLib.SOURCE_REMOVE
+        end = min(len(items), start + 500)
+        for it in items[start:end]:
+            it.field.words  # noqa: B018 (cached on first access)
+        if end < len(items):
+            GLib.idle_add(self._warm, items, end)
+        return GLib.SOURCE_REMOVE
+
+    def abort(self, on_pick):
+        """The dmenu caller went away: close its pick if it is still showing."""
+        if self._on_pick is not None and self._on_pick == on_pick:
+            self._finish(None)
+
+    def dismiss(self):
+        if self._on_pick is not None:
+            self._finish(None)
+        else:
+            self.hide()
+
+    def hide(self):
+        self.pane.stop()
+        self.win.set_visible(False)
+        if self.mode == DMENU:  # free a long list; the next show rebuilds it
+            self.items = []
+            self.store.remove_all()
+
+    def _drop_pick(self):
+        """A new show replaces a pending dmenu pick: its caller gets None."""
+        on_pick, self._on_pick = self._on_pick, None
+        self._on_delete = None
+        if on_pick is not None:
+            on_pick(None)
+
+    def _finish(self, index):
+        on_pick, self._on_pick = self._on_pick, None
+        self._on_delete = None
+        self.hide()
+        if on_pick is not None:
+            on_pick(index)
+
+    def _present(self, t0):
+        self._quiet = True
+        self.entry.set_text("")
+        self._quiet = False
+        self._refilter()
+        self.win.set_focus(self.entry)
+        self.win.present()
+        self.entry.grab_focus_without_selecting()
+        if t0:
+            self._trace(t0)
+
+    def _trace(self, t0):
+        """Print the time from t0 (ns since the epoch) to the first frame."""
+        try:
+            t0 = int(t0)
+        except ValueError:
+            return
+        clock = self.win.get_frame_clock()
+        if clock is None:
+            return
+        handler = None
+
+        def painted(c):
+            c.disconnect(handler)
+            print(f"launcher: {self.mode} first frame {(time.time_ns() - t0) / 1e6:.1f} ms"
+                  " after the request", file=sys.stderr, flush=True)
+        handler = clock.connect("after-paint", painted)
+
+    # --- search ---
+
+    def _on_changed(self, _entry):
+        if not self._quiet:
+            self._refilter()
+
+    def _refilter(self):
+        variants = match.query_variants(self.entry.get_text())
+        if self.mode == DRUN:
+            scores = self.scores
+            if variants:
+                ranked = []
+                for it in self.items:
+                    key = match.rank(variants, it.field, it.extra)
+                    if key is not None:
+                        ranked.append(((key, -scores.get(it.ref.id, 0.0), it.ref.sort), it))
+            else:
+                ranked = [((-scores.get(it.ref.id, 0.0), it.ref.sort), it) for it in self.items]
+            ranked.sort(key=lambda pair: pair[0])
+            result = [it for _, it in ranked]
+        elif variants:
+            ranked = []
+            for i, it in enumerate(self.items):
+                key = match.rank(variants, it.field)
+                if key is not None:
+                    ranked.append((key, i, it))
+            ranked.sort(key=lambda t: (t[0], t[1]))
+            result = [it for _, _, it in ranked]
+        else:
+            result = self.items
+        self.store.splice(0, self.store.get_n_items(), result)
+        self.empty.set_visible(not result)
+        if result:
+            self.selection.set_selected(0)
+            self.list.scroll_to(0, Gtk.ListScrollFlags.NONE, None)
+        self._show_selected()  # the row at 0 may be a new one
+
+    # --- keys ---
+
+    def _on_key(self, _ctrl, keyval, _code, state):
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if self._pane_key(keyval, ctrl, state):
+            return True
+        if keyval == Gdk.KEY_Escape:
+            self.dismiss()
+        elif keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter):
+            self._activate(self.selection.get_selected())
+        elif keyval == Gdk.KEY_ISO_Left_Tab or (keyval == Gdk.KEY_Tab
+                                                and state & Gdk.ModifierType.SHIFT_MASK):
+            self._move(-1)
+        elif keyval in (Gdk.KEY_Down, Gdk.KEY_KP_Down, Gdk.KEY_Tab):
+            self._move(1)
+        elif keyval in (Gdk.KEY_Up, Gdk.KEY_KP_Up):
+            self._move(-1)
+        elif keyval in (Gdk.KEY_Page_Down, Gdk.KEY_KP_Page_Down):
+            self._move(ROWS - 1)
+        elif keyval in (Gdk.KEY_Page_Up, Gdk.KEY_KP_Page_Up):
+            self._move(-(ROWS - 1))
+        elif ctrl and _us_key(keyval) == _DELETE and self._on_delete is not None:
+            pos = self.selection.get_selected()
+            if pos != Gtk.INVALID_LIST_POSITION:
+                self._delete(self.store.get_item(pos))
+        elif ctrl and _us_key(keyval) in _NEXT:
+            self._move(1)
+        elif ctrl and _us_key(keyval) in _PREV:
+            self._move(-1)
+        else:
+            return False
+        return True
+
+    def _pane_key(self, keyval, ctrl, state):
+        """Right at the end of the filter text opens the pane, Left at its
+        start closes it; elsewhere they move the caret. Ctrl+l/Ctrl+h open and
+        close it wherever the caret is. Ctrl+Left/Right page through a row's
+        files while it is open."""
+        if not self._has_previews():
+            return False
+        vim = _us_key(keyval) if ctrl else ""
+        if vim in _PANE and not state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK):
+            if _PANE[vim] != self.pane_open:
+                self._set_pane(_PANE[vim])
+            return True
+        left = keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left)
+        right = keyval in (Gdk.KEY_Right, Gdk.KEY_KP_Right)
+        if not (left or right) or state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK):
+            return False
+        if ctrl:
+            if self.pane_open:
+                self.pane.page(1 if right else -1)
+            return self.pane_open
+        caret = self.entry.get_position()
+        if right and not self.pane_open and caret == len(self.entry.get_text()):
+            self._set_pane(True)
+            return True
+        if left and self.pane_open and caret == 0:
+            self._set_pane(False)
+            return True
+        return False
+
+    # --- preview pane ---
+
+    def _has_previews(self):
+        return self.mode == DMENU and any(it.opts for it in self.items)
+
+    def _set_pane(self, open_):
+        self.pane_open = open_
+        self._layout()
+        self._show_selected()
+
+    def _layout(self):
+        """Compact (the list alone, as wide and tall as ever), or the pane open:
+        the popup takes the output but MARGIN_TOP and 40 px around, and the
+        list keeps its width beside the pane."""
+        open_ = self.pane_open and self._has_previews()
+        self.pane.set_visible(open_)
+        list_w = WIDTH - 20  # .launcher padding
+        self.liststack.set_size_request(list_w, -1)
+        if not open_:
+            self.pane.stop()
+            self.box.set_size_request(WIDTH, -1)
+            self._list_height(ROWS * ROW_H)
+            return
+        mon = self._monitor()
+        width = mon.width - 80
+        tall = mon.height - MARGIN_TOP - 40 - 92  # padding, search row, spacing
+        self.box.set_size_request(width, -1)
+        self._list_height(tall)
+        self.pane.set_view_size(width - 20 - list_w - 10 - 24, tall - 24 - 64)
+
+    def _monitor(self):
+        display = Gdk.Display.get_default()
+        surface = self.win.get_surface()
+        mon = display.get_monitor_at_surface(surface) if surface is not None else None
+        return (mon or display.get_monitors().get_item(0)).get_geometry()
+
+    def _list_height(self, h):
+        # GTK refuses a max below the current min: clear the min first
+        self.scroller.set_min_content_height(-1)
+        self.scroller.set_max_content_height(h)
+        self.scroller.set_min_content_height(h)
+
+    def _show_selected(self):
+        if not (self.pane_open and self._has_previews()):
+            return
+        pos = self.selection.get_selected()
+        self.pane.show_item(self.store.get_item(pos) if pos != Gtk.INVALID_LIST_POSITION else None)
+
+    def _move(self, delta):
+        n = self.store.get_n_items()
+        if not n:
+            return
+        pos = self.selection.get_selected()
+        pos = 0 if pos == Gtk.INVALID_LIST_POSITION else pos
+        pos = max(0, min(n - 1, pos + delta))
+        self.selection.set_selected(pos)
+        self.list.scroll_to(pos, Gtk.ListScrollFlags.NONE, None)
+
+    def _delete(self, item):
+        """Drop a dmenu row (--delete) for good, keeping the selection where
+        it was, and tell the caller."""
+        if self._on_delete is None or item is None:
+            return
+        found, pos = self.store.find(item)
+        if not found:
+            return
+        sel = self.selection.get_selected()
+        self.items.remove(item)  # in place: _warm() checks the list's identity
+        self.store.remove(pos)
+        n = self.store.get_n_items()
+        self.empty.set_visible(not n)
+        if n:
+            if sel == Gtk.INVALID_LIST_POSITION or sel == pos:
+                sel = min(pos, n - 1)
+            elif sel > pos:
+                sel -= 1
+            self.selection.set_selected(sel)
+        self._show_selected()
+        self._on_delete(item.ref)
+
+    def _activate(self, pos):
+        item = self.store.get_item(pos) if pos != Gtk.INVALID_LIST_POSITION else None
+        if item is None:
+            return
+        if self.mode == DRUN:
+            self.hide()
+            GLib.idle_add(self.app.launch, item.ref)  # after the unmap is out
+        else:
+            self._finish(item.ref)
+
+
+# --- the resident instance ---
+
+class Request:
+    """One CLI connection: a header line, for dmenu the stdin bytes, then the
+    socket stays open until the pick; EOF on it means the CLI went away."""
+
+    MAX_HEADER = 1 << 16
+
+    def __init__(self, app, conn):
+        self.app, self.conn = app, conn
+        self.buf = bytearray()
+        self.fields = None
+        self.waiting = False
+        self.watch = GLib.unix_fd_add_full(
+            GLib.PRIORITY_HIGH, conn.fileno(),
+            GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR, self._readable)
+
+    def _readable(self, _fd, _cond):
+        try:
+            chunk = self.conn.recv(1 << 16)
+        except BlockingIOError:
+            return GLib.SOURCE_CONTINUE
+        except OSError:
+            chunk = b""
+        if not chunk:
+            waiting = self.waiting
+            self.close()
+            if waiting:
+                self.app.picker.abort(self.reply)
+            return GLib.SOURCE_REMOVE
+        if not self.waiting:
+            self.buf += chunk
+            self._parse()
+        return GLib.SOURCE_CONTINUE if self.watch else GLib.SOURCE_REMOVE
+
+    def _parse(self):
+        if self.fields is None:
+            nl = self.buf.find(b"\n")
+            if nl < 0:
+                if len(self.buf) > self.MAX_HEADER:
+                    self.close()
+                return
+            self.fields = protocol.parse_header(bytes(self.buf[:nl]))
+            del self.buf[:nl + 1]
+            if self.fields[0] == "toggle":
+                self.close()
+                self.app.toggle(self.fields[1] if len(self.fields) > 1 else None)
+                return
+            if self.fields[0] != "dmenu" or len(self.fields) < 4 or not self.fields[1].isdigit():
+                self.close()
+                return
+        need = int(self.fields[1])
+        if len(self.buf) < need:
+            return
+        lines = protocol.split_lines(bytes(self.buf[:need]))
+        self.buf = bytearray()
+        self.waiting = True
+        after_tab = len(self.fields) > 4 and self.fields[4] == "1"
+        action = self.fields[5] if len(self.fields) > 5 else ""
+        delete = len(self.fields) > 6 and self.fields[6] == "1"
+        self.app.picker.show_dmenu(display_lines(lines, after_tab), self.fields[2], self.reply,
+                                   self.fields[3], action, self.deleted if delete else None)
+
+    def deleted(self, index):
+        """A row was deleted: the CLI runs its --delete command for it."""
+        if not self.waiting:
+            return
+        try:
+            self.conn.setblocking(True)
+            self.conn.sendall(b"del %d\n" % index)
+            self.conn.setblocking(False)
+        except OSError:
+            pass
+
+    def reply(self, index):
+        if not self.waiting:
+            return
+        self.waiting = False
+        try:
+            self.conn.setblocking(True)
+            self.conn.sendall(b"%d\n" % (-1 if index is None else index))
+        except OSError:
+            pass
+        self.close()
+
+    def close(self):
+        self.waiting = False
+        if self.watch:
+            watch, self.watch = self.watch, 0
+            GLib.source_remove(watch)
+        self.conn.close()
+
+
+class Server:
+    """Listens on protocol.socket_path() for the CLI. The GApplication name
+    already makes this the only instance on the session bus, so a leftover
+    socket file (a killed instance) is simply replaced."""
+
+    def __init__(self, app):
+        self.app = app
+        self.path = protocol.socket_path()
+        self.sock = socket.socket(socket.AF_UNIX,
+                                  socket.SOCK_STREAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+        try:
+            os.unlink(self.path)
+        except FileNotFoundError:
+            pass
+        self.sock.bind(self.path)
+        os.chmod(self.path, 0o600)
+        self.sock.listen(16)
+        self.inode = os.stat(self.path).st_ino
+        self.watch = GLib.unix_fd_add_full(GLib.PRIORITY_HIGH, self.sock.fileno(),
+                                           GLib.IOCondition.IN, self._accept)
+
+    def _accept(self, _fd, _cond):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:  # BlockingIOError: all taken
+                break
+            creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+            if struct.unpack("3i", creds)[1] != os.getuid():
+                conn.close()
+                continue
+            conn.setblocking(False)
+            Request(self.app, conn)
+        return GLib.SOURCE_CONTINUE
+
+    def close(self):
+        GLib.source_remove(self.watch)
+        self.sock.close()
+        try:
+            if os.stat(self.path).st_ino == self.inode:
+                os.unlink(self.path)
+        except OSError:
+            pass
+
+
+class Launcher(Gtk.Application):
+    RELOAD_DELAY_MS = 250  # a package install changes many entries at once
+
+    def __init__(self, hidden):
+        super().__init__(application_id=APP_ID)
+        self._hidden = hidden  # --daemon: the first activation doesn't show
+        self._t0 = os.environ.pop("LAUNCHER_T0", None)  # cold start: trace the first show
+        self._reload_id = 0
+        self.picker = self.server = self.usage = None
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        self.hold()  # hidden between shows
+        appdb.child_environment()
+        install_css(render_css(BASE_CSS) + load_css(os.path.join(_DIR, "style.css")))
+        self.usage = appdb.Usage()
+        self.picker = Picker(self)
+        self._reload()
+        # Emits once per change, and again only after the next get_all()
+        self._monitor = Gio.AppInfoMonitor.get()
+        self._monitor.connect("changed", self._apps_changed)
+        self.server = Server(self)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit)
+
+    def do_activate(self):
+        # A launch that lost the race to start the instance lands here too
+        t0, self._t0 = self._t0, None
+        if self._hidden:
+            self._hidden = False
+            return
+        self.toggle(t0)
+
+    def do_shutdown(self):
+        if self.server:
+            self.server.close()
+        Gtk.Application.do_shutdown(self)
+
+    def toggle(self, t0=None):
+        self.picker.toggle(self.usage, t0)
+
+    def _apps_changed(self, _monitor):
+        if self._reload_id:
+            GLib.source_remove(self._reload_id)
+        self._reload_id = GLib.timeout_add(self.RELOAD_DELAY_MS, self._reload)
+
+    def _reload(self):
+        self._reload_id = 0
+        self.picker.set_apps(appdb.load_apps())
+        return GLib.SOURCE_REMOVE
+
+    def launch(self, app):
+        context = Gdk.Display.get_default().get_app_launch_context()
+        error = appdb.launch(app.info, context)
+        if error:
+            appdb.notify_error(f"Couldn't launch {app.name}", error)
+        else:
+            self.usage.bump(app.id)
+        return GLib.SOURCE_REMOVE
+
+
+class DmenuOnce(Gtk.Application):
+    """dmenu with no instance running: this process shows the picker, prints
+    the pick and exits."""
+
+    def __init__(self, lines, prompt, after_tab, action, delete):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.lines, self.prompt, self.after_tab = lines, prompt, after_tab
+        self.action, self.delete = action, delete
+        self.status = 1
+        self.picker = None
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        install_css(render_css(BASE_CSS) + load_css(os.path.join(_DIR, "style.css")))
+        self.picker = Picker(self)
+
+    def do_activate(self):
+        self.picker.show_dmenu(display_lines(self.lines, self.after_tab), self.prompt, self._picked,
+                               os.environ.get("LAUNCHER_T0"), self.action,
+                               self._deleted if self.delete else None)
+
+    def _deleted(self, index):
+        protocol.run_delete(self.delete, self.lines[index])
+
+    def _picked(self, index):
+        if index == protocol.ACTION:
+            self.status = protocol.ACTION_STATUS
+        elif index is not None:
+            sys.stdout.buffer.write(self.lines[index] + b"\n")
+            sys.stdout.flush()
+            self.status = 0
+        self.quit()
+
+
+def run_resident(hidden):
+    app = Launcher(hidden)
+    if hidden:
+        app.register(None)
+        if app.get_is_remote():
+            return 0  # already running (its socket was not where we looked)
+    return app.run([sys.argv[0]])
+
+
+def run_dmenu_once(prompt, after_tab, action, delete):
+    lines = protocol.split_lines(sys.stdin.buffer.read())
+    app = DmenuOnce(lines, prompt, after_tab, action, delete)
+    app.run([sys.argv[0]])
+    return app.status

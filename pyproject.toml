@@ -8,8 +8,28 @@ dependencies = [
     "pygobject>=3.58.1,<4",
 ]
 
+# The installed commands. install.sh writes a launcher for each into
+# ~/.local/bin; the bash status scripts beside the widgets are linked as
+# <widget>-status.
 [project.scripts]
-gtk-widgets = "gtk_widgets:main"
+audio = "gtk_widgets.widgets.audio.main:main"
+bluetooth = "gtk_widgets.widgets.bluetooth.main:main"
+calendar = "gtk_widgets.widgets.calendar.main:main"
+capture = "gtk_widgets.widgets.capture.main:main"
+claude-usage = "gtk_widgets.widgets.claude_usage.main:main"
+claude-usage-status = "gtk_widgets.widgets.claude_usage.status:main"
+display = "gtk_widgets.widgets.display.main:main"
+display-brightness = "gtk_widgets.widgets.display.brightness:main"
+launcher = "gtk_widgets.widgets.launcher.main:main"
+launcher-clipboard = "gtk_widgets.widgets.launcher.clipboard:main"
+network = "gtk_widgets.widgets.network.main:main"
+network-agent = "gtk_widgets.widgets.network.agent:main"
+network-status = "gtk_widgets.widgets.network.status:main"
+power = "gtk_widgets.widgets.power.main:main"
+timer = "gtk_widgets.widgets.timer.main:main"
+timer-status = "gtk_widgets.widgets.timer.status:main"
+translate = "gtk_widgets.widgets.translate.main:main"
+usb = "gtk_widgets.widgets.usb.main:main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]

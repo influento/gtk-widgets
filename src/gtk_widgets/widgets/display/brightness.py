@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Brightness backend shared by the display popup and the CLI.
+
+Backends, tried in order: laptop backlight (brightnessctl), then external
+monitor via DDC/CI (ddcutil). Stdlib only so the CLI path stays fast enough
+for a keybinding — no GTK import.
+
+ddcutil spends ~3 s scanning every I2C bus on each call; with `--bus N` a call
+takes ~0.1 s. The monitor's bus is found once and cached; a cached bus that
+stops answering (replug, renumbered after a reboot) triggers one rescan.
+
+CLI usage (symlinked as `display-brightness`):
+  display-brightness up [STEP]     raise by STEP percent (default 5)
+  display-brightness down [STEP]   lower by STEP percent (default 5)
+  display-brightness set PCT       set to PCT percent
+  display-brightness get           print current percent
+"""
+
+import os
+import subprocess
+import sys
+
+STEP = 5
+_TAG = "gtk-widgets-brightness"
+_bus = None  # DDC bus number as a string, loaded from the cache on first use
+
+
+def _run(cmd):
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def _read_backlight():
+    """Backlight percent, or None if brightnessctl has no backlight device."""
+    try:
+        if _run(["brightnessctl", "-c", "backlight", "info"]).returncode != 0:
+            return None
+        cur = int(_run(["brightnessctl", "-c", "backlight", "get"]).stdout.strip())
+        mx = int(_run(["brightnessctl", "-c", "backlight", "max"]).stdout.strip())
+        return round(cur * 100 / mx)
+    except (OSError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _bus_file():
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(cache, "display", "ddc-bus")
+
+
+def _cached_bus():
+    global _bus
+    if _bus is None:
+        try:
+            with open(_bus_file()) as f:
+                _bus = f.read().strip() or None
+        except OSError:
+            pass
+    return _bus
+
+
+def _detect_bus():
+    """Scan for the first DDC display (ddcutil's default display), cache its bus."""
+    global _bus
+    try:
+        result = _run(["ddcutil", "detect", "--terse"])
+    except OSError:
+        return None
+    in_display = False
+    for line in result.stdout.splitlines():
+        if not line.startswith(" "):
+            in_display = line.startswith("Display ")
+        elif in_display and line.strip().startswith("I2C bus:"):
+            dev = line.split(":", 1)[1].strip()  # /dev/i2c-N
+            _bus = dev.rsplit("-", 1)[-1]
+            break
+    else:
+        return None
+    path = _bus_file()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write(_bus + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return _bus
+
+
+def _ddc(*args):
+    """Run ddcutil on the cached bus; rescan and retry once if that fails.
+
+    Returns the CompletedProcess, or None if no DDC display answers.
+    """
+    bus = _cached_bus()
+    try:
+        if bus is not None:
+            result = _run(["ddcutil", "--bus", bus, *args])
+            if result.returncode == 0:
+                return result
+        bus = _detect_bus()
+        if bus is None:
+            return None
+        result = _run(["ddcutil", "--bus", bus, *args])
+    except OSError:
+        return None
+    return result if result.returncode == 0 else None
+
+
+def _read_ddc():
+    """DDC/CI percent from one `getvcp` round-trip, or None if no display answers."""
+    result = _ddc("getvcp", "10")
+    if result is None:
+        return None
+    for part in result.stdout.split(","):
+        if "current value" in part:
+            try:
+                return int(part.split("=")[1].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def probe():
+    """Detect the backend and read its level in one pass: (backend, percent) or (None, None).
+
+    The first DDC probe (or one after the bus changed) takes seconds, so
+    callers should use the percent returned here rather than calling get() again.
+    """
+    pct = _read_backlight()
+    if pct is not None:
+        return "backlight", pct
+    pct = _read_ddc()
+    if pct is not None:
+        return "ddc", pct
+    return None, None
+
+
+def detect_backend():
+    """Return 'backlight', 'ddc', or None."""
+    return probe()[0]
+
+
+def get(backend):
+    """Current brightness as an integer percent (100 on failure)."""
+    pct = _read_backlight() if backend == "backlight" else _read_ddc()
+    return 100 if pct is None else pct
+
+
+def set_pct(backend, pct):
+    pct = max(0, min(100, int(pct)))
+    if backend == "backlight":
+        _run(["brightnessctl", "-c", "backlight", "set", f"{pct}%"])
+    else:
+        _ddc("setvcp", "10", str(pct))
+    return pct
+
+
+def adjust(backend, delta, cur=None):
+    """Step brightness by delta percent, snapped to the step grid."""
+    if cur is None:
+        cur = get(backend)
+    step = abs(delta) or STEP
+    snapped = round(cur / step) * step
+    return set_pct(backend, snapped + delta)
+
+
+def notify(pct):
+    """Transient OSD-style notification; replaces the previous one in place."""
+    try:
+        subprocess.Popen(
+            ["notify-send", "-a", "display", "-t", "1500",
+             "-h", f"string:x-canonical-private-synchronous:{_TAG}",
+             "-h", f"int:value:{pct}", "Brightness", f"{pct}%"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        pass
+
+
+def run(argv):
+    if not argv or argv[0] not in ("up", "down", "set", "get"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    backend, cur = probe()
+    if backend is None:
+        print("no brightness backend (brightnessctl/ddcutil)", file=sys.stderr)
+        return 1
+    cmd = argv[0]
+    if cmd == "get":
+        print(cur)
+        return 0
+    if cmd == "set":
+        if len(argv) < 2:
+            print("set: missing percent", file=sys.stderr)
+            return 2
+        pct = set_pct(backend, argv[1])
+    else:
+        step = int(argv[1]) if len(argv) > 1 else STEP
+        pct = adjust(backend, step if cmd == "up" else -step, cur)
+    notify(pct)
+    print(pct)
+    return 0
+
+
+def main() -> int | None:
+    return run(sys.argv[1:])

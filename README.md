@@ -24,7 +24,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 Requires Python 3, GTK4, and [gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell).
 `audio` also needs `libpulse` and a PulseAudio-compatible server such as `pipewire-pulse`;
 its Python bindings ([pulsectl](https://github.com/mk-fg/python-pulse-control)) are vendored
-in `lib/pulsectl/`.
+in `src/gtk_widgets/lib/pulsectl/`.
 `network` needs NetworkManager's `libnm` (GObject introspection data, `NM-1.0.typelib`) and
 `notify-send` for `network-agent`'s notifications. It doesn't use `nm-connection-editor`:
 settings the Edit page doesn't cover aren't editable from the widget. The Edit page shows
@@ -39,12 +39,15 @@ WireGuard public keys with `wg` (wireguard-tools) when it is installed. Proxy ru
 `--theme` points `themes/current.json` at the chosen file; `GTK_WIDGETS_THEME=<file>`
 overrides it for a single process.
 
-This symlinks into `~/.local/bin/`:
+This puts into `~/.local/bin/` (the commands run on the system `python3`, from this checkout):
 
 - `widget-toggle` — shared toggle script (launch/dismiss via flock)
 - `<name>` — each popup (e.g., `calendar`, `bluetooth`)
 - `<name>-status` — each status script, if present (e.g., `calendar-status`)
 - `<widget>-<tool>` — extra CLI entry points (e.g., `display-brightness up|down|set|get`)
+
+The commands are listed in `pyproject.toml` under `[project.scripts]`; run `./install.sh`
+again after a change to that list.
 
 The root helpers (`usb-helper`, `proxy-helper`) and their polkit rules are copied to
 `/usr/lib/gtk-widgets/` and `/etc/polkit-1/rules.d/` with `sudo` (only when they changed),
@@ -126,7 +129,7 @@ the list, the picker stays open, and `CMD` runs (split like a shell would, witho
 the row's line on stdin (`--delete 'cliphist delete'`).
 
 `launcher-clipboard` prints cliphist's history with row options after a NUL byte (see
-`widgets/launcher/options.py`): images, GIFs and file links get thumbnails, and Right opens
+`src/gtk_widgets/widgets/launcher/options.py`): images, GIFs and file links get thumbnails, and Right opens
 a preview pane beside the list (Left closes it; Ctrl+l and Ctrl+h open and close it wherever
 the caret is; Ctrl+Left/Right pages through several files). `cut -f1` keeps only the id: `cliphist decode` needs nothing more, and the NUL never
 reaches the shell.
@@ -206,7 +209,8 @@ processing fails). `--copy` puts `file://<path>` of the GIF on the clipboard
 list), so a plain paste gives the sheets and the GIF is next in the clipboard history (it
 waits up to 2 s for `cliphist` to have stored the GIF). `--dir` defaults to
 `$XDG_PICTURES_DIR/recordings`. If processing fails, the folder keeps `raw.mkv`;
-`python3 widgets/capture/process.py <folder> <scale>` runs it again (the command is printed). Needs `wf-recorder`, `ffmpeg`, `notify-send` and, for
+`PYTHONPATH=src python3 -m gtk_widgets.widgets.capture.process <folder> <scale>` in this
+checkout runs it again (the command is printed). Needs `wf-recorder`, `ffmpeg`, `notify-send` and, for
 `--copy`, `wl-clipboard` and `cliphist`. Rotated or flipped outputs aren't supported.
 
 ```

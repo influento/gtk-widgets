@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install gtk-widgets: symlink popups, status scripts, and widget-toggle into ~/.local/bin;
+# Install gtk-widgets: launchers for the commands, the bash status scripts and
+# widget-toggle into ~/.local/bin;
 # install the root helpers, their polkit rules and the Proxy rules unit (sudo)
 # Usage: install.sh [--theme <name>]   (default: catppuccin-mocha)
 
@@ -31,29 +32,36 @@ mkdir -p "$BIN_DIR"
 ln -sfn "$REPO_DIR/widget-toggle" "$BIN_DIR/widget-toggle"
 echo "  widget-toggle"
 
-# Widgets
-for widget_dir in "$REPO_DIR"/widgets/*/; do
-  name="$(basename "$widget_dir")"
-  main="$widget_dir/main.py"
+# Commands: a launcher per [project.scripts] entry in pyproject.toml. Each runs
+# on the system python3 with this checkout's src/ on its path (no venv needed)
+src_dir="$REPO_DIR/src"
+while read -r cli module func; do
+  tmp="$(mktemp "$BIN_DIR/.$cli.XXXXXX")"
+  cat > "$tmp" <<EOF
+#!/usr/bin/env python3
+# Written by gtk-widgets' install.sh
+import sys
+sys.path.insert(0, "$src_dir")
+from $module import $func
+sys.exit($func())
+EOF
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$BIN_DIR/$cli"  # replaces an older symlink, never writes through it
+  echo "  $cli"
+done < <(python3 -I -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    scripts = tomllib.load(f)["project"]["scripts"]
+for cli, target in scripts.items():
+    module, func = target.split(":")
+    print(cli, module, func)
+' "$REPO_DIR/pyproject.toml")
 
-  if [[ -f "$main" ]]; then
-    ln -sfn "$main" "$BIN_DIR/$name"
-    echo "  $name"
-  fi
-
-  status="$widget_dir/status"
-  if [[ -f "$status" ]]; then
-    ln -sfn "$status" "$BIN_DIR/${name}-status"
-    echo "  ${name}-status"
-  fi
-
-  # Extra CLI entry points (e.g. display/brightness.py -> display-brightness)
-  for extra in "$widget_dir"/*.py; do
-    [[ -x "$extra" && "$(basename "$extra")" != "main.py" ]] || continue
-    cli="${name}-$(basename "$extra" .py)"
-    ln -sfn "$extra" "$BIN_DIR/$cli"
-    echo "  $cli"
-  done
+# The bash status scripts, as <widget>-status
+for status in "$src_dir"/gtk_widgets/widgets/*/status; do
+  name="$(basename "$(dirname "$status")")-status"
+  ln -sfn "$status" "$BIN_DIR/$name"
+  echo "  $name"
 done
 
 # Privileged helpers + polkit rules (requires sudo). Each rule authorises only

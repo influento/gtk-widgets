@@ -23,12 +23,9 @@ import termios
 import time
 import unittest
 
-ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-sys.path.insert(0, ROOT)
+from gtk_widgets.lib.wayland import Reader, string
+from gtk_widgets.widgets.launcher import selection
 
-from lib.wayland import Reader, string  # noqa: E402
-
-SELECTION = os.path.join(ROOT, "widgets", "launcher", "selection.py")
 TIMEOUT = 5  # seconds for any one wait
 MIB = 1 << 20
 
@@ -157,7 +154,7 @@ class Serve(unittest.TestCase):
         with open(path, "wb") as f:
             f.write(data)
         env = dict(os.environ, WAYLAND_DISPLAY=self.compositor.listener.getsockname())
-        cli = subprocess.Popen([sys.executable, SELECTION, f"{mime}={path}"], env=env)
+        cli = subprocess.Popen([sys.executable, "-m", selection.__name__, f"{mime}={path}"], env=env)
         self.compositor.take_selection()
         self.assertEqual(cli.wait(TIMEOUT), 0)
 

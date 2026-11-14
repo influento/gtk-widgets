@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tests for the launcher's dmenu row options and launcher-clipboard's sorting
-(widgets/launcher/options.py, clipboard.py). No GTK, no cliphist: entries
+(src/gtk_widgets/widgets/launcher/options.py, clipboard.py). No GTK, no cliphist: entries
 come from a fake listing, decode() from a dict, files from a temp dir.
 
-  python3 tests/launcher_clipboard_test.py
+  uv run pytest tests/launcher_clipboard_test.py
 """
 
 import os
@@ -12,10 +12,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "widgets", "launcher"))
-
-import clipboard  # noqa: E402
-import options  # noqa: E402
+from gtk_widgets.widgets.launcher import clipboard, options
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
 WEBP = b"RIFF\x24\0\0\0WEBPVP8 " + b"\x9d" * 24
