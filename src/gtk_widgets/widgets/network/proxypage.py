@@ -124,13 +124,13 @@ class ProxyRow(Gtk.Box):
         text, cls = check_line(res)
         failed = cls == "net-status-err"
         self.subtitle.set_text(text)
-        copyable(self.subtitle, failed, res["error"] if failed else None)
+        copyable(self.subtitle, on=failed, copy_text=res["error"] if failed else None)
         self.subtitle.set_tooltip_text(text + ("\nClick to copy" if failed else ""))
         self.subtitle.set_css_classes(["net-row-subtitle"] + ([cls] if cls else []))
         badge, bcls, tip = udp_badge(res)
         bad = bcls == "net-udp-bad"
         self.udp.set_text(badge)
-        copyable(self.udp, bad, res["udp_error"] if bad else None)
+        copyable(self.udp, on=bad, copy_text=res["udp_error"] if bad else None)
         self.udp.set_tooltip_text(tip and tip + ("\nClick to copy" if bad else ""))
         self.udp.set_css_classes(["net-row-subtitle"] + ([bcls] if bcls else []))
         self.check_btn.set_sensitive(res != "running")
@@ -473,7 +473,7 @@ class ProxyPage(Gtk.Box):
             + (["net-status-err"] if error else [])
             + (["net-status-ok"] if ok else [])
         )
-        copyable(self.msg, error)
+        copyable(self.msg, on=error)
 
     def changed(self):
         try:

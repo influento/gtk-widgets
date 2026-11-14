@@ -1066,7 +1066,7 @@ class NetworkPopup(WidgetPopup):
     def set_status(self, text, error=False, ok=False):
         self._status.set_text(text or "")
         self._status.set_visible(bool(text))
-        copyable(self._status, error)
+        copyable(self._status, on=error)
         for cls, on in (("net-status-err", error), ("net-status-ok", ok)):
             if on:
                 self._status.add_css_class(cls)

@@ -11,7 +11,7 @@ import gi
 # resolved by the dynamic loader, so this works on any distro library layout.
 if "LD_PRELOAD" not in os.environ:
     os.environ["LD_PRELOAD"] = "libgtk4-layer-shell.so.0"
-    os.execvp(sys.executable, [sys.executable, *sys.argv])  # noqa: S606  (this same command)
+    os.execvp(sys.executable, [sys.executable, *sys.argv])  # this same command
 
 gi.require_versions(
     {"Gdk": "4.0", "Gtk": "4.0", "Gtk4LayerShell": "1.0", "Pango": "1.0"}

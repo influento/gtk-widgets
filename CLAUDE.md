@@ -61,7 +61,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 - Close via Escape/q key or clicking outside the widget
 - Shared components live in `lib/ui/` beside the base class: `CopyLabel` (`lib/ui/copy_label.py`)
   is a label that copies its text (or a longer copy text) to the clipboard on click;
-  `copyable(label, on)` gives a plain label the same click-to-copy. Every error line
+  `copyable(label, on=...)` gives a plain label the same click-to-copy. Every error line
   shown in a widget is copyable (status labels switch it on only while showing an error).
   `popup_window()`/`show_popup()`/`install_css()` in `lib/ui/widget_base.py` build the same
   layer-shell overlay for long-running apps that open popups on demand (`network-agent`);

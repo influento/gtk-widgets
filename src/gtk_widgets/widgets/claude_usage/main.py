@@ -334,7 +334,7 @@ class ClaudeUsagePopup(WidgetPopup):
             self._status_label.remove_css_class(cls)
         if css_class:
             self._status_label.add_css_class(css_class)
-        copyable(self._status_label, css_class == "session-status-err")
+        copyable(self._status_label, on=css_class == "session-status-err")
 
 
 def main() -> int:

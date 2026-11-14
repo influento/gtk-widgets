@@ -10,7 +10,7 @@ FLASH_MS = 1000  # how long a clicked label reads "Copied"
 COPIED = "Copied to clipboard"
 
 
-def copy_to_clipboard(text):
+def copy_to_clipboard(text: str) -> bool:
     """Copy via wl-copy, which keeps serving the text after the popup exits.
     Returns False if wl-clipboard is missing."""
     try:
@@ -32,7 +32,7 @@ class CopyLabel(Gtk.Label):
     .copy-label-copied rule in the base CSS.
     """
 
-    def __init__(self, css_class=None):
+    def __init__(self, css_class: str | None = None) -> None:
         super().__init__(xalign=0, hexpand=True, halign=Gtk.Align.START)
         self.set_ellipsize(Pango.EllipsizeMode.END)
         if css_class:
@@ -44,7 +44,9 @@ class CopyLabel(Gtk.Label):
         click.connect("released", self._on_click)
         self.add_controller(click)
 
-    def set_content(self, text, copy_text=None, tooltip=None):
+    def set_content(
+        self, text: str, copy_text: str | None = None, tooltip: str | None = None
+    ) -> None:
         """Show `text`; a click copies `copy_text` (default: `text`).
         The tooltip (default: `text`) gets a "Click to copy" line."""
         self._text, self._copy = text, copy_text or text
@@ -52,7 +54,9 @@ class CopyLabel(Gtk.Label):
         if not self._flash_id:
             self.set_text(text)
 
-    def _on_click(self, *_):
+    def _on_click(
+        self, _gesture: Gtk.GestureClick, _n_press: int, _x: float, _y: float
+    ) -> None:
         if not self._copy or not copy_to_clipboard(self._copy):
             return
         self.set_text(COPIED)
@@ -61,14 +65,16 @@ class CopyLabel(Gtk.Label):
             GLib.source_remove(self._flash_id)
         self._flash_id = GLib.timeout_add(FLASH_MS, self._end_flash)
 
-    def _end_flash(self):
+    def _end_flash(self) -> bool:
         self._flash_id = 0
         self.remove_css_class("copy-label-copied")
         self.set_text(self._text)
         return GLib.SOURCE_REMOVE
 
 
-def copyable(label, on=True, copy_text=None):
+def copyable[L: Gtk.Label](
+    label: L, *, on: bool = True, copy_text: str | None = None
+) -> L:
     """Let a plain Gtk.Label (an error line) copy its text on click, or stop it.
 
     A click copies `copy_text` (default: the text shown) and flashes "Copied
@@ -77,27 +83,42 @@ def copyable(label, on=True, copy_text=None):
     again with on=False for other messages. Sets a "Click to copy" tooltip
     while on. Returns the label.
     """
-    copier = getattr(label, "_copier", None)
+    copier = _copier_of(label)
     if copier is None:
         if not on:
             return label
-        copier = label._copier = _Copier(label)
+        copier = _Copier(label)
+        label.add_controller(copier)
     copier.on, copier.copy_text = on, copy_text
     label.set_cursor_from_name("pointer" if on else None)
     label.set_tooltip_text("Click to copy" if on else None)
     return label
 
 
-class _Copier:
-    def __init__(self, label):
-        self.label = label
-        self.on, self.copy_text = False, None
-        self.text, self.size, self.flash_id = "", (-1, -1), 0
-        click = Gtk.GestureClick()
-        click.connect("released", self._on_click)
-        label.add_controller(click)
+def _copier_of(label: Gtk.Label) -> _Copier | None:
+    controllers = label.observe_controllers()
+    for i in range(controllers.get_n_items()):
+        ctrl = controllers.get_item(i)
+        if isinstance(ctrl, _Copier):
+            return ctrl
+    return None
 
-    def _on_click(self, *_):
+
+class _Copier(Gtk.GestureClick):
+    """The click controller copyable() adds to a label, found again among the
+    label's controllers on the next call."""
+
+    def __init__(self, label: Gtk.Label) -> None:
+        super().__init__()
+        self.label = label
+        self.on: bool = False
+        self.copy_text: str | None = None
+        self.text, self.size, self.flash_id = "", (-1, -1), 0
+        self.connect("released", self._on_click)
+
+    def _on_click(
+        self, _gesture: Gtk.GestureClick, _n_press: int, _x: float, _y: float
+    ) -> None:
         shown = self.label.get_text()
         if self.flash_id and shown == COPIED:
             shown = self.text
@@ -113,7 +134,7 @@ class _Copier:
         self.label.add_css_class("copy-label-copied")
         self.flash_id = GLib.timeout_add(FLASH_MS, self._end_flash)
 
-    def _end_flash(self):
+    def _end_flash(self) -> bool:
         self.flash_id = 0
         self.label.remove_css_class("copy-label-copied")
         self.label.set_size_request(*self.size)

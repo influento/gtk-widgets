@@ -9,54 +9,62 @@ then the arguments (strings and arrays are length-prefixed and padded to 4
 bytes); file descriptors travel beside them as SCM_RIGHTS.
 """
 
+import builtins
 import os
-import pathlib
 import socket
 import struct
+from collections.abc import Callable, Iterable
+from pathlib import Path
 
 
 class WaylandError(Exception):
     pass
 
 
-def pad(n):
+def pad(n: int) -> int:
     return (n + 3) & ~3
 
 
-def string(s):
+def string(s: str) -> bytes:
     raw = s.encode() + b"\0"
     return struct.pack("=I", len(raw)) + raw.ljust(pad(len(raw)), b"\0")
 
 
 class Reader:
     """The arguments of one event, read in order. fd() takes the next file
-    descriptor that came with the events."""
+    descriptor that came with the events. Its int() hides the builtin in the
+    class body, hence builtins.int there."""
 
-    def __init__(self, body, fds):
+    def __init__(self, body: bytes, fds: list[builtins.int]) -> None:
         self.body = body
         self.pos = 0
         self.fds = fds
 
-    def uint(self):
+    def uint(self) -> builtins.int:
+        v: builtins.int
         (v,) = struct.unpack_from("=I", self.body, self.pos)
         self.pos += 4
         return v
 
-    def int(self):
+    def int(self) -> builtins.int:
+        v: builtins.int
         (v,) = struct.unpack_from("=i", self.body, self.pos)
         self.pos += 4
         return v
 
-    def string(self):
+    def string(self) -> str:
         n = self.uint()
         raw = self.body[self.pos : self.pos + n]
         self.pos += pad(n)
         return raw.rstrip(b"\0").decode(errors="replace")
 
-    def fd(self):
+    def fd(self) -> builtins.int:
         if not self.fds:
             raise WaylandError("an event names a file descriptor that did not arrive")
         return self.fds.pop(0)
+
+
+type Handler = Callable[[int, Reader], None]  # (opcode, the event's arguments)
 
 
 class Connection:
@@ -64,47 +72,49 @@ class Connection:
 
     DISPLAY = 1
 
-    def __init__(self):
-        display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
-        if not pathlib.Path(display).is_absolute():
+    def __init__(self) -> None:
+        display = Path(os.environ.get("WAYLAND_DISPLAY", "wayland-0"))
+        if not display.is_absolute():
             runtime = os.environ.get("XDG_RUNTIME_DIR")
             if not runtime:
                 raise WaylandError("XDG_RUNTIME_DIR is not set")
-            display = os.path.join(runtime, display)
+            display = Path(runtime) / display
         self.sock = socket.socket(
             socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC
         )
         try:
-            self.sock.connect(display)
+            self.sock.connect(str(display))
         except OSError as e:
             self.sock.close()
             raise WaylandError(f"cannot connect to Wayland at {display}: {e}") from None
         self.next_id = 2
-        self.handlers = {self.DISPLAY: self._display_event}  # id -> fn(opcode, Reader)
+        self.handlers: dict[int, Handler] = {self.DISPLAY: self._display_event}
         self.buf = b""
-        self.fds = []  # received, not yet taken by an event
-        self.registry = None
+        self.fds: list[int] = []  # received, not yet taken by an event
+        self.registry: int | None = None
 
-    def close(self):
+    def close(self) -> None:
         for fd in self.fds:
             os.close(fd)
         self.fds = []
         self.sock.close()
 
-    def new_id(self, handler):
+    def new_id(self, handler: Handler) -> int:
         oid = self.next_id
         self.next_id += 1
         self.handlers[oid] = handler
         return oid
 
-    def send(self, oid, opcode, args=b"", fds=()):
+    def send(
+        self, oid: int, opcode: int, args: bytes = b"", fds: Iterable[int] = ()
+    ) -> None:
         msg = struct.pack("=II", oid, (8 + len(args)) << 16 | opcode) + args
         if fds:
             socket.send_fds(self.sock, [msg], list(fds))
         else:
             self.sock.sendall(msg)
 
-    def _display_event(self, opcode, r):
+    def _display_event(self, opcode: int, r: Reader) -> None:
         if opcode == 0:  # error(object, code, message)
             obj, code, message = r.uint(), r.uint(), r.string()
             raise WaylandError(
@@ -112,7 +122,7 @@ class Connection:
             )
         # 1: delete_id; ids are never reused here
 
-    def dispatch(self):
+    def dispatch(self) -> None:
         """Read once from the socket and handle every complete event."""
         chunk, fds, _flags, _addr = socket.recv_fds(self.sock, 65536, 16)
         if not chunk:
@@ -120,6 +130,8 @@ class Connection:
         self.fds += fds
         self.buf += chunk
         while len(self.buf) >= 8:
+            oid: int
+            word: int
             oid, word = struct.unpack_from("=II", self.buf)
             size = word >> 16
             if len(self.buf) < size:
@@ -129,26 +141,33 @@ class Connection:
             if handler is not None:
                 handler(word & 0xFFFF, Reader(body, self.fds))
 
-    def roundtrip(self):
-        done = []
-        cb = self.new_id(lambda op, r: done.append(True))
+    def roundtrip(self) -> None:
+        done: list[bool] = []
+
+        def on_done(_opcode: int, _r: Reader) -> None:
+            done.append(True)
+
+        cb = self.new_id(on_done)
         self.send(self.DISPLAY, 0, struct.pack("=I", cb))  # wl_display.sync
         while not done:
             self.dispatch()
 
-    def globals(self):
+    def globals(self) -> list[tuple[int, str, int]]:
         """[(name, interface, version)] the compositor announces."""
-        found = []
-        self.registry = self.new_id(
-            lambda op, r: (
-                found.append((r.uint(), r.string(), r.uint())) if op == 0 else None
-            )
-        )
+        found: list[tuple[int, str, int]] = []
+
+        def on_registry(opcode: int, r: Reader) -> None:
+            if opcode == 0:  # global(name, interface, version)
+                found.append((r.uint(), r.string(), r.uint()))
+
+        self.registry = self.new_id(on_registry)
         self.send(self.DISPLAY, 1, struct.pack("=I", self.registry))  # get_registry
         self.roundtrip()
         return found
 
-    def bind(self, name, interface, version, handler):
+    def bind(self, name: int, interface: str, version: int, handler: Handler) -> int:
+        if self.registry is None:
+            raise RuntimeError("bind() before globals(): no registry yet")
         oid = self.new_id(handler)
         self.send(
             self.registry,

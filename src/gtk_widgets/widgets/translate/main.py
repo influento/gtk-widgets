@@ -300,7 +300,7 @@ class EzpickPopup(WidgetPopup):
         action_names = ["translating...", "fixing...", "looking up..."]
         self._status.set_text(action_names[self._active_action])
         self._status.remove_css_class("translate-error")
-        copyable(self._status, False)
+        copyable(self._status, on=False)
         self._copy_btn.set_sensitive(False)
         self._result_text.set_text("")
 

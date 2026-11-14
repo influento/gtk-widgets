@@ -263,7 +263,7 @@ class BluetoothPopup(WidgetPopup):
         self._status.remove_css_class("bt-status-err")
         if css_class:
             self._status.add_css_class(css_class)
-        copyable(self._status, css_class == "bt-status-err")
+        copyable(self._status, on=css_class == "bt-status-err")
 
     def _on_power_toggle(self, _btn):
         action = "off" if is_powered() else "on"

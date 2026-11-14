@@ -1,8 +1,9 @@
 """Shared base class for GTK4 layer-shell popup widgets."""
 
-import os
-import pathlib
 import sys
+from collections.abc import Callable
+from pathlib import Path
+from typing import Literal, override
 
 from gi.repository import Gdk, GLib, Gtk, Gtk4LayerShell
 
@@ -88,24 +89,41 @@ tooltip {
 """
 
 
-def load_css(css_path):
+# What the Gtk stubs' vfuncs take for an orientation (their own alias is private)
+type Orientation = (
+    Gtk.Orientation
+    | Literal[
+        "GTK_ORIENTATION_HORIZONTAL",
+        "GTK_ORIENTATION_VERTICAL",
+        "horizontal",
+        "vertical",
+    ]
+)
+
+type KeyHandler = Callable[[Gtk.EventControllerKey, int, int, Gdk.ModifierType], bool]
+"""A "key-pressed" handler: (controller, keyval, keycode, state) -> handled."""
+
+
+def load_css(css_path: Path | str) -> str:
     """Read a CSS file and replace @@TOKEN@@ placeholders with theme colors."""
-    with pathlib.Path(css_path).open() as f:
-        return render_css(f.read())
+    return render_css(Path(css_path).read_text(encoding="utf-8"))
 
 
-def install_css(css):
+def install_css(css: str) -> None:
     """Apply rendered CSS to the default display at application priority."""
+    display = Gdk.Display.get_default()
+    if display is None:
+        raise RuntimeError("no display: GTK could not connect to Wayland")
     provider = Gtk.CssProvider()
     provider.load_from_string(css)
     Gtk.StyleContext.add_provider_for_display(
-        Gdk.Display.get_default(),
+        display,
         provider,
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
     )
 
 
-def pass_wheel(widget):
+def pass_wheel(widget: Gtk.Widget) -> None:
     """Leave the mouse wheel to the enclosing scrolled list: a slider or spin
     button in a list otherwise takes it wherever the pointer lands, and the
     list stops scrolling."""
@@ -123,7 +141,7 @@ class VScroller(Gtk.ScrolledWindow):
     width, so a popup sized to its content lost its right edge to the
     scrollbar, and the rows ran under it."""
 
-    def __init__(self, max_height, child=None):
+    def __init__(self, max_height: int, child: Gtk.Widget | None = None) -> None:
         super().__init__(
             hscrollbar_policy=Gtk.PolicyType.NEVER,
             propagate_natural_height=True,
@@ -132,7 +150,10 @@ class VScroller(Gtk.ScrolledWindow):
         if child is not None:
             self.set_child(child)
 
-    def do_measure(self, orientation, for_size):
+    @override
+    def do_measure(
+        self, orientation: Orientation, for_size: int
+    ) -> tuple[int, int, int, int]:
         mn, nat, _, _ = Gtk.ScrolledWindow.do_measure(self, orientation, for_size)
         child = self.get_child()
         if (
@@ -146,21 +167,29 @@ class VScroller(Gtk.ScrolledWindow):
         return mn, nat, -1, -1
 
 
-def popup_window(app, on_dismiss, on_key):
+def popup_window(
+    app: Gtk.Application, on_dismiss: Callable[[], None], on_key: KeyHandler
+) -> tuple[Gtk.ApplicationWindow, Gtk.Overlay]:
     """Fullscreen transparent layer-shell overlay with exclusive keyboard.
     A click on the backdrop calls on_dismiss(); key presses go to on_key.
     Returns (window, overlay); add the popup container with show_popup()."""
     # Classic scrollbars take their own space beside the content; overlay ones
     # are drawn over the right edge of every row (the gap is in BASE_CSS)
-    Gtk.Settings.get_default().set_property("gtk-overlay-scrolling", False)
+    settings = Gtk.Settings.get_default()
+    if settings is None:
+        raise RuntimeError("no display: GTK could not connect to Wayland")
+    settings.props.gtk_overlay_scrolling = False
     win = Gtk.ApplicationWindow(application=app, title=app.get_application_id())
 
     Gtk4LayerShell.init_for_window(win)
     Gtk4LayerShell.set_layer(win, Gtk4LayerShell.Layer.OVERLAY)
-    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.TOP, True)
-    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.BOTTOM, True)
-    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.LEFT, True)
-    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.RIGHT, True)
+    for edge in (
+        Gtk4LayerShell.Edge.TOP,
+        Gtk4LayerShell.Edge.BOTTOM,
+        Gtk4LayerShell.Edge.LEFT,
+        Gtk4LayerShell.Edge.RIGHT,
+    ):
+        Gtk4LayerShell.set_anchor(win, edge, anchor_to_edge=True)
     Gtk4LayerShell.set_keyboard_mode(win, Gtk4LayerShell.KeyboardMode.EXCLUSIVE)
 
     overlay = Gtk.Overlay()
@@ -178,7 +207,9 @@ def popup_window(app, on_dismiss, on_key):
     return win, overlay
 
 
-def place_popup(win, overlay, container, margin_top):
+def place_popup(
+    win: Gtk.Window, overlay: Gtk.Overlay, container: Gtk.Widget, margin_top: int
+) -> None:
     """Place the .popup container top-centre on the overlay, not yet shown
     (a resident app builds its window once and presents it on demand)."""
     container.add_css_class("popup")
@@ -189,7 +220,9 @@ def place_popup(win, overlay, container, margin_top):
     win.set_child(overlay)
 
 
-def show_popup(win, overlay, container, margin_top):
+def show_popup(
+    win: Gtk.Window, overlay: Gtk.Overlay, container: Gtk.Widget, margin_top: int
+) -> None:
     """Place the .popup container top-centre on the overlay and present."""
     place_popup(win, overlay, container, margin_top)
     win.present()
@@ -207,22 +240,23 @@ class WidgetPopup(Gtk.Application):
     SHOW_ON_BUILD = True
     SHOW_TIMEOUT_MS = 1000  # show anyway if show_ui() has not come by then
 
-    def __init__(self, application_id):
+    def __init__(self, application_id: str) -> None:
         super().__init__(application_id=application_id)
-        self._unshown = None
+        self._unshown: tuple[Gtk.ApplicationWindow, Gtk.Overlay, Gtk.Widget] | None = (
+            None
+        )
 
-    def _widget_css(self):
+    def _widget_css(self) -> str:
         """Rendered CSS for this widget: CSS if set, else style.css beside the subclass's module."""
         if self.CSS:
             return self.CSS
         module = sys.modules.get(type(self).__module__)
-        module_file = getattr(module, "__file__", None) or sys.argv[0]
-        css_path = os.path.join(
-            os.path.dirname(os.path.realpath(module_file)), "style.css"
-        )
-        return load_css(css_path) if pathlib.Path(css_path).exists() else ""
+        module_file = (module.__file__ if module else None) or sys.argv[0]
+        css_path = Path(module_file).resolve().parent / "style.css"
+        return load_css(css_path) if css_path.exists() else ""
 
-    def do_activate(self):
+    @override
+    def do_activate(self) -> None:
         if self.get_windows():
             return  # re-activated by a second launch; the popup is already up
         install_css(render_css(BASE_CSS) + self._widget_css())
@@ -233,7 +267,7 @@ class WidgetPopup(Gtk.Application):
         else:
             GLib.timeout_add(self.SHOW_TIMEOUT_MS, self.show_ui)
 
-    def show_ui(self):
+    def show_ui(self) -> bool:
         """Present the popup built by build_ui(); later calls do nothing."""
         if self._unshown is not None:
             win, overlay, container = self._unshown
@@ -241,11 +275,17 @@ class WidgetPopup(Gtk.Application):
             show_popup(win, overlay, container, self.MARGIN_TOP)
         return GLib.SOURCE_REMOVE
 
-    def build_ui(self):
+    def build_ui(self) -> Gtk.Widget:
         """Override to build widget content. Must return the container widget."""
         raise NotImplementedError
 
-    def _on_key(self, controller, keyval, keycode, state):
+    def _on_key(
+        self,
+        _controller: Gtk.EventControllerKey,
+        keyval: int,
+        _keycode: int,
+        _state: Gdk.ModifierType,
+    ) -> bool:
         if keyval in (Gdk.KEY_Escape, Gdk.KEY_q):
             self.quit()
             return True

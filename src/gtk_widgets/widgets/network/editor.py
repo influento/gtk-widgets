@@ -1609,7 +1609,7 @@ class EditPage(Gtk.Box):
             + (["net-status-err"] if error else [])
             + (["net-status-ok"] if ok else [])
         )
-        copyable(self.msg, error)
+        copyable(self.msg, on=error)
 
     @staticmethod
     def _peer_keys(conn):
@@ -1738,7 +1738,7 @@ class EditPage(Gtk.Box):
         dev, name = devs[0], remote.get_id()
         self.reconnect_btn.set_visible(False)
         self.apply_msg.set_text(f"Reconnecting {name}…")
-        copyable(self.apply_msg, False)
+        copyable(self.apply_msg, on=False)
 
         def reconnected(c, res):
             try:
