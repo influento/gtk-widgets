@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Power menu popup — lock, sleep, reboot, shut down."""
 
-import os
 import subprocess
+from pathlib import Path
+from typing import override
 
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
 
-ACTIONS = [
-    ("󰌾", "Lock", "color-blue", [os.path.expanduser("~/.local/bin/lock")]),
+# (icon, label, CSS colour class, command)
+ACTIONS: list[tuple[str, str, str, list[str]]] = [
+    ("󰌾", "Lock", "color-blue", [str(Path.home() / ".local/bin/lock")]),
     ("󰤄", "Sleep", "color-mauve", ["systemctl", "suspend"]),
     ("󰜉", "Reboot", "color-peach", ["systemctl", "reboot"]),
     ("󰐥", "Shut Down", "color-red", ["systemctl", "poweroff"]),
@@ -15,10 +17,11 @@ ACTIONS = [
 
 
 class PowerPopup(WidgetPopup):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(application_id="dev.dotfiles.power")
 
-    def build_ui(self):
+    @override
+    def build_ui(self) -> Gtk.Widget:
         container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         container.add_css_class("power-container")
 
@@ -44,7 +47,7 @@ class PowerPopup(WidgetPopup):
 
         return container
 
-    def _on_action(self, button, cmd):
+    def _on_action(self, _button: Gtk.Button, cmd: list[str]) -> None:
         self.quit()
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
