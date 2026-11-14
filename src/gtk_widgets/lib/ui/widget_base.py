@@ -237,7 +237,7 @@ class WidgetPopup(Gtk.Application):
     MARGIN_TOP = 40
     # False: build_ui() data arrives asynchronously and the widget calls
     # show_ui() once it is in, so the popup opens at its final size
-    SHOW_ON_BUILD = True
+    SHOW_ON_BUILD: bool = True
     SHOW_TIMEOUT_MS = 1000  # show anyway if show_ui() has not come by then
 
     def __init__(self, application_id: str) -> None:

@@ -1,6 +1,7 @@
 """Small GTK helpers shared by the network popup (main.py) and its editor page."""
 
 from collections.abc import Callable
+from typing import Protocol
 
 from gi.repository import GLib, Pango
 
@@ -105,8 +106,12 @@ def entry(
     return ent
 
 
+class OnToggle(Protocol):
+    def __call__(self, *, on: bool) -> None: ...
+
+
 class NetSwitch(Gtk.Switch):
-    """Gtk.Switch that reports user flips via on_toggle(active) and is
+    """Gtk.Switch that reports user flips via on_toggle(on=active) and is
     otherwise moved by set_(active=NM's value). A flip shows at once; on_toggle sends
     a request and calls done(ok=...) when it returns. set_() leaves the last
     flip until every request has returned and NM reports the flipped value
@@ -114,7 +119,7 @@ class NetSwitch(Gtk.Switch):
     last request failed, or for SWITCH_PENDING_S; set_() returns the value
     shown."""
 
-    def __init__(self, on_toggle: Callable[[bool], None]) -> None:
+    def __init__(self, on_toggle: OnToggle) -> None:
         super().__init__(valign=Gtk.Align.CENTER)
         self.add_css_class("net-switch")
         self._on_toggle = on_toggle
@@ -127,7 +132,7 @@ class NetSwitch(Gtk.Switch):
         active = bool(state)  # a gboolean
         self._want, self._since = active, GLib.get_monotonic_time()
         self._busy += 1
-        self._on_toggle(active)
+        self._on_toggle(on=active)
         return False  # show the flip now; syncs before NM catches up keep it
 
     def set_(self, *, active: bool) -> bool:
@@ -149,7 +154,7 @@ class NetSwitch(Gtk.Switch):
             self._want = None  # follow NM again
 
 
-def switch(on_toggle: Callable[[bool], None]) -> NetSwitch:
+def switch(on_toggle: OnToggle) -> NetSwitch:
     return NetSwitch(on_toggle)
 
 
