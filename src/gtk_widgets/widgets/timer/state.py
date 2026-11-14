@@ -7,6 +7,7 @@ Both the popup and the status script read/write this file.
 import fcntl
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import time
@@ -34,18 +35,18 @@ DEFAULT_STATE = {
 
 def load():
     try:
-        with open(STATE_PATH) as f:
+        with pathlib.Path(STATE_PATH).open() as f:
             data = json.load(f)
         return {**DEFAULT_STATE, **data}
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return dict(DEFAULT_STATE)
 
 
 def save(state):
     tmp = f"{STATE_PATH}.tmp"
-    with open(tmp, "w") as f:
+    with pathlib.Path(tmp).open("w") as f:
         json.dump(state, f)
-    os.replace(tmp, STATE_PATH)
+    pathlib.Path(tmp).replace(STATE_PATH)
 
 
 def elapsed(state, now=None):
@@ -131,7 +132,7 @@ def set_duration(state, seconds):
 
 @contextmanager
 def _locked():
-    with open(LOCK_PATH, "w") as lock:
+    with pathlib.Path(LOCK_PATH).open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
@@ -141,13 +142,15 @@ def fire_alarm():
     if shutil.which("notify-send"):
         subprocess.Popen(
             ["notify-send", "-u", "critical", "-a", "Timer", "Timer", "Time's up!"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    sound = next((p for p in SOUND_CANDIDATES if os.path.exists(p)), None)
+    sound = next((p for p in SOUND_CANDIDATES if pathlib.Path(p).exists()), None)
     if sound and shutil.which("paplay"):
         subprocess.Popen(
             ["paplay", sound],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
 

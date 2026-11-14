@@ -1,11 +1,12 @@
 """Shared base class for GTK4 layer-shell popup widgets."""
 
 import os
+import pathlib
 import sys
 
 from gi.repository import Gdk, GLib, Gtk, Gtk4LayerShell
 
-from gtk_widgets.lib.theme import render_css  # noqa: F401  (re-exported for the widgets)
+from gtk_widgets.lib.theme import render_css
 
 BASE_CSS = """
 window {
@@ -89,7 +90,7 @@ tooltip {
 
 def load_css(css_path):
     """Read a CSS file and replace @@TOKEN@@ placeholders with theme colors."""
-    with open(css_path) as f:
+    with pathlib.Path(css_path).open() as f:
         return render_css(f.read())
 
 
@@ -123,16 +124,23 @@ class VScroller(Gtk.ScrolledWindow):
     scrollbar, and the rows ran under it."""
 
     def __init__(self, max_height, child=None):
-        super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                         propagate_natural_height=True, max_content_height=max_height)
+        super().__init__(
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            propagate_natural_height=True,
+            max_content_height=max_height,
+        )
         if child is not None:
             self.set_child(child)
 
     def do_measure(self, orientation, for_size):
         mn, nat, _, _ = Gtk.ScrolledWindow.do_measure(self, orientation, for_size)
         child = self.get_child()
-        if (orientation == Gtk.Orientation.HORIZONTAL and child is not None
-                and child.measure(Gtk.Orientation.VERTICAL, -1)[1] > self.get_max_content_height()):
+        if (
+            orientation == Gtk.Orientation.HORIZONTAL
+            and child is not None
+            and child.measure(Gtk.Orientation.VERTICAL, -1)[1]
+            > self.get_max_content_height()
+        ):
             bar = self.get_vscrollbar().measure(Gtk.Orientation.HORIZONTAL, -1)[1]
             mn, nat = mn + bar, nat + bar
         return mn, nat, -1, -1
@@ -190,7 +198,9 @@ def show_popup(win, overlay, container, margin_top):
 class WidgetPopup(Gtk.Application):
     """Base GTK4 popup with layer-shell overlay, backdrop dismiss, and Esc/q close."""
 
-    CSS = ""  # optional override; by default style.css beside the subclass module is used
+    CSS = (
+        ""  # optional override; by default style.css beside the subclass module is used
+    )
     MARGIN_TOP = 40
     # False: build_ui() data arrives asynchronously and the widget calls
     # show_ui() once it is in, so the popup opens at its final size
@@ -207,8 +217,10 @@ class WidgetPopup(Gtk.Application):
             return self.CSS
         module = sys.modules.get(type(self).__module__)
         module_file = getattr(module, "__file__", None) or sys.argv[0]
-        css_path = os.path.join(os.path.dirname(os.path.realpath(module_file)), "style.css")
-        return load_css(css_path) if os.path.exists(css_path) else ""
+        css_path = os.path.join(
+            os.path.dirname(os.path.realpath(module_file)), "style.css"
+        )
+        return load_css(css_path) if pathlib.Path(css_path).exists() else ""
 
     def do_activate(self):
         if self.get_windows():

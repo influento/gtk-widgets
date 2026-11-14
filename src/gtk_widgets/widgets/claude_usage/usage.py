@@ -1,7 +1,7 @@
 """Formatting shared by the claude-usage popup and its status script."""
 
 import calendar
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 
 def _parse_iso(iso_str):
@@ -10,7 +10,7 @@ def _parse_iso(iso_str):
 
 def format_reset_relative(iso_str):
     """Reset time as a relative duration: '1d 2h', '2h 5m', '5m', or 'now'."""
-    delta = _parse_iso(iso_str) - datetime.now(timezone.utc)
+    delta = _parse_iso(iso_str) - datetime.now(UTC)
     total_minutes = int(delta.total_seconds() / 60)
     if total_minutes < 0:
         return "now"
@@ -30,7 +30,7 @@ def format_reset_absolute(iso_str):
 
 def reset_in_future(iso_str):
     """True if a reset timestamp is present and still ahead of now."""
-    return bool(iso_str) and _parse_iso(iso_str) > datetime.now(timezone.utc)
+    return bool(iso_str) and _parse_iso(iso_str) > datetime.now(UTC)
 
 
 def describe_reset(iso_str):
@@ -43,8 +43,8 @@ def describe_reset(iso_str):
 
 def format_date_relative(date_str):
     """A YYYY-MM-DD date (taken as UTC midnight) as a relative duration."""
-    target = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    delta = target - datetime.now(timezone.utc)
+    target = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
+    delta = target - datetime.now(UTC)
     total_hours = int(delta.total_seconds() / 3600)
     if total_hours < 0:
         return "now"

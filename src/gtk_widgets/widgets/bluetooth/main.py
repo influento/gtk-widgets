@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Bluetooth popup — GTK4 widget for managing Bluetooth devices."""
 
-import os, shutil, subprocess, threading
+import os
+import pathlib
+import shutil
+import subprocess
+import threading
+
+from gi.repository import GLib
 
 from gtk_widgets.lib.ui.copy_label import CopyLabel, copyable
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
-
-from gi.repository import GLib
 
 ICON_MAP = {
     "audio-headset": "󰋋",
@@ -29,11 +33,13 @@ def bt_run(*args, timeout=5, input_text=None):
     try:
         result = subprocess.run(
             ["bluetoothctl", *args],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
             input=input_text,
         )
         return result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except subprocess.TimeoutExpired, FileNotFoundError:
         return ""
 
 
@@ -49,7 +55,7 @@ def adapter_status():
 
 def is_kernel_stale():
     running = os.uname().release
-    return not os.path.isdir(f"/lib/modules/{running}")
+    return not pathlib.Path(f"/lib/modules/{running}").is_dir()
 
 
 def is_powered():
@@ -97,8 +103,11 @@ def get_discovered():
 
 
 def refresh_waybar():
-    subprocess.Popen(["pkill", "-RTMIN+10", "waybar"],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(
+        ["pkill", "-RTMIN+10", "waybar"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 class BluetoothPopup(WidgetPopup):
@@ -136,8 +145,11 @@ class BluetoothPopup(WidgetPopup):
             icon = Gtk.Label(label="󰂲")
             icon.add_css_class("bt-error-icon")
             error_box.append(icon)
-            msg = Gtk.Label(label="bluetoothctl not installed" if status == "missing"
-                            else "No controller available")
+            msg = Gtk.Label(
+                label="bluetoothctl not installed"
+                if status == "missing"
+                else "No controller available"
+            )
             msg.add_css_class("bt-error-msg")
             copyable(msg)
             error_box.append(msg)
@@ -182,7 +194,11 @@ class BluetoothPopup(WidgetPopup):
         if paired_only:
             self._add_section("Paired")
             for mac, name in paired_only:
-                self._add_device_row(mac, name, [("Connect", self._on_connect), ("Remove", self._on_remove)])
+                self._add_device_row(
+                    mac,
+                    name,
+                    [("Connect", self._on_connect), ("Remove", self._on_remove)],
+                )
 
         # Separator + scan button
         sep = Gtk.Separator()
@@ -211,7 +227,7 @@ class BluetoothPopup(WidgetPopup):
         self._container.append(section)
 
     def _add_device_row(self, mac, name, actions, parent=None):
-        target = parent if parent else self._container
+        target = parent or self._container
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         row.add_css_class("bt-device-row")
 
@@ -257,43 +273,55 @@ class BluetoothPopup(WidgetPopup):
 
     def _on_disconnect(self, mac):
         self._set_status("Disconnecting...")
+
         def task():
             bt_run("disconnect", mac)
             GLib.idle_add(self._after_action, "Disconnected", "bt-status-ok")
+
         threading.Thread(target=task, daemon=True).start()
 
     def _on_remove(self, mac):
         self._set_status("Removing...")
+
         def task():
             bt_run("disconnect", mac)
             bt_run("untrust", mac)
             bt_run("remove", mac)
             GLib.idle_add(self._after_action, "Removed", "bt-status-ok")
+
         threading.Thread(target=task, daemon=True).start()
 
     def _on_connect(self, mac):
         self._set_status("Connecting...")
+
         def task():
             result = bt_run("connect", mac, timeout=10)
             if "Connection successful" in result:
                 GLib.idle_add(self._after_action, "Connected", "bt-status-ok")
             else:
                 GLib.idle_add(self._after_action, "Connection failed", "bt-status-err")
+
         threading.Thread(target=task, daemon=True).start()
 
     def _on_pair(self, mac):
         self._set_status("Pairing...")
+
         def task():
             result = bt_run("pair", mac, timeout=15, input_text="yes\n")
             if "Pairing successful" in result or "AlreadyExists" in result:
                 bt_run("trust", mac)
                 connect_result = bt_run("connect", mac, timeout=10)
                 if "Connection successful" in connect_result:
-                    GLib.idle_add(self._after_action, "Paired and connected", "bt-status-ok")
+                    GLib.idle_add(
+                        self._after_action, "Paired and connected", "bt-status-ok"
+                    )
                 else:
-                    GLib.idle_add(self._after_action, "Paired (connect failed)", "bt-status-err")
+                    GLib.idle_add(
+                        self._after_action, "Paired (connect failed)", "bt-status-err"
+                    )
             else:
                 GLib.idle_add(self._after_action, "Pairing failed", "bt-status-err")
+
         threading.Thread(target=task, daemon=True).start()
 
     def _after_action(self, msg, css_class):
@@ -310,13 +338,17 @@ class BluetoothPopup(WidgetPopup):
             try:
                 self._scan_process = subprocess.Popen(
                     ["bluetoothctl", "--timeout", "10", "scan", "on"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
                 self._scan_process.wait()
             except FileNotFoundError:
-                GLib.idle_add(self._set_status, "bluetoothctl not found", "bt-status-err")
+                GLib.idle_add(
+                    self._set_status, "bluetoothctl not found", "bt-status-err"
+                )
             finally:
                 GLib.idle_add(self._stop_scan)
+
         threading.Thread(target=scan_task, daemon=True).start()
 
         self._scan_timeout = GLib.timeout_add(2000, self._refresh_nearby)
@@ -332,7 +364,9 @@ class BluetoothPopup(WidgetPopup):
             section.set_halign(Gtk.Align.START)
             self._nearby_box.append(section)
             for mac, name in nearby:
-                self._add_device_row(mac, name, [("Pair", self._on_pair)], parent=self._nearby_box)
+                self._add_device_row(
+                    mac, name, [("Pair", self._on_pair)], parent=self._nearby_box
+                )
         return GLib.SOURCE_CONTINUE
 
     def _stop_scan(self):

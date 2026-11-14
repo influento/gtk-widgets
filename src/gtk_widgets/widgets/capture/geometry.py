@@ -32,7 +32,9 @@ def selection(start, end, scale, surface_size, buffer_size):
     rect = []
     for axis in (0, 1):
         # The pixel under the last logical position before the edge
-        last = min(math.ceil(surface_size[axis] * scale - _EPS) - 1, buffer_size[axis] - 1)
+        last = min(
+            math.ceil(surface_size[axis] * scale - _EPS) - 1, buffer_size[axis] - 1
+        )
         a = min(max(pixel_at(start[axis], scale), 0), last)
         b = min(max(pixel_at(end[axis], scale), 0), last)
         rect.append((min(a, b), abs(a - b) + 1))

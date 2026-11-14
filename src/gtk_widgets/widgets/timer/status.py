@@ -8,13 +8,13 @@ Idempotent: the `fired` flag in the state file prevents repeat alarms.
 
 import json
 
-
 from gtk_widgets.widgets.timer import state as ts
 
 ICON_IDLE = ""  # nf-fa-clock_o
 ICON_RUNNING = ""  # nf-fa-hourglass_half
 ICON_PAUSED = ""  # nf-fa-pause
 ICON_DONE = ""  # nf-fa-bell
+
 
 def main():
     state = ts.load()
@@ -30,11 +30,13 @@ def main():
     cls = "running" if state["running"] else "paused"
     tooltip = f"{state['mode'].capitalize()} ({cls})"
 
-    if state["mode"] == "timer" and ts.remaining(state) == 0.0 and state["duration"] > 0:
+    if (
+        state["mode"] == "timer"
+        and ts.remaining(state) == 0.0
+        and state["duration"] > 0
+    ):
         text = f"{ICON_DONE}  00:00:00"
         cls = "alarm"
         tooltip = "Timer finished"
 
     print(json.dumps({"text": text, "class": cls, "tooltip": tooltip}))
-
-

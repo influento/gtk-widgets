@@ -13,6 +13,7 @@ an unparsable one) and cancelled events. Every wait is bounded and only fails th
 
 import fcntl
 import os
+import pathlib
 import select
 import socket
 import struct
@@ -75,10 +76,15 @@ class FakeCompositor:
             self.syncs += 1
         elif oid == 1 and opcode == 1:  # wl_display.get_registry(registry)
             self.registry = r.uint()
-            for name, interface in ((self.MANAGER, "ext_data_control_manager_v1"),
-                                    (self.SEAT, "wl_seat")):
-                self.event(self.registry, 0,
-                           struct.pack("=I", name) + string(interface) + struct.pack("=I", 1))
+            for name, interface in (
+                (self.MANAGER, "ext_data_control_manager_v1"),
+                (self.SEAT, "wl_seat"),
+            ):
+                self.event(
+                    self.registry,
+                    0,
+                    struct.pack("=I", name) + string(interface) + struct.pack("=I", 1),
+                )
         elif oid == self.registry and opcode == 0:  # bind(name, interface, version, id)
             name = r.uint()
             r.string()
@@ -89,7 +95,9 @@ class FakeCompositor:
                 self.source = r.uint()
             elif opcode == 1:  # get_data_device(id, seat)
                 self.device = r.uint()
-        elif oid == self.device and self.device is not None and opcode == 0:  # set_selection
+        elif (
+            oid == self.device and self.device is not None and opcode == 0
+        ):  # set_selection
             self.selected = r.uint()
 
     def _read(self, deadline):
@@ -112,7 +120,9 @@ class FakeCompositor:
         deadline = time.monotonic() + TIMEOUT
         wait_readable(self.listener, deadline, "the client to connect")
         self.conn, _ = self.listener.accept()
-        while not (self.source is not None and self.selected == self.source and self.syncs >= 2):
+        while not (
+            self.source is not None and self.selected == self.source and self.syncs >= 2
+        ):
             if not self._read(deadline):
                 raise AssertionError("the client closed before setting the selection")
 
@@ -151,10 +161,12 @@ class Serve(unittest.TestCase):
     def offer(self, mime, data):
         """Run the CLI with one form; returns once its child serves it."""
         path = os.path.join(self.tmp.name, "form")
-        with open(path, "wb") as f:
+        with pathlib.Path(path).open("wb") as f:
             f.write(data)
         env = dict(os.environ, WAYLAND_DISPLAY=self.compositor.listener.getsockname())
-        cli = subprocess.Popen([sys.executable, "-m", selection.__name__, f"{mime}={path}"], env=env)
+        cli = subprocess.Popen(
+            [sys.executable, "-m", selection.__name__, f"{mime}={path}"], env=env
+        )
         self.compositor.take_selection()
         self.assertEqual(cli.wait(TIMEOUT), 0)
 
@@ -222,9 +234,15 @@ class Serve(unittest.TestCase):
         # a paste request and, in the same read, a send with no arguments
         # (unparsable); in separate reads the drain would race the exit
         source, args = self.compositor.source, string("image/png")
-        socket.send_fds(self.compositor.conn,
-                        [struct.pack("=II", source, (8 + len(args)) << 16 | 0) + args
-                         + struct.pack("=II", source, 8 << 16 | 0)], [w])
+        socket.send_fds(
+            self.compositor.conn,
+            [
+                struct.pack("=II", source, (8 + len(args)) << 16 | 0)
+                + args
+                + struct.pack("=II", source, 8 << 16 | 0)
+            ],
+            [w],
+        )
         os.close(w)
         self.compositor.wait_eof()
         got = drain(r)

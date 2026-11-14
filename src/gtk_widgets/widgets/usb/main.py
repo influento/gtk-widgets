@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """USB device manager popup — list, mount, format, write ISO."""
 
-import json, os, re, subprocess, threading
+import json
+import os
+import pathlib
+import re
+import subprocess
+import threading
 
-from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
+from gi.repository import Gio, GLib, Pango
+
 from gtk_widgets.lib.ui.copy_label import CopyLabel, copyable
-
-from gi.repository import GLib, Gio, Pango
+from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
 
 FS_TYPES = ["exfat", "vfat", "ext4", "ntfs"]
-_LABEL_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+_LABEL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 HELPER = "/usr/lib/gtk-widgets/usb-helper"
 # Partition-table types macOS/Windows need to open each filesystem (mirrors
 # usb-helper's fix-type). Linux ignores them, so a wrong one only shows elsewhere.
-_MBR_OK = {"vfat": {0x6, 0xb, 0xc, 0xe}, "exfat": {0x7}, "ntfs": {0x7}}
+_MBR_OK = {"vfat": {0x6, 0xB, 0xC, 0xE}, "exfat": {0x7}, "ntfs": {0x7}}
 _GPT_BASIC_DATA = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
-_BUSY_DIR = os.path.join(
-    os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "gtk-widgets-usb")
+_BUSY_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "gtk-widgets-usb")
 
 
 # --- State persistence ---
+
 
 def _busy_path(dev_name):
     return os.path.join(_BUSY_DIR, dev_name)
@@ -28,24 +33,24 @@ def _busy_path(dev_name):
 def _read_sectors(dev_name):
     """Read cumulative sectors written from sysfs."""
     try:
-        with open(f"/sys/block/{dev_name}/stat") as f:
+        with pathlib.Path(f"/sys/block/{dev_name}/stat").open() as f:
             return int(f.read().split()[6])
-    except (FileNotFoundError, IndexError, ValueError):
+    except FileNotFoundError, IndexError, ValueError:
         return 0
 
 
 def _save_busy(dev_name, text, total=0):
-    os.makedirs(_BUSY_DIR, exist_ok=True)
+    pathlib.Path(_BUSY_DIR).mkdir(exist_ok=True, parents=True)
     data = {"text": text, "total": total}
     if total:
         data["start_sectors"] = _read_sectors(dev_name)
-    with open(_busy_path(dev_name), "w") as f:
+    with pathlib.Path(_busy_path(dev_name)).open("w") as f:
         json.dump(data, f)
 
 
 def _clear_busy(dev_name):
     try:
-        os.remove(_busy_path(dev_name))
+        pathlib.Path(_busy_path(dev_name)).unlink()
     except FileNotFoundError:
         pass
 
@@ -58,8 +63,9 @@ def _is_device_busy(dev_name):
     # unrelated paths such as `vim ~/dev/sdb.txt`, falsely marking it busy.
     pattern = rf"(^|[[:space:]=])/dev/{dev_name}([0-9]+)?([[:space:]]|$)"
     try:
-        result = subprocess.run(["pgrep", "-f", pattern],
-                                capture_output=True, text=True)
+        result = subprocess.run(
+            ["pgrep", "-f", pattern], capture_output=True, text=True
+        )
         return result.returncode == 0
     except Exception:
         return False
@@ -68,9 +74,9 @@ def _is_device_busy(dev_name):
 def _load_busy(dev_name):
     """Return (text, total, start_sectors) or (None, 0, 0)."""
     try:
-        with open(_busy_path(dev_name)) as f:
+        with pathlib.Path(_busy_path(dev_name)).open() as f:
             data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return None, 0, 0
     if not _is_device_busy(dev_name):
         _clear_busy(dev_name)
@@ -94,18 +100,27 @@ def _get_progress_text(dev_name, total, start_sectors):
 
 # --- Device helpers ---
 
+
 def lsblk():
     try:
         result = subprocess.run(
-            ["lsblk", "-J", "-o",
-             "NAME,SIZE,TYPE,MOUNTPOINT,RM,TRAN,VENDOR,MODEL,FSTYPE,LABEL,PARTTYPE,PTTYPE"],
-            capture_output=True, text=True,
+            [
+                "lsblk",
+                "-J",
+                "-o",
+                "NAME,SIZE,TYPE,MOUNTPOINT,RM,TRAN,VENDOR,MODEL,FSTYPE,LABEL,PARTTYPE,PTTYPE",
+            ],
+            capture_output=True,
+            text=True,
         )
         data = json.loads(result.stdout)
     except Exception:
         return []
-    return [d for d in data.get("blockdevices", [])
-            if d.get("tran") == "usb" and d.get("rm")]
+    return [
+        d
+        for d in data.get("blockdevices", [])
+        if d.get("tran") == "usb" and d.get("rm")
+    ]
 
 
 def wrong_type(part):
@@ -123,6 +138,7 @@ def wrong_type(part):
 
 # --- Operations (privileged steps run via the root-owned usb-helper, never a
 #     shell; the helper re-validates the target is a removable USB disk) ---
+
 
 def format_device(dev_name, fstype, label=None):
     if fstype not in FS_TYPES:
@@ -147,8 +163,11 @@ def mount_toggle(dev_name, mount):
 
 
 def fix_type(dev_name):
-    result = subprocess.run(["pkexec", HELPER, "fix-type", f"/dev/{dev_name}"],
-                            capture_output=True, text=True)
+    result = subprocess.run(
+        ["pkexec", HELPER, "fix-type", f"/dev/{dev_name}"],
+        capture_output=True,
+        text=True,
+    )
     if result.returncode == 0:
         return True, "Done"
     return False, result.stderr.strip() or "Fix failed"
@@ -158,13 +177,15 @@ def write_iso(iso_path, dev_name):
     # Open the image as the unprivileged user and stream it to the helper's
     # stdin, so root never opens an arbitrary path.
     try:
-        iso = open(iso_path, "rb")
+        iso = pathlib.Path(iso_path).open("rb")
     except OSError as e:
         return False, f"Cannot read ISO: {e}"
     with iso:
         result = subprocess.run(
             ["pkexec", HELPER, "write-iso", f"/dev/{dev_name}"],
-            stdin=iso, capture_output=True, text=True,
+            stdin=iso,
+            capture_output=True,
+            text=True,
         )
     if result.returncode == 0:
         return True, "ISO written successfully"
@@ -172,11 +193,15 @@ def write_iso(iso_path, dev_name):
 
 
 def refresh_waybar():
-    subprocess.Popen(["pkill", "-RTMIN+12", "waybar"],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(
+        ["pkill", "-RTMIN+12", "waybar"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 # --- Widget ---
+
 
 class UsbPopup(WidgetPopup):
     def __init__(self):
@@ -185,9 +210,9 @@ class UsbPopup(WidgetPopup):
         self._poll_id = 0
         self._udev_proc = None
         self._busy = {}
-        self._busy_meta = {}   # dev_name -> (total, start_sectors)
-        self._busy_labels = {} # dev_name -> Gtk.Label
-        self._error = None     # last failed task's message, shown until next rebuild
+        self._busy_meta = {}  # dev_name -> (total, start_sectors)
+        self._busy_labels = {}  # dev_name -> Gtk.Label
+        self._error = None  # last failed task's message, shown until next rebuild
 
     def build_ui(self):
         self._container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -300,7 +325,9 @@ class UsbPopup(WidgetPopup):
                     pl.set_halign(Gtk.Align.START)
                     info_box.append(pl)
                 if wrong_type(p):
-                    wl = Gtk.Label(label="Linux partition type: won't open on Mac/Windows")
+                    wl = Gtk.Label(
+                        label="Linux partition type: won't open on Mac/Windows"
+                    )
                     wl.add_css_class("usb-partition-warning")
                     wl.set_halign(Gtk.Align.START)
                     info_box.append(wl)
@@ -318,9 +345,15 @@ class UsbPopup(WidgetPopup):
         mounted = any(p.get("mountpoint") for p in parts)
         mount_btn = Gtk.Button(label="Unmount" if mounted else "Mount")
         mount_btn.add_css_class("usb-action-btn")
-        mount_btn.set_sensitive(not busy and (mounted or any(p.get("fstype") for p in parts)))
-        mount_btn.connect("clicked", lambda _, n=dev_name, m=not mounted:
-                          self._run_task(lambda: mount_toggle(n, m)))
+        mount_btn.set_sensitive(
+            not busy and (mounted or any(p.get("fstype") for p in parts))
+        )
+        mount_btn.connect(
+            "clicked",
+            lambda _, n=dev_name, m=not mounted: self._run_task(
+                lambda: mount_toggle(n, m)
+            ),
+        )
         btn_row.append(mount_btn)
 
         if any(wrong_type(p) for p in parts):
@@ -328,7 +361,9 @@ class UsbPopup(WidgetPopup):
             fix_btn.add_css_class("usb-action-btn")
             fix_btn.set_tooltip_text("Retag the partition type only; files are kept")
             fix_btn.set_sensitive(not busy)
-            fix_btn.connect("clicked", lambda _, n=dev_name: self._run_task(lambda: fix_type(n)))
+            fix_btn.connect(
+                "clicked", lambda _, n=dev_name: self._run_task(lambda: fix_type(n))
+            )
             btn_row.append(fix_btn)
 
         format_btn = Gtk.Button(label="Format")
@@ -357,6 +392,7 @@ class UsbPopup(WidgetPopup):
 
         def worker():
             ok, msg = task_fn()
+
             def done():
                 if not ok:
                     self._error = msg
@@ -367,6 +403,7 @@ class UsbPopup(WidgetPopup):
                 refresh_waybar()
                 self._build_ui()
                 return GLib.SOURCE_REMOVE
+
             GLib.idle_add(done)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -388,7 +425,8 @@ class UsbPopup(WidgetPopup):
         filters.append(ff)
         dialog.set_filters(filters)
         dialog.open(
-            win, None,
+            win,
+            None,
             lambda d, r, dev=dev, w=win: self._on_iso_picked(d, r, dev, w),
         )
 
@@ -403,9 +441,13 @@ class UsbPopup(WidgetPopup):
             win.set_visible(True)
         iso_name = os.path.basename(iso_path)
         dev_name = dev["name"]
-        total = os.path.getsize(iso_path)
-        self._run_task(lambda: write_iso(iso_path, dev_name),
-                       dev_name, f"Writing {iso_name}...", total)
+        total = pathlib.Path(iso_path).stat().st_size
+        self._run_task(
+            lambda: write_iso(iso_path, dev_name),
+            dev_name,
+            f"Writing {iso_name}...",
+            total,
+        )
 
     # --- Format ---
 
@@ -484,8 +526,9 @@ class UsbPopup(WidgetPopup):
         dev_name = dev["name"]
         fstype = self._selected_fs
         label = self._label_entry.get_text().strip() or None
-        self._run_task(lambda: format_device(dev_name, fstype, label),
-                       dev_name, "Formatting...")
+        self._run_task(
+            lambda: format_device(dev_name, fstype, label), dev_name, "Formatting..."
+        )
 
     # --- USB hotplug monitor ---
 
@@ -493,7 +536,8 @@ class UsbPopup(WidgetPopup):
         try:
             self._udev_proc = subprocess.Popen(
                 ["udevadm", "monitor", "--subsystem-match=block", "--udev"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
             )
         except FileNotFoundError:
             return

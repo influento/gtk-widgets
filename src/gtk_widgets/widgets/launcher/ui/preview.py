@@ -8,6 +8,7 @@ at the pane's pixel size, one frame in memory at a time.
 """
 
 import os
+import pathlib
 import subprocess
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -16,11 +17,16 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 from gtk_widgets.widgets.launcher import options
 
-THUMB_W, THUMB_H = 64, 46   # logical px; decoded at 2x for scale-2 outputs
-THUMB_ROW_H = 56            # a row with a thumbnail; text rows keep the 34 px of style.css
-TEXT_MAX = 64 << 10         # the pane shows this much of a text: Pango lays out all of it
-ICONS = {"text": "text-x-generic", "folder": "folder", "missing": "image-missing",
-         "binary": "application-octet-stream", "file": "text-x-generic"}
+THUMB_W, THUMB_H = 64, 46  # logical px; decoded at 2x for scale-2 outputs
+THUMB_ROW_H = 56  # a row with a thumbnail; text rows keep the 34 px of style.css
+TEXT_MAX = 64 << 10  # the pane shows this much of a text: Pango lays out all of it
+ICONS = {
+    "text": "text-x-generic",
+    "folder": "folder",
+    "missing": "image-missing",
+    "binary": "application-octet-stream",
+    "file": "text-x-generic",
+}
 
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="launcher-preview")
 
@@ -35,12 +41,14 @@ def human(n):
 
 def short(path):
     home = os.path.expanduser("~")
-    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
+    return (
+        "~" + path[len(home) :] if path == home or path.startswith(home + "/") else path
+    )
 
 
 def image_info(path):
     """(format name, width, height) from the file's header, or None."""
-    if not os.path.isfile(path):
+    if not pathlib.Path(path).is_file():
         return None
     fmt, w, h = GdkPixbuf.Pixbuf.get_file_info(path)
     return (fmt.get_name(), w, h) if fmt else None
@@ -49,7 +57,7 @@ def image_info(path):
 def read_text(path):
     """(text, total bytes) of a text file, cut at TEXT_MAX; None when unreadable."""
     try:
-        with open(path, "rb") as f:
+        with pathlib.Path(path).open("rb") as f:
             raw = f.read(TEXT_MAX + 1)
             size = os.fstat(f.fileno()).st_size
     except OSError:
@@ -65,18 +73,40 @@ def fit(w, h, box_w, box_h):
 
 def _pixbuf_texture(pb):
     fmt = Gdk.MemoryFormat.R8G8B8A8 if pb.get_has_alpha() else Gdk.MemoryFormat.R8G8B8
-    return Gdk.MemoryTexture.new(pb.get_width(), pb.get_height(), fmt,
-                                 pb.read_pixel_bytes(), pb.get_rowstride())
+    return Gdk.MemoryTexture.new(
+        pb.get_width(), pb.get_height(), fmt, pb.read_pixel_bytes(), pb.get_rowstride()
+    )
 
 
 def _gif_frame(path, w, h):
     """The first frame of a GIF at w x h, through ffmpeg."""
-    r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-frames:v", "1",
-                        "-vf", f"scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"],
-                       stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+    r = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            path,
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale={w}:{h}",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "pipe:1",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=10,
+    )
     if len(r.stdout) != w * h * 4:
         return None
-    return Gdk.MemoryTexture.new(w, h, Gdk.MemoryFormat.R8G8B8A8, GLib.Bytes.new(r.stdout), w * 4)
+    return Gdk.MemoryTexture.new(
+        w, h, Gdk.MemoryFormat.R8G8B8A8, GLib.Bytes.new(r.stdout), w * 4
+    )
 
 
 class TextureCache:
@@ -112,7 +142,9 @@ class TextureCache:
         w, h = fit(info[1], info[2], *self.box)
         if info[0] == "gif":
             return _gif_frame(path, w, h)
-        return _pixbuf_texture(GdkPixbuf.Pixbuf.new_from_file_at_scale(path, w, h, True))
+        return _pixbuf_texture(
+            GdkPixbuf.Pixbuf.new_from_file_at_scale(path, w, h, True)
+        )
 
     def load(self, path, done):
         """done(texture or None) on the main thread; at once when cached."""
@@ -128,7 +160,7 @@ class TextureCache:
         def work():
             try:
                 tex = self._decode(path)
-            except (GLib.Error, OSError, subprocess.SubprocessError):
+            except GLib.Error, OSError, subprocess.SubprocessError:
                 tex = None
             GLib.idle_add(finish, tex)
 
@@ -137,6 +169,7 @@ class TextureCache:
                 self.put(key, tex)
             done(tex)
             return GLib.SOURCE_REMOVE
+
         _pool.submit(work)
 
 
@@ -162,12 +195,16 @@ class FixedPicture(Gtk.Picture):
 
 
 def icon_for(kind, path):
-    if path and os.path.isdir(path):
+    if path and pathlib.Path(path).is_dir():
         return Gio.ThemedIcon.new("folder")
-    if kind in ("file", "files", "image", "gif") and path and os.path.isfile(path):
+    if (
+        kind in ("file", "files", "image", "gif")
+        and path
+        and pathlib.Path(path).is_file()
+    ):
         ctype, _ = Gio.content_type_guess(path, None)
         return Gio.content_type_get_icon(ctype)
-    if kind in ("files", "image", "gif") and path and not os.path.exists(path):
+    if kind in ("files", "image", "gif") and path and not pathlib.Path(path).exists():
         return Gio.ThemedIcon.new("image-missing")
     return Gio.ThemedIcon.new(ICONS.get(kind, "text-x-generic"))
 
@@ -185,7 +222,9 @@ class Slot(Gtk.Overlay):
         self.icon = Gtk.Image(pixel_size=22)
         box.append(self.icon)
         self.set_child(box)
-        self.badge = Gtk.Label(halign=Gtk.Align.END, valign=Gtk.Align.END, visible=False)
+        self.badge = Gtk.Label(
+            halign=Gtk.Align.END, valign=Gtk.Align.END, visible=False
+        )
         self.badge.add_css_class("launcher-badge")
         self.add_overlay(self.badge)
         self.path = None
@@ -200,7 +239,10 @@ class Slot(Gtk.Overlay):
         self.icon.set_visible(not pic)
         if pic:
             self.pic.set_paintable(None)
-            THUMBS.load(thumb, lambda tex, p=thumb: self.path == p and self.pic.set_paintable(tex))
+            THUMBS.load(
+                thumb,
+                lambda tex, p=thumb: self.path == p and self.pic.set_paintable(tex),
+            )
         else:
             self.icon.set_from_gicon(icon_for(kind, options.first(opts, "preview")))
         badge = "GIF" if kind == "gif" else options.first(opts, "count")
@@ -223,17 +265,39 @@ class GifPlayer:
         self.buf = bytearray()
         try:
             self.proc = subprocess.Popen(
-                ["ffmpeg", "-nostdin", "-v", "error", "-re", "-stream_loop", "-1", "-i", path,
-                 "-vf", f"scale={w}:{h}:flags=bicubic", "-f", "rawvideo", "-pix_fmt", "rgba",
-                 "pipe:1"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-re",
+                    "-stream_loop",
+                    "-1",
+                    "-i",
+                    path,
+                    "-vf",
+                    f"scale={w}:{h}:flags=bicubic",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgba",
+                    "pipe:1",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
         except OSError:
             self.proc = None
             return False
         fd = self.proc.stdout.fileno()
         os.set_blocking(fd, False)
-        self.watch = GLib.unix_fd_add_full(GLib.PRIORITY_DEFAULT, fd,
-                                           GLib.IOCondition.IN | GLib.IOCondition.HUP, self._read)
+        self.watch = GLib.unix_fd_add_full(
+            GLib.PRIORITY_DEFAULT,
+            fd,
+            GLib.IOCondition.IN | GLib.IOCondition.HUP,
+            self._read,
+        )
         return True
 
     def _read(self, fd, _cond):
@@ -249,11 +313,18 @@ class GifPlayer:
         self.buf += chunk
         last = None
         while len(self.buf) >= self.frame:  # behind: show only the newest frame
-            last = bytes(self.buf[:self.frame])
-            del self.buf[:self.frame]
+            last = bytes(self.buf[: self.frame])
+            del self.buf[: self.frame]
         if last is not None:
-            self.on_frame(Gdk.MemoryTexture.new(self.w, self.h, Gdk.MemoryFormat.R8G8B8A8,
-                                                GLib.Bytes.new(last), self.w * 4))
+            self.on_frame(
+                Gdk.MemoryTexture.new(
+                    self.w,
+                    self.h,
+                    Gdk.MemoryFormat.R8G8B8A8,
+                    GLib.Bytes.new(last),
+                    self.w * 4,
+                )
+            )
         return GLib.SOURCE_CONTINUE
 
     def stop(self):
@@ -280,19 +351,37 @@ class Pane(Gtk.Box):
         self.icon = Gtk.Image(pixel_size=96)
         self.stack.add_named(self.icon, "icon")
         # max_width_chars=1: long text wraps instead of widening the pane
-        self.text = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, yalign=0,
-                              max_width_chars=1, margin_top=10, margin_bottom=10,
-                              margin_start=12, margin_end=12)
+        self.text = Gtk.Label(
+            wrap=True,
+            wrap_mode=Pango.WrapMode.WORD_CHAR,
+            xalign=0,
+            yalign=0,
+            max_width_chars=1,
+            margin_top=10,
+            margin_bottom=10,
+            margin_start=12,
+            margin_end=12,
+        )
         self.text.add_css_class("launcher-pane-text")
-        self.stack.add_named(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                                child=self.text), "text")
+        self.stack.add_named(
+            Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.text),
+            "text",
+        )
         self.append(self.stack)
-        self.caption = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE,
-                                 max_width_chars=1, hexpand=True)
+        self.caption = Gtk.Label(
+            xalign=0,
+            ellipsize=Pango.EllipsizeMode.MIDDLE,
+            max_width_chars=1,
+            hexpand=True,
+        )
         self.caption.add_css_class("launcher-pane-caption")
         self.append(self.caption)
-        self.meta = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE,
-                              max_width_chars=1, hexpand=True)
+        self.meta = Gtk.Label(
+            xalign=0,
+            ellipsize=Pango.EllipsizeMode.MIDDLE,
+            max_width_chars=1,
+            hexpand=True,
+        )
         self.meta.add_css_class("launcher-pane-meta")
         self.append(self.meta)
         self.player = GifPlayer(self.picture.set_paintable)
@@ -340,19 +429,27 @@ class Pane(Gtk.Box):
                 self.meta.set_text("")
                 return
             full = read_text(options.first(item.opts, "text"))
-            text, size = full if full is not None else (item.text, len(item.text.encode()))
+            text, size = (
+                full if full is not None else (item.text, len(item.text.encode()))
+            )
             self.text.set_text(text)
             self.stack.set_visible_child_name("text")
-            self.text.get_parent().get_vadjustment().set_value(0)  # a new text starts at its top
+            self.text.get_parent().get_vadjustment().set_value(
+                0
+            )  # a new text starts at its top
             lines = text.count("\n") + (not text.endswith("\n"))
             self.caption.set_text("Text")
-            self.meta.set_text(f"{lines} line{'s' * (lines != 1)} · {human(size)}"
-                               + (f" · first {human(TEXT_MAX)} shown" if size > TEXT_MAX else ""))
+            self.meta.set_text(
+                f"{lines} line{'s' * (lines != 1)} · {human(size)}"
+                + (f" · first {human(TEXT_MAX)} shown" if size > TEXT_MAX else "")
+            )
             return
         path = files[self.page_i]
         data = options.first(item.opts, "info") == "image data"
         name = item.text if data else os.path.basename(path.rstrip("/")) or path
-        pos = f"   {self.page_i + 1} of {len(files)} · Ctrl+←/→" if len(files) > 1 else ""
+        pos = (
+            f"   {self.page_i + 1} of {len(files)} · Ctrl+←/→" if len(files) > 1 else ""
+        )
         self.caption.set_text(name + pos)
         info = image_info(path)
         self.meta.set_text(self._meta(path, info, data))
@@ -364,21 +461,24 @@ class Pane(Gtk.Box):
         self.stack.set_visible_child_name("picture")
         if info[0] == "gif" and options.gif_animated(path):
             scale = self.get_scale_factor()
-            if self.player.start(path, *fit(info[1], info[2], self.view_w * scale,
-                                            self.view_h * scale)):
+            if self.player.start(
+                path, *fit(info[1], info[2], self.view_w * scale, self.view_h * scale)
+            ):
                 return
         gen = self.gen
         FULL.load(path, lambda tex: gen == self.gen and self.picture.set_paintable(tex))
 
     @staticmethod
     def _meta(path, info, data):
-        if not os.path.exists(path):
+        if not pathlib.Path(path).exists():
             return f"missing · {short(os.path.dirname(path))}"
-        if os.path.isdir(path):
+        if pathlib.Path(path).is_dir():
             return f"folder · {short(path)}"
         if info is not None:
             kind = f"{info[0].upper()} {info[1]}×{info[2]}"
         else:
-            kind = Gio.content_type_get_description(Gio.content_type_guess(path, None)[0])
+            kind = Gio.content_type_get_description(
+                Gio.content_type_guess(path, None)[0]
+            )
         where = "image data" if data else short(os.path.dirname(path))
-        return f"{kind} · {human(os.path.getsize(path))} · {where}"
+        return f"{kind} · {human(pathlib.Path(path).stat().st_size)} · {where}"

@@ -1,9 +1,9 @@
 """Small GTK helpers shared by the network popup (main.py) and its editor page."""
 
+from gi.repository import GLib, Pango
+
 from gtk_widgets.lib.ui.copy_label import copyable
 from gtk_widgets.lib.ui.widget_base import Gtk
-
-from gi.repository import GLib, Pango
 
 SWITCH_PENDING_S = 10  # a flip NM has not confirmed by then gives way to NM's value
 
@@ -106,6 +106,7 @@ def switch(on_toggle):
         pending["busy"] = max(0, pending["busy"] - 1)
         if not ok and not pending["busy"]:
             pending["want"] = None  # follow NM again
+
     sw.set_, sw.done = set_, done
     return sw
 

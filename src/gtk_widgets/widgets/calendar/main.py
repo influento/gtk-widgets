@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Calendar popup for waybar — native GTK4 calendar widget with Catppuccin Mocha theme."""
 
-
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
 
 

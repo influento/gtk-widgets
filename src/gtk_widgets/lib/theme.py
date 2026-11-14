@@ -6,6 +6,7 @@ set by install.sh, else the bundled catppuccin-mocha.json.
 
 import json
 import os
+import pathlib
 import re
 
 from gtk_widgets.lib.paths import SRC
@@ -20,23 +21,25 @@ def theme_path():
     override = os.environ.get("GTK_WIDGETS_THEME")
     if override:
         return override
-    if os.path.exists(_CURRENT_THEME):
+    if pathlib.Path(_CURRENT_THEME).exists():
         return _CURRENT_THEME
     return _FALLBACK_THEME
 
 
 def colors():
     """Load theme colors from JSON. Returns dict of {NAME: hex_value}."""
-    with open(theme_path()) as f:
+    with pathlib.Path(theme_path()).open() as f:
         return json.load(f)["colors"]
 
 
 def render_css(css):
     """Replace @@TOKEN@@ placeholders in a CSS string with theme colors."""
     palette = colors()
+
     def replace_token(m):
         name = m.group(1)
         if name.endswith("_RAW"):
             return palette.get(name[:-4], m.group(0))
         return f"#{palette[name]}" if name in palette else m.group(0)
+
     return re.sub(r"@@([A-Z][A-Z0-9_]*)@@", replace_token, css)

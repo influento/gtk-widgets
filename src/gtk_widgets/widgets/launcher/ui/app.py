@@ -1,30 +1,38 @@
 """launcher's GTK side: the picker popup, the resident instance, one-shot dmenu."""
 
 import os
+import pathlib
 import signal
 import socket
 import struct
 import sys
 import time
 
-from gtk_widgets.lib.ui.widget_base import (BASE_CSS, Gdk, GLib, Gtk, VScroller, install_css,
-                             load_css, place_popup, popup_window, render_css)
-
 from gi.repository import Gio, GObject, Pango
 
+from gtk_widgets.lib.ui.widget_base import (
+    BASE_CSS,
+    Gdk,
+    GLib,
+    Gtk,
+    VScroller,
+    install_css,
+    load_css,
+    place_popup,
+    popup_window,
+    render_css,
+)
+from gtk_widgets.widgets.launcher import match, options, protocol
 from gtk_widgets.widgets.launcher.ui import apps as appdb
-from gtk_widgets.widgets.launcher import match
-from gtk_widgets.widgets.launcher import options
 from gtk_widgets.widgets.launcher.ui import preview
-from gtk_widgets.widgets.launcher import protocol
 
 _DIR = os.path.dirname(os.path.realpath(__file__))
 
 APP_ID = "dev.dotfiles.launcher"
 MARGIN_TOP = 40
 WIDTH = 560
-ROWS = 10    # visible rows
-ROW_H = 34   # listview.launcher-list > row min-height in style.css
+ROWS = 10  # visible rows
+ROW_H = 34  # listview.launcher-list > row min-height in style.css
 FALLBACK_ICON = "application-x-executable"
 DISPLAY_CHARS = 200  # a dmenu row shows at most this much: Pango shapes all of it
 DRUN, DMENU = "drun", "dmenu"
@@ -40,7 +48,9 @@ class Item(GObject.Object):
 
     __gtype_name__ = "LauncherItem"
 
-    def __init__(self, text, field, extra=(), icon=None, detail="", ref=None, opts=None):
+    def __init__(
+        self, text, field, extra=(), icon=None, detail="", ref=None, opts=None
+    ):
         super().__init__()
         self.text, self.field, self.extra = text, field, extra
         self.icon, self.detail, self.ref = icon, detail, ref
@@ -55,16 +65,28 @@ class Row(Gtk.Box):
         self.slot = preview.Slot()  # dmenu rows with options
         self.append(self.slot)
         # max_width_chars=1: a long name can't widen the list, it ellipsizes
-        self.label = Gtk.Label(xalign=0, hexpand=True, max_width_chars=1,
-                               ellipsize=Pango.EllipsizeMode.END, single_line_mode=True)
+        self.label = Gtk.Label(
+            xalign=0,
+            hexpand=True,
+            max_width_chars=1,
+            ellipsize=Pango.EllipsizeMode.END,
+            single_line_mode=True,
+        )
         self.label.add_css_class("launcher-name")
         self.append(self.label)
-        self.detail = Gtk.Label(max_width_chars=28, ellipsize=Pango.EllipsizeMode.MIDDLE)
+        self.detail = Gtk.Label(
+            max_width_chars=28, ellipsize=Pango.EllipsizeMode.MIDDLE
+        )
         self.detail.add_css_class("launcher-detail")
         self.append(self.detail)
         # dmenu --delete; not focusable, so typing stays in the entry
-        self.delete = Gtk.Button(label=DELETE_ICON, focusable=False, focus_on_click=False,
-                                 valign=Gtk.Align.CENTER, tooltip_text="Delete (Ctrl+d)")
+        self.delete = Gtk.Button(
+            label=DELETE_ICON,
+            focusable=False,
+            focus_on_click=False,
+            valign=Gtk.Align.CENTER,
+            tooltip_text="Delete (Ctrl+d)",
+        )
         self.delete.add_css_class("launcher-delete")
         self.append(self.delete)
         self.item = None
@@ -104,7 +126,7 @@ class Picker:
         self.mode = None
         self.items = []
         self.drun_items = []
-        self.scores = {}      # drun: app id -> usage score, taken at show
+        self.scores = {}  # drun: app id -> usage score, taken at show
         self._on_pick = None  # dmenu: callback(line index, protocol.ACTION or None)
         self._on_delete = None  # dmenu --delete: callback(line index)
         self.pane_open = False
@@ -139,8 +161,9 @@ class Picker:
         box.append(search)
 
         self.store = Gio.ListStore(item_type=Item)
-        self.selection = Gtk.SingleSelection(model=self.store, autoselect=True,
-                                             can_unselect=False)
+        self.selection = Gtk.SingleSelection(
+            model=self.store, autoselect=True, can_unselect=False
+        )
         factory = Gtk.SignalListItemFactory()
         factory.connect("setup", self._setup_row)
         factory.connect("bind", self._bind_row)
@@ -149,8 +172,9 @@ class Picker:
         scroller = VScroller(ROWS * ROW_H, self.list)
         scroller.set_min_content_height(ROWS * ROW_H)  # steady size while filtering
         stack = Gtk.Overlay(child=scroller)
-        self.empty = Gtk.Label(label="No matches", visible=False,
-                               valign=Gtk.Align.START, margin_top=8)
+        self.empty = Gtk.Label(
+            label="No matches", visible=False, valign=Gtk.Align.START, margin_top=8
+        )
         self.empty.add_css_class("launcher-empty")
         stack.add_overlay(self.empty)
         self.box, self.scroller, self.liststack = box, scroller, stack
@@ -185,7 +209,9 @@ class Picker:
         row.icon.set_visible(self.mode == DRUN)
         thumbs = self.mode == DMENU and bool(item.opts)
         row.slot.set_visible(thumbs)
-        row.set_size_request(-1, preview.THUMB_ROW_H if thumbs and row.slot.show(item.opts) else -1)
+        row.set_size_request(
+            -1, preview.THUMB_ROW_H if thumbs and row.slot.show(item.opts) else -1
+        )
         if thumbs and options.first(item.opts, "kind") == "missing":
             row.label.add_css_class("launcher-missing")
         else:
@@ -199,7 +225,9 @@ class Picker:
     # --- modes ---
 
     def set_apps(self, apps):
-        self.drun_items = [Item(a.name, a.field, a.extra, a.icon, a.detail, a) for a in apps]
+        self.drun_items = [
+            Item(a.name, a.field, a.extra, a.icon, a.detail, a) for a in apps
+        ]
         if self.mode == DRUN:
             self.items = self.drun_items
             if self.win.get_visible():
@@ -234,10 +262,16 @@ class Picker:
         self._on_delete = on_delete
         self.action.set_label(action)
         self.action.set_visible(bool(action))
-        self.items = [Item(t[:DISPLAY_CHARS],
-                           match.Field(" ".join([t] + o.get("detail", []) + o.get("meta", []))),
-                           detail=options.first(o, "detail"), ref=i, opts=o)
-                      for i, (t, o) in enumerate(texts)]
+        self.items = [
+            Item(
+                t[:DISPLAY_CHARS],
+                match.Field(" ".join([t] + o.get("detail", []) + o.get("meta", []))),
+                detail=options.first(o, "detail"),
+                ref=i,
+                opts=o,
+            )
+            for i, (t, o) in enumerate(texts)
+        ]
         self.pane_open = False  # every show starts compact
         self._layout()
         self.prompt.set_text(prompt or "")
@@ -313,8 +347,13 @@ class Picker:
 
         def painted(c):
             c.disconnect(handler)
-            print(f"launcher: {self.mode} first frame {(time.time_ns() - t0) / 1e6:.1f} ms"
-                  " after the request", file=sys.stderr, flush=True)
+            print(
+                f"launcher: {self.mode} first frame {(time.time_ns() - t0) / 1e6:.1f} ms"
+                " after the request",
+                file=sys.stderr,
+                flush=True,
+            )
+
         handler = clock.connect("after-paint", painted)
 
     # --- search ---
@@ -332,9 +371,14 @@ class Picker:
                 for it in self.items:
                     key = match.rank(variants, it.field, it.extra)
                     if key is not None:
-                        ranked.append(((key, -scores.get(it.ref.id, 0.0), it.ref.sort), it))
+                        ranked.append(
+                            ((key, -scores.get(it.ref.id, 0.0), it.ref.sort), it)
+                        )
             else:
-                ranked = [((-scores.get(it.ref.id, 0.0), it.ref.sort), it) for it in self.items]
+                ranked = [
+                    ((-scores.get(it.ref.id, 0.0), it.ref.sort), it)
+                    for it in self.items
+                ]
             ranked.sort(key=lambda pair: pair[0])
             result = [it for _, it in ranked]
         elif variants:
@@ -364,8 +408,9 @@ class Picker:
             self.dismiss()
         elif keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter):
             self._activate(self.selection.get_selected())
-        elif keyval == Gdk.KEY_ISO_Left_Tab or (keyval == Gdk.KEY_Tab
-                                                and state & Gdk.ModifierType.SHIFT_MASK):
+        elif keyval == Gdk.KEY_ISO_Left_Tab or (
+            keyval == Gdk.KEY_Tab and state & Gdk.ModifierType.SHIFT_MASK
+        ):
             self._move(-1)
         elif keyval in (Gdk.KEY_Down, Gdk.KEY_KP_Down, Gdk.KEY_Tab):
             self._move(1)
@@ -395,13 +440,17 @@ class Picker:
         if not self._has_previews():
             return False
         vim = _us_key(keyval) if ctrl else ""
-        if vim in _PANE and not state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK):
+        if vim in _PANE and not state & (
+            Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK
+        ):
             if _PANE[vim] != self.pane_open:
                 self._set_pane(_PANE[vim])
             return True
         left = keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left)
         right = keyval in (Gdk.KEY_Right, Gdk.KEY_KP_Right)
-        if not (left or right) or state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK):
+        if not (left or right) or state & (
+            Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK
+        ):
             return False
         if ctrl:
             if self.pane_open:
@@ -462,7 +511,9 @@ class Picker:
         if not (self.pane_open and self._has_previews()):
             return
         pos = self.selection.get_selected()
-        self.pane.show_item(self.store.get_item(pos) if pos != Gtk.INVALID_LIST_POSITION else None)
+        self.pane.show_item(
+            self.store.get_item(pos) if pos != Gtk.INVALID_LIST_POSITION else None
+        )
 
     def _move(self, delta):
         n = self.store.get_n_items()
@@ -509,6 +560,7 @@ class Picker:
 
 # --- the resident instance ---
 
+
 class Request:
     """One CLI connection: a header line, for dmenu the stdin bytes, then the
     socket stays open until the pick; EOF on it means the CLI went away."""
@@ -521,8 +573,11 @@ class Request:
         self.fields = None
         self.waiting = False
         self.watch = GLib.unix_fd_add_full(
-            GLib.PRIORITY_HIGH, conn.fileno(),
-            GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR, self._readable)
+            GLib.PRIORITY_HIGH,
+            conn.fileno(),
+            GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR,
+            self._readable,
+        )
 
     def _readable(self, _fd, _cond):
         try:
@@ -550,12 +605,16 @@ class Request:
                     self.close()
                 return
             self.fields = protocol.parse_header(bytes(self.buf[:nl]))
-            del self.buf[:nl + 1]
+            del self.buf[: nl + 1]
             if self.fields[0] == "toggle":
                 self.close()
                 self.app.toggle(self.fields[1] if len(self.fields) > 1 else None)
                 return
-            if self.fields[0] != "dmenu" or len(self.fields) < 4 or not self.fields[1].isdigit():
+            if (
+                self.fields[0] != "dmenu"
+                or len(self.fields) < 4
+                or not self.fields[1].isdigit()
+            ):
                 self.close()
                 return
         need = int(self.fields[1])
@@ -567,8 +626,14 @@ class Request:
         after_tab = len(self.fields) > 4 and self.fields[4] == "1"
         action = self.fields[5] if len(self.fields) > 5 else ""
         delete = len(self.fields) > 6 and self.fields[6] == "1"
-        self.app.picker.show_dmenu(display_lines(lines, after_tab), self.fields[2], self.reply,
-                                   self.fields[3], action, self.deleted if delete else None)
+        self.app.picker.show_dmenu(
+            display_lines(lines, after_tab),
+            self.fields[2],
+            self.reply,
+            self.fields[3],
+            action,
+            self.deleted if delete else None,
+        )
 
     def deleted(self, index):
         """A row was deleted: the CLI runs its --delete command for it."""
@@ -608,18 +673,21 @@ class Server:
     def __init__(self, app):
         self.app = app
         self.path = protocol.socket_path()
-        self.sock = socket.socket(socket.AF_UNIX,
-                                  socket.SOCK_STREAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+        self.sock = socket.socket(
+            socket.AF_UNIX,
+            socket.SOCK_STREAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC,
+        )
         try:
-            os.unlink(self.path)
+            pathlib.Path(self.path).unlink()
         except FileNotFoundError:
             pass
         self.sock.bind(self.path)
-        os.chmod(self.path, 0o600)
+        pathlib.Path(self.path).chmod(0o600)
         self.sock.listen(16)
         self.inode = os.stat(self.path).st_ino
-        self.watch = GLib.unix_fd_add_full(GLib.PRIORITY_HIGH, self.sock.fileno(),
-                                           GLib.IOCondition.IN, self._accept)
+        self.watch = GLib.unix_fd_add_full(
+            GLib.PRIORITY_HIGH, self.sock.fileno(), GLib.IOCondition.IN, self._accept
+        )
 
     def _accept(self, _fd, _cond):
         while True:
@@ -627,7 +695,9 @@ class Server:
                 conn, _ = self.sock.accept()
             except OSError:  # BlockingIOError: all taken
                 break
-            creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+            creds = conn.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+            )
             if struct.unpack("3i", creds)[1] != os.getuid():
                 conn.close()
                 continue
@@ -640,7 +710,7 @@ class Server:
         self.sock.close()
         try:
             if os.stat(self.path).st_ino == self.inode:
-                os.unlink(self.path)
+                pathlib.Path(self.path).unlink()
         except OSError:
             pass
 
@@ -651,7 +721,9 @@ class Launcher(Gtk.Application):
     def __init__(self, hidden):
         super().__init__(application_id=APP_ID)
         self._hidden = hidden  # --daemon: the first activation doesn't show
-        self._t0 = os.environ.pop("LAUNCHER_T0", None)  # cold start: trace the first show
+        self._t0 = os.environ.pop(
+            "LAUNCHER_T0", None
+        )  # cold start: trace the first show
         self._reload_id = 0
         self.picker = self.server = self.usage = None
 
@@ -723,9 +795,14 @@ class DmenuOnce(Gtk.Application):
         self.picker = Picker(self)
 
     def do_activate(self):
-        self.picker.show_dmenu(display_lines(self.lines, self.after_tab), self.prompt, self._picked,
-                               os.environ.get("LAUNCHER_T0"), self.action,
-                               self._deleted if self.delete else None)
+        self.picker.show_dmenu(
+            display_lines(self.lines, self.after_tab),
+            self.prompt,
+            self._picked,
+            os.environ.get("LAUNCHER_T0"),
+            self.action,
+            self._deleted if self.delete else None,
+        )
 
     def _deleted(self, index):
         protocol.run_delete(self.delete, self.lines[index])

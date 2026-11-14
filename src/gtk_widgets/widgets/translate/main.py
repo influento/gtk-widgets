@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """ezpick — multi-action text tool using Claude Sonnet via claude CLI."""
 
-import subprocess, threading
+import subprocess
+import threading
+
+from gi.repository import GLib
 
 from gtk_widgets.lib.ui.copy_label import copyable
 from gtk_widgets.lib.ui.widget_base import Gdk, Gtk, WidgetPopup
-
-from gi.repository import GLib
 
 LANGUAGES = [
     ("auto", "Auto"),
@@ -35,7 +36,9 @@ def get_selected_text():
     try:
         result = subprocess.run(
             ["wl-paste", "-p", "-n"],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
@@ -46,13 +49,17 @@ def call_claude(prompt, text):
     """Run a prompt through claude CLI with input text."""
     result = subprocess.run(
         [
-            "claude", "-p",
-            "--model", "sonnet",
+            "claude",
+            "-p",
+            "--model",
+            "sonnet",
             "--no-session-persistence",
             prompt,
         ],
         input=text,
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "claude CLI failed")

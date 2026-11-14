@@ -18,6 +18,8 @@ A key may repeat (preview, one per file). The launcher reads:
 The line is still printed byte-exact on a pick, options included.
 """
 
+import pathlib
+
 PIC_KINDS = frozenset({"image", "gif", "files"})
 
 
@@ -42,7 +44,7 @@ def gif_animated(path):
     """True when the GIF at path has more than one frame. Reads only up to
     the second image descriptor, so a long recording costs one frame."""
     try:
-        with open(path, "rb") as f:
+        with pathlib.Path(path).open("rb") as f:
             head = f.read(13)
             if len(head) < 13 or head[:3] != b"GIF":
                 return False

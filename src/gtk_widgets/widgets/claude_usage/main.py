@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """Claude usage popup — GTK4 widget showing subscription utilization with progress bars."""
 
-import json, os, subprocess, threading, urllib.request
-from gtk_widgets.lib.ui.copy_label import copyable
-from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
+import json
+import subprocess
+import threading
+import urllib.request
+from pathlib import Path
 
 from gi.repository import GLib
 
-from pathlib import Path
-
 from gtk_widgets.lib.paths import module_child
+from gtk_widgets.lib.ui.copy_label import copyable
+from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
 from gtk_widgets.widgets.claude_usage import status
-from gtk_widgets.widgets.claude_usage.usage import describe_charge_date, describe_reset, severity
+from gtk_widgets.widgets.claude_usage.usage import (
+    describe_charge_date,
+    describe_reset,
+    severity,
+)
 
 CACHE_PATH = Path.home() / ".claude" / "subscription_cache.json"
 
@@ -29,10 +35,13 @@ def fetch_data(force=False):
 def fetch_subscription(session_key, org_uuid):
     """Fetch subscription details using session key cookie."""
     url = f"https://api.anthropic.com/api/organizations/{org_uuid}/subscription_details"
-    req = urllib.request.Request(url, headers={
-        "Content-Type": "application/json",
-        "Cookie": f"sessionKey={session_key}",
-    })
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Content-Type": "application/json",
+            "Cookie": f"sessionKey={session_key}",
+        },
+    )
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -40,7 +49,7 @@ def fetch_subscription(session_key, org_uuid):
 def fetch_profile(timeout=10):
     """The OAuth profile's organization (uuid, plan, subscription status)."""
     creds_path = Path.home() / ".claude" / ".credentials.json"
-    with open(creds_path) as f:
+    with Path(creds_path).open() as f:
         token = json.load(f)["claudeAiOauth"]["accessToken"]
     req = urllib.request.Request(
         "https://api.anthropic.com/api/oauth/profile",
@@ -55,20 +64,22 @@ def fetch_profile(timeout=10):
 
 def plan_of(org):
     """What the billing day hangs on: a plan change can move it."""
-    return "/".join(str(org.get(k)) for k in
-                    ("organization_type", "rate_limit_tier", "subscription_status"))
+    return "/".join(
+        str(org.get(k))
+        for k in ("organization_type", "rate_limit_tier", "subscription_status")
+    )
 
 
 def load_cache():
     try:
-        with open(CACHE_PATH) as f:
+        with Path(CACHE_PATH).open() as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return {}
 
 
 def save_cache(cache):
-    with open(CACHE_PATH, "w") as f:
+    with Path(CACHE_PATH).open("w") as f:
         json.dump(cache, f)
 
 
@@ -79,7 +90,9 @@ def save_subscription(session_key):
     charge_date = sub.get("next_charge_date")
     if not charge_date:
         raise ValueError("no next_charge_date in response")
-    save_cache({"next_charge_date": charge_date, "org_uuid": org["uuid"], "plan": plan_of(org)})
+    save_cache(
+        {"next_charge_date": charge_date, "org_uuid": org["uuid"], "plan": plan_of(org)}
+    )
     return charge_date
 
 
@@ -98,7 +111,9 @@ def plan_unchanged():
         return True
     if cache["plan"] == plan:
         return True
-    save_cache({k: v for k, v in cache.items() if k not in ("next_charge_date", "plan")})
+    save_cache(
+        {k: v for k, v in cache.items() if k not in ("next_charge_date", "plan")}
+    )
     return False
 
 
@@ -155,6 +170,7 @@ class ClaudeUsagePopup(WidgetPopup):
                 except Exception:
                     pass  # offline or no credentials: keep the date
             GLib.idle_add(self._render_data, generation, loading, data)
+
         threading.Thread(target=worker, daemon=True).start()
 
     def _render_data(self, generation, loading, data):
@@ -224,7 +240,7 @@ class ClaudeUsagePopup(WidgetPopup):
             return
         used = spend.get("used") or {}
         exponent = used.get("exponent", 2)
-        amount = used.get("amount_minor", 0) / (10 ** exponent)
+        amount = used.get("amount_minor", 0) / (10**exponent)
         currency = used.get("currency", "USD")
         text = f"extra usage: {amount:.2f} {currency}"
         limit = spend.get("limit")
@@ -295,6 +311,7 @@ class ClaudeUsagePopup(WidgetPopup):
                 GLib.idle_add(self._on_submit_done, None, str(e))
             else:
                 GLib.idle_add(self._on_submit_done, charge_date, None)
+
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_submit_done(self, charge_date, error):
@@ -304,7 +321,9 @@ class ClaudeUsagePopup(WidgetPopup):
             self._set_session_status(f"failed: {error}", "session-status-err")
         else:
             self._set_session_status(
-                f"saved — next charge: {describe_charge_date(charge_date)}", "session-status-ok")
+                f"saved — next charge: {describe_charge_date(charge_date)}",
+                "session-status-ok",
+            )
             self._session_entry.set_text("")
         return GLib.SOURCE_REMOVE
 

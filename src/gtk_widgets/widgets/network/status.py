@@ -19,12 +19,22 @@ output changes, so waybar runs it without an interval. --once prints the
 current state and exits.
 """
 
-import json, os, signal, sys
+import json
+import os
+import signal
+import sys
 
-from gtk_widgets.widgets.network.nmutil import (
-    GLib, ICON, NM, connectivity_problem, is_hotspot, is_vpn, link_connection, signal_class,
-)
 from gtk_widgets.widgets.network import proxy as px
+from gtk_widgets.widgets.network.nmutil import (
+    ICON,
+    NM,
+    GLib,
+    connectivity_problem,
+    is_hotspot,
+    is_vpn,
+    link_connection,
+    signal_class,
+)
 
 DEBOUNCE_MS = 200
 TICK_S = 10  # signal strength changes without a signal we follow
@@ -37,7 +47,11 @@ def link_info(ac):
         if conn and is_hotspot(conn):
             return ["hotspot"], ICON["hotspot"]
         devs = ac.get_devices()
-        ap = devs[0].get_active_access_point() if devs and isinstance(devs[0], NM.DeviceWifi) else None
+        ap = (
+            devs[0].get_active_access_point()
+            if devs and isinstance(devs[0], NM.DeviceWifi)
+            else None
+        )
         weak = signal_class(ap.get_strength() if ap else None)
         return ["wifi"] + ([weak] if weak else []), ICON["wifi"]
     if ctype == "802-3-ethernet":
@@ -72,8 +86,11 @@ def status(client, svc=None):
             cls.append(problem[0])
             parts.append(ICON["portal"] if problem[0] == "portal" else ICON["limited"])
 
-    vpns = [ac for ac in client.get_active_connections()
-            if is_vpn(ac) and ac.get_state() == NM.ActiveConnectionState.ACTIVATED]
+    vpns = [
+        ac
+        for ac in client.get_active_connections()
+        if is_vpn(ac) and ac.get_state() == NM.ActiveConnectionState.ACTIVATED
+    ]
     if vpns:
         cls.append("vpn")
         parts.append(f"{ICON['vpn']} " + ", ".join(ac.get_id() for ac in vpns))
@@ -132,16 +149,20 @@ def main():
     try:
         client = NM.Client.new(None)
     except GLib.Error as e:
-        print(f"network-status: cannot reach NetworkManager: {e.message}", file=sys.stderr)
-        emit(json.dumps({"text": ICON["offline"], "class": ["error"]}, ensure_ascii=False))
+        print(
+            f"network-status: cannot reach NetworkManager: {e.message}", file=sys.stderr
+        )
+        emit(
+            json.dumps(
+                {"text": ICON["offline"], "class": ["error"]}, ensure_ascii=False
+            )
+        )
         return 1
     if "--once" in sys.argv[1:]:
         emit(json.dumps(status(client, px.ServiceState()), ensure_ascii=False))
         return 0
     signal.signal(signal.SIGINT, signal.SIG_DFL)  # exit quietly, like on SIGTERM
     loop = GLib.MainLoop()
-    _follower = Follower(client)  # noqa: F841 (kept alive for its signal handlers)
+    _follower = Follower(client)
     loop.run()
     return 0
-
-

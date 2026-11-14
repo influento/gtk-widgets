@@ -28,6 +28,7 @@ block differs if its SAD > 0) it then drops exact duplicates only.
 
 import math
 import os
+import pathlib
 import queue
 import shutil
 import subprocess
@@ -37,20 +38,27 @@ import threading
 from collections import deque
 from fractions import Fraction
 
-
 from gtk_widgets.lib import theme
 
 MIN_GAP = Fraction("0.2")  # s, the least time between two frames kept for the sheets
 STATE_AREA = 30 * 30  # logical px changed since the last kept frame: a new state
-BUSY_AREA = 60 * 60  # logical px changing within HOLD: the screen is busy (a pointer is less)
+BUSY_AREA = (
+    60 * 60
+)  # logical px changing within HOLD: the screen is busy (a pointer is less)
 HOLD = Fraction("0.2")  # s the screen must hold a state for it to count
 MOTION_STEP = 1  # s between frames kept while the screen never holds
 SHEET_MAX_EDGE = 2000  # px, each edge of a sheet at most
 MIN_TEXT_SCALE = 0.65  # px a tile shows for one logical px, at least
-SWITCH_AREA = 10  # % of the frame changing at once: the screen switched (dialog, menu, page)
+SWITCH_AREA = (
+    10  # % of the frame changing at once: the screen switched (dialog, menu, page)
+)
 SWITCH_MERGE = 0.3  # s, switch frames at most this far apart are one switch (a fade)
-SWITCH_LONGEST = 1  # s, a longer run of big changes is motion (scrolling, video), not a switch
-DITHER = "none"  # crispest on UI text and no worse on gradients (bayer, sierra2_4a tested)
+SWITCH_LONGEST = (
+    1  # s, a longer run of big changes is motion (scrolling, video), not a switch
+)
+DITHER = (
+    "none"  # crispest on UI text and no worse on gradients (bayer, sierra2_4a tested)
+)
 FONT = "JetBrainsMono Nerd Font"
 LABEL_PX = 14  # the time labels' font size (read exactly at 10 px in the tests)
 GAP_PX = 8  # padding between tiles and around them
@@ -74,8 +82,12 @@ class ProcessError(Exception):
 
 def _ffmpeg(args, what, cwd=None):
     try:
-        r = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", *args],
-                           capture_output=True, check=False, cwd=cwd)
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", *args],
+            capture_output=True,
+            check=False,
+            cwd=cwd,
+        )
     except OSError as e:
         raise ProcessError(f"ffmpeg: {e}") from None
     if r.returncode:
@@ -88,9 +100,22 @@ def _span(raw):
     """(first frame's time, end time) of the recording, in seconds, from its
     packets (no decoding)."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                            "-show_entries", "stream=time_base:packet=pts,duration",
-                            "-of", "compact=p=0:nk=0", raw], capture_output=True, text=True)
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=time_base:packet=pts,duration",
+                "-of",
+                "compact=p=0:nk=0",
+                raw,
+            ],
+            capture_output=True,
+            text=True,
+        )
     except OSError as e:
         raise ProcessError(f"ffprobe: {e}") from None
     tb, starts, ends = None, [], []
@@ -100,7 +125,9 @@ def _span(raw):
             tb = Fraction(fields["time_base"])
         elif fields.get("pts", "N/A") != "N/A":
             pts = int(fields["pts"])
-            dur = int(fields["duration"]) if fields.get("duration", "N/A") != "N/A" else 0
+            dur = (
+                int(fields["duration"]) if fields.get("duration", "N/A") != "N/A" else 0
+            )
             starts.append(pts)
             ends.append(pts + dur)
     if r.returncode or tb is None or not starts:
@@ -108,7 +135,9 @@ def _span(raw):
     return min(starts) * tb, max(ends) * tb
 
 
-_QUANTISE = bytes(v >> 4 for v in range(256))  # 16 levels: small shading changes don't count
+_QUANTISE = bytes(
+    v >> 4 for v in range(256)
+)  # 16 levels: small shading changes don't count
 
 
 def changed(a, b, size):
@@ -140,7 +169,9 @@ class Picker:
         unit = scale * scale / 16  # a quarter-size pixel is 16 / scale^2 logical px
         self.state = STATE_AREA * unit
         self.busy = BUSY_AREA * unit
-        self.pending = deque()  # (index, time, frame), waiting for HOLD s of what follows
+        self.pending = (
+            deque()
+        )  # (index, time, frame), waiting for HOLD s of what follows
         self.prev = None
         self.last_switch = None
         self.busy_since = None
@@ -172,8 +203,11 @@ class Picker:
         return self.kept, self.before & set(self.kept)
 
     def _decide(self, i, t, frame):
-        holds = all(changed(frame, f, self.size) < self.busy
-                    for _, u, f in self.pending if u - t < HOLD)
+        holds = all(
+            changed(frame, f, self.size) < self.busy
+            for _, u, f in self.pending
+            if u - t < HOLD
+        )
         if holds:
             self.busy_since = None
         elif self.busy_since is None:
@@ -184,9 +218,9 @@ class Picker:
         if i in self.before:
             if gap >= _EPS:
                 self._keep(i, t, frame)
-            return
+            return None
         if changed(frame, self.last[2], self.size) < self.state:
-            return
+            return None
         if holds:
             if gap >= MIN_GAP:
                 self._keep(i, t, frame)
@@ -236,7 +270,11 @@ class Layout:
             if room_w < self.label_w or room_h < 3:
                 continue
             self._grid(cols, rows, min(1.0, (room_w - 2) / w, (room_h - 2) / h), w, h)
-            key = (-self.scale, abs(math.log(self.width / self.height)), cols * rows - count)
+            key = (
+                -self.scale,
+                abs(math.log(self.width / self.height)),
+                cols * rows - count,
+            )
             if best is None or key < best[0]:
                 best = (key, cols, rows, self.scale)
         self._grid(*(best[1:] if best else (1, count, 0.0)), w, h)
@@ -257,7 +295,10 @@ def split(count, w, h, min_scale, max_edge=SHEET_MAX_EDGE):
     keep the tiles at min_scale or bigger (one frame a sheet at the least),
     the frames spread evenly, earlier sheets taking the odd ones."""
     for k in range(1, count + 1):
-        if k == count or Layout(math.ceil(count / k), w, h, max_edge).scale >= min_scale:
+        if (
+            k == count
+            or Layout(math.ceil(count / k), w, h, max_edge).scale >= min_scale
+        ):
             return [count // k + (i < count % k) for i in range(k)]
     return []
 
@@ -279,9 +320,11 @@ def _clean(folder, gif=True, sheets=True):
     """Remove what an earlier run left: the GIF, the sheets and frames/."""
     stem, ext = os.path.splitext(SHEET)
     for name in os.listdir(folder):
-        if ((gif and name in (GIF, _PALETTE))
-                or (sheets and (name == SHEET or (name.startswith(stem + "-") and name.endswith(ext))))):
-            os.remove(os.path.join(folder, name))
+        if (gif and name in (GIF, _PALETTE)) or (
+            sheets
+            and (name == SHEET or (name.startswith(stem + "-") and name.endswith(ext)))
+        ):
+            pathlib.Path(os.path.join(folder, name)).unlink()
     if sheets:
         shutil.rmtree(os.path.join(folder, FRAMES), ignore_errors=True)
 
@@ -302,15 +345,41 @@ def make_gif(folder):
     palette = os.path.join(folder, _PALETTE)
     gif = os.path.join(folder, GIF)
     try:
-        _ffmpeg(["-i", raw, "-vf", f"{EXACT},palettegen=stats_mode=diff", *_BITEXACT,
-                 "-frames:v", "1", "-update", "1", palette], "making the GIF's palette")
-        _ffmpeg(["-i", raw, "-i", palette, "-filter_complex",
-                 f"[0:v]{EXACT}[g];[g][1:v]paletteuse=dither={DITHER}:diff_mode=rectangle",
-                 "-fps_mode", "passthrough", "-loop", "0", *_BITEXACT, gif],
-                "writing the GIF")
+        _ffmpeg(
+            [
+                "-i",
+                raw,
+                "-vf",
+                f"{EXACT},palettegen=stats_mode=diff",
+                *_BITEXACT,
+                "-frames:v",
+                "1",
+                "-update",
+                "1",
+                palette,
+            ],
+            "making the GIF's palette",
+        )
+        _ffmpeg(
+            [
+                "-i",
+                raw,
+                "-i",
+                palette,
+                "-filter_complex",
+                f"[0:v]{EXACT}[g];[g][1:v]paletteuse=dither={DITHER}:diff_mode=rectangle",
+                "-fps_mode",
+                "passthrough",
+                "-loop",
+                "0",
+                *_BITEXACT,
+                gif,
+            ],
+            "writing the GIF",
+        )
     finally:
-        if os.path.exists(palette):
-            os.remove(palette)
+        if pathlib.Path(palette).exists():
+            pathlib.Path(palette).unlink()
     set_duration(gif, end - t0)
     return gif
 
@@ -333,15 +402,29 @@ def make_sheets(folder, scale=1, colors=None):
 
     # 2: the kept frames
     frames = os.path.join(folder, FRAMES)
-    os.makedirs(frames)
+    pathlib.Path(frames).mkdir(parents=True)
     select = "+".join(f"eq(n,{i})" for i in kept)
-    _ffmpeg(["-i", raw, "-vf", f"{SIMILAR},select='{select}'", "-fps_mode", "passthrough",
-             *_BITEXACT, "-start_number", "1", os.path.join(frames, "%04d.png")],
-            "writing the frames")
+    _ffmpeg(
+        [
+            "-i",
+            raw,
+            "-vf",
+            f"{SIMILAR},select='{select}'",
+            "-fps_mode",
+            "passthrough",
+            *_BITEXACT,
+            "-start_number",
+            "1",
+            os.path.join(frames, "%04d.png"),
+        ],
+        "writing the frames",
+    )
     names, tiles = [], []
     for n, i in enumerate(kept, 1):
         name = frame_name(n, times[i])
-        os.rename(os.path.join(frames, f"{n:04d}.png"), os.path.join(frames, name))
+        pathlib.Path(os.path.join(frames, f"{n:04d}.png")).rename(
+            os.path.join(frames, name)
+        )
         names.append((name, times[i]))
         tiles.append((name, tile_label(n, len(kept), times[i], i in before)))
 
@@ -350,16 +433,19 @@ def make_sheets(folder, scale=1, colors=None):
     sheets, first = [], 0
     for name, count in zip(sheet_names(len(counts)), counts):
         sheets.append(os.path.join(folder, name))
-        sheet(frames, tiles[first:first + count], (w, h), sheets[-1], colors)
+        sheet(frames, tiles[first : first + count], (w, h), sheets[-1], colors)
         first += count
-    os.remove(raw)
-    return {"distinct": len(times), "frames": [(n, float(t)) for n, t in names],
-            "sheets": sheets}
+    pathlib.Path(raw).unlink()
+    return {
+        "distinct": len(times),
+        "frames": [(n, float(t)) for n, t in names],
+        "sheets": sheets,
+    }
 
 
 def _raw(folder):
     raw = os.path.join(folder, RAW)
-    if not os.path.isfile(raw):
+    if not pathlib.Path(raw).is_file():
         raise ProcessError(f"{raw} is missing")
     return raw
 
@@ -376,14 +462,38 @@ def _analyse(raw, w, h, scale):
     with tempfile.TemporaryFile() as err:
         try:
             proc = subprocess.Popen(
-                ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-i", raw,
-                 "-filter_complex",
-                 f"[0:v]{SIMILAR},split[s][q];[q]scale={qw}:{qh}:flags=area,format=gray[g]",
-                 "-map", "[s]", "-fps_mode", "passthrough", "-flush_packets", "1",
-                 "-f", "framemd5", f"pipe:{times_w}",
-                 "-map", "[g]", "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:1"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err,
-                pass_fds=(times_w,))
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-i",
+                    raw,
+                    "-filter_complex",
+                    f"[0:v]{SIMILAR},split[s][q];[q]scale={qw}:{qh}:flags=area,format=gray[g]",
+                    "-map",
+                    "[s]",
+                    "-fps_mode",
+                    "passthrough",
+                    "-flush_packets",
+                    "1",
+                    "-f",
+                    "framemd5",
+                    f"pipe:{times_w}",
+                    "-map",
+                    "[g]",
+                    "-fps_mode",
+                    "passthrough",
+                    "-f",
+                    "rawvideo",
+                    "pipe:1",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=err,
+                pass_fds=(times_w,),
+            )
         except OSError as e:
             os.close(times_r)
             raise ProcessError(f"ffmpeg: {e}") from None
@@ -393,7 +503,7 @@ def _analyse(raw, w, h, scale):
 
         def read_times():
             tb = None
-            with open(times_r) as f:
+            with pathlib.Path(times_r).open() as f:
                 for line in f:
                     if line.startswith("#tb 0:"):
                         tb = Fraction(line.split(":", 1)[1].strip())
@@ -406,7 +516,9 @@ def _analyse(raw, w, h, scale):
                 frames.put(int.from_bytes(buf.translate(_QUANTISE), "big"))
             frames.put(None)
 
-        readers = [threading.Thread(target=f, daemon=True) for f in (read_times, read_frames)]
+        readers = [
+            threading.Thread(target=f, daemon=True) for f in (read_times, read_frames)
+        ]
         for r in readers:
             r.start()
         stamps = []
@@ -439,25 +551,56 @@ def sheet(frames, tiles, size, path, colors):
     under a strip with its label (see tile_label())."""
     lay = Layout(len(tiles), *size)
     base, fg, line = ("0x" + colors[k] for k in ("BASE", "TEXT", "SURFACE1"))
-    shrink = (f"scale={lay.tile_w}:{lay.tile_h}:flags=area,"
-              if (lay.tile_w, lay.tile_h) != tuple(size) else "")
+    shrink = (
+        f"scale={lay.tile_w}:{lay.tile_h}:flags=area,"
+        if (lay.tile_w, lay.tile_h) != tuple(size)
+        else ""
+    )
     inputs, chains = [], []
     for k, (name, text) in enumerate(tiles):
         inputs += ["-i", os.path.join(frames, name)]
-        chains.append(f"[{k}:v]format=rgb24,{shrink}pad=iw+2:ih+2:1:1:color={line},"
-                      f"pad={lay.cell_w}:{lay.cell_h}:0:{lay.strip}:color={base},"
-                      f"drawtext=font='{FONT}':text='{text}':fontcolor={fg}:"
-                      f"fontsize={lay.font}:x=0:y=({lay.strip}-th)/2[v{k}]")
+        chains.append(
+            f"[{k}:v]format=rgb24,{shrink}pad=iw+2:ih+2:1:1:color={line},"
+            f"pad={lay.cell_w}:{lay.cell_h}:0:{lay.strip}:color={base},"
+            f"drawtext=font='{FONT}':text='{text}':fontcolor={fg}:"
+            f"fontsize={lay.font}:x=0:y=({lay.strip}-th)/2[v{k}]"
+        )
     graph = ";".join(chains) + ";" + "".join(f"[v{k}]" for k in range(len(tiles)))
-    graph += (f"concat=n={len(tiles)}:v=1:a=0,"
-              f"tile={lay.cols}x{lay.rows}:padding={lay.gap}:margin={lay.gap}:color={base}")
-    _ffmpeg([*inputs, "-filter_complex", graph, *_BITEXACT, "-frames:v", "1", "-update", "1",
-             path], "making the sheet")
+    graph += (
+        f"concat=n={len(tiles)}:v=1:a=0,"
+        f"tile={lay.cols}x{lay.rows}:padding={lay.gap}:margin={lay.gap}:color={base}"
+    )
+    _ffmpeg(
+        [
+            *inputs,
+            "-filter_complex",
+            graph,
+            *_BITEXACT,
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            path,
+        ],
+        "making the sheet",
+    )
 
 
 def _size(path):
-    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
-                        "-of", "csv=p=0", path], capture_output=True, text=True)
+    r = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
     try:
         w, h = map(int, r.stdout.strip().split(","))
     except ValueError:
@@ -505,16 +648,16 @@ def set_duration(path, seconds):
     """Give the GIF's last frame the rest of the recording. ffmpeg gives it
     one frame's time, so a still end (exact duplicates, dropped) would be
     cut short; its delays otherwise add up to the recording without drift."""
-    with open(path, "r+b") as f:
+    with pathlib.Path(path).open("r+b") as f:
         data = bytearray(f.read())
         offsets = _delay_offsets(data)
         if not offsets or offsets[-1] is None:
             return
-        before = sum(int.from_bytes(data[o:o + 2], "little") for o in offsets[:-1])
+        before = sum(int.from_bytes(data[o : o + 2], "little") for o in offsets[:-1])
         last = round(Fraction(seconds) * 100) - before
         if last < 1:
             return
-        data[offsets[-1]:offsets[-1] + 2] = min(last, 0xFFFF).to_bytes(2, "little")
+        data[offsets[-1] : offsets[-1] + 2] = min(last, 0xFFFF).to_bytes(2, "little")
         f.seek(0)
         f.write(data)
 

@@ -2,6 +2,7 @@
 
 import json
 import os
+import pathlib
 import tempfile
 import time
 
@@ -10,7 +11,7 @@ from gi.repository import Gio, GLib
 from gtk_widgets.widgets.launcher.match import Field
 
 TERMINAL = ["ghostty", "-e"]  # Terminal=true entries run inside this
-HALF_LIFE_S = 14 * 86400      # a launch counts half as much after two weeks
+HALF_LIFE_S = 14 * 86400  # a launch counts half as much after two weeks
 _PRELOAD = "libgtk4-layer-shell.so.0"
 # Exec field codes that expand to nothing here: no files or URLs are passed
 _DROPPED_CODES = set("fFuUdDnNvm")
@@ -30,12 +31,16 @@ class Usage:
         self.path = path or usage_path()
         self.data = {}
         try:
-            with open(self.path) as f:
+            with pathlib.Path(self.path).open() as f:
                 data = json.load(f)
-            self.data = {k: v for k, v in data.items()
-                         if isinstance(v, dict) and isinstance(v.get("score"), (int, float))
-                         and isinstance(v.get("time"), (int, float))}
-        except (OSError, ValueError, AttributeError):
+            self.data = {
+                k: v
+                for k, v in data.items()
+                if isinstance(v, dict)
+                and isinstance(v.get("score"), (int, float))
+                and isinstance(v.get("time"), (int, float))
+            }
+        except OSError, ValueError, AttributeError:
             pass
 
     def score(self, key, now=None):
@@ -54,16 +59,16 @@ class Usage:
         """Write atomically: a temp file in the same directory, then rename."""
         folder = os.path.dirname(self.path)
         try:
-            os.makedirs(folder, exist_ok=True)
+            pathlib.Path(folder).mkdir(exist_ok=True, parents=True)
             fd, tmp = tempfile.mkstemp(dir=folder, prefix=".usage-")
             try:
                 with os.fdopen(fd, "w") as f:
                     json.dump(self.data, f, indent=0, sort_keys=True)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp, self.path)
+                pathlib.Path(tmp).replace(self.path)
             except BaseException:
-                os.unlink(tmp)
+                pathlib.Path(tmp).unlink()
                 raise
         except OSError as e:
             print(f"launcher: can't save usage: {e}", flush=True)
@@ -72,7 +77,7 @@ class Usage:
 class App:
     """One desktop entry, with its search fields prepared."""
 
-    __slots__ = ("info", "id", "name", "icon", "detail", "field", "extra", "sort")
+    __slots__ = ("detail", "extra", "field", "icon", "id", "info", "name", "sort")
 
     def __init__(self, info):
         self.info = info
@@ -108,8 +113,11 @@ def child_environment():
     """Remove the layer-shell preload from this process's environment, which
     launched apps inherit: it is loaded already, and it must not end up in
     every app started from here."""
-    kept = [p for p in os.environ.get("LD_PRELOAD", "").replace(" ", ":").split(":")
-            if p and os.path.basename(p) != _PRELOAD]
+    kept = [
+        p
+        for p in os.environ.get("LD_PRELOAD", "").replace(" ", ":").split(":")
+        if p and os.path.basename(p) != _PRELOAD
+    ]
     if kept:
         os.environ["LD_PRELOAD"] = ":".join(kept)
     else:
@@ -168,7 +176,8 @@ def launch(info, context):
             # create_from_commandline treats % as a field code and appends %f
             cmd = " ".join(GLib.shell_quote(a) for a in term + argv).replace("%", "%%")
             info = Gio.AppInfo.create_from_commandline(
-                cmd, info.get_name(), Gio.AppInfoCreateFlags.NONE)
+                cmd, info.get_name(), Gio.AppInfoCreateFlags.NONE
+            )
         info.launch([], context)
     except GLib.Error as e:
         return e.message
@@ -177,10 +186,21 @@ def launch(info, context):
 
 def notify_error(summary, body):
     try:
-        GLib.spawn_async(["notify-send", "-a", "Launcher", "-u", "critical",
-                          "-i", "dialog-error", summary, body],
-                         flags=GLib.SpawnFlags.SEARCH_PATH
-                         | GLib.SpawnFlags.STDOUT_TO_DEV_NULL
-                         | GLib.SpawnFlags.STDERR_TO_DEV_NULL)
+        GLib.spawn_async(
+            [
+                "notify-send",
+                "-a",
+                "Launcher",
+                "-u",
+                "critical",
+                "-i",
+                "dialog-error",
+                summary,
+                body,
+            ],
+            flags=GLib.SpawnFlags.SEARCH_PATH
+            | GLib.SpawnFlags.STDOUT_TO_DEV_NULL
+            | GLib.SpawnFlags.STDERR_TO_DEV_NULL,
+        )
     except GLib.Error as e:
         print(f"launcher: {summary}: {body} (notify-send: {e.message})", flush=True)

@@ -16,49 +16,115 @@ the other PSKs), and re-applying its cached secrets fails once a peer that
 had a PSK is gone. Such updates must carry the complete set.
 """
 
-import base64, os, pwd, re, shutil, socket, subprocess
+import base64
+import os
+import pwd
+import re
+import shutil
+import socket
+import subprocess
 from types import SimpleNamespace
-
-from gtk_widgets.lib.ui.copy_label import copyable
-from gtk_widgets.lib.ui.widget_base import Gtk, VScroller, pass_wheel
 
 from gi.repository import GLib
 
+from gtk_widgets.lib.ui.copy_label import copyable
+from gtk_widgets.lib.ui.widget_base import Gtk, VScroller, pass_wheel
 from gtk_widgets.widgets.network.nmutil import (
-    EAP_INNER, EAP_METHODS, NM, VPN_TYPES, apply_eap, connection_security, eap_problem,
-    eap_values, error_text, freq_band, mac_problem, parse_cidr, parse_ip, password_problem,
-    connection_ssid, is_hotspot, reapply_refusal_text, ssid_text, wg_key_problem,
+    EAP_INNER,
+    EAP_METHODS,
+    NM,
+    VPN_TYPES,
+    apply_eap,
+    connection_security,
+    connection_ssid,
+    eap_problem,
+    eap_values,
+    error_text,
+    freq_band,
+    is_hotspot,
+    mac_problem,
+    parse_cidr,
+    parse_ip,
+    password_problem,
+    reapply_refusal_text,
+    ssid_text,
+    wg_key_problem,
 )
-from gtk_widgets.widgets.network.ui import button, error_label, glyph_button, hbox, label, vbox
+from gtk_widgets.widgets.network.ui import (
+    button,
+    error_label,
+    glyph_button,
+    hbox,
+    label,
+    vbox,
+)
 
 EDITABLE_TYPES = ("802-11-wireless", "802-3-ethernet", "wireguard")
 SECRET_SETTINGS = ("802-11-wireless-security", "802-1x", "wireguard")
 FAMILIES = ((socket.AF_INET, "ipv4", "IPv4"), (socket.AF_INET6, "ipv6", "IPv6"))
 IP_METHODS = {
-    "ipv4": [("auto", "Automatic (DHCP)"), ("manual", "Manual"), ("link-local", "Link-local"),
-             ("disabled", "Disabled")],
-    "ipv6": [("auto", "Automatic"), ("dhcp", "DHCP only"), ("manual", "Manual"),
-             ("link-local", "Link-local"), ("ignore", "Ignore"), ("disabled", "Disabled")],
+    "ipv4": [
+        ("auto", "Automatic (DHCP)"),
+        ("manual", "Manual"),
+        ("link-local", "Link-local"),
+        ("disabled", "Disabled"),
+    ],
+    "ipv6": [
+        ("auto", "Automatic"),
+        ("dhcp", "DHCP only"),
+        ("manual", "Manual"),
+        ("link-local", "Link-local"),
+        ("ignore", "Ignore"),
+        ("disabled", "Disabled"),
+    ],
 }
-METERED = [(NM.Metered.UNKNOWN, "Automatic"), (NM.Metered.YES, "Yes"), (NM.Metered.NO, "No")]
+METERED = [
+    (NM.Metered.UNKNOWN, "Automatic"),
+    (NM.Metered.YES, "Yes"),
+    (NM.Metered.NO, "No"),
+]
 BANDS = [(None, "Automatic"), ("bg", "2.4 GHz"), ("a", "5 GHz")]
-MAC_MODES = [(None, "Default"), ("permanent", "Permanent"), ("random", "Random (new every connect)"),
-             ("stable", "Stable (fixed per network)"), ("preserve", "Preserve"), ("custom", "Custom")]
+MAC_MODES = [
+    (None, "Default"),
+    ("permanent", "Permanent"),
+    ("random", "Random (new every connect)"),
+    ("stable", "Stable (fixed per network)"),
+    ("preserve", "Preserve"),
+    ("custom", "Custom"),
+]
 WOL = NM.SettingWiredWakeOnLan
 WOWL = NM.SettingWirelessWakeOnWLan
-POWERSAVE = [(int(NM.SettingWirelessPowersave.DEFAULT), "Default"),
-             (int(NM.SettingWirelessPowersave.DISABLE), "Off"),
-             (int(NM.SettingWirelessPowersave.ENABLE), "On")]
-WAKE_ON_WLAN = [(int(WOWL.DEFAULT), "Default"), (0, "Off"), (int(WOWL.MAGIC), "Magic packet"),
-                (int(WOWL.ANY), "Any")]
+POWERSAVE = [
+    (int(NM.SettingWirelessPowersave.DEFAULT), "Default"),
+    (int(NM.SettingWirelessPowersave.DISABLE), "Off"),
+    (int(NM.SettingWirelessPowersave.ENABLE), "On"),
+]
+WAKE_ON_WLAN = [
+    (int(WOWL.DEFAULT), "Default"),
+    (0, "Off"),
+    (int(WOWL.MAGIC), "Magic packet"),
+    (int(WOWL.ANY), "Any"),
+]
 # fixed link modes: half duplex only where it still exists in practice
 LINK_MODES = [(None, "Automatic")] + [
     ((speed, duplex), f"{speed} Mb/s, {duplex} duplex")
     for speed in (10, 100, 1000, 2500, 5000, 10000)
-    for duplex in (("full", "half") if speed <= 100 else ("full",))]
-CLIENT_IDS = [(None, "Default"), ("mac", "MAC address"), ("perm-mac", "Permanent MAC"),
-              ("stable", "Stable (per profile)"), ("duid", "DUID"), ("custom", "Custom")]
-IP6_PRIVACY = [(-1, "Default"), (0, "Off"), (1, "Prefer public"), (2, "Prefer temporary")]
+    for duplex in (("full", "half") if speed <= 100 else ("full",))
+]
+CLIENT_IDS = [
+    (None, "Default"),
+    ("mac", "MAC address"),
+    ("perm-mac", "Permanent MAC"),
+    ("stable", "Stable (per profile)"),
+    ("duid", "DUID"),
+    ("custom", "Custom"),
+]
+IP6_PRIVACY = [
+    (-1, "Default"),
+    (0, "Off"),
+    (1, "Prefer public"),
+    (2, "Prefer temporary"),
+]
 HEX_ID = re.compile(r"[0-9a-fA-F]{2}(:[0-9a-fA-F]{2})+")
 # NM refuses to reapply these to a connected device (see _reapply)
 ON_RECONNECT = "Takes effect on reconnect"
@@ -93,6 +159,7 @@ def channels(band):
 
 
 # --- input widgets (each reports edits through on_change) ---
+
 
 class Choice(Gtk.DropDown):
     """Dropdown over (value, label) pairs; unknown saved values are kept as extra items."""
@@ -133,8 +200,12 @@ class Spin(Gtk.SpinButton):
     alone waits for Enter or focus-out, so value() reads the text."""
 
     def __init__(self, lo, hi, on_change):
-        super().__init__(adjustment=Gtk.Adjustment(lower=lo, upper=hi, step_increment=1,
-                                                   page_increment=10), numeric=True)
+        super().__init__(
+            adjustment=Gtk.Adjustment(
+                lower=lo, upper=hi, step_increment=1, page_increment=10
+            ),
+            numeric=True,
+        )
         self.add_css_class("net-spin")
         pass_wheel(self)  # the page scrolls under the pointer
         self.connect("value-changed", lambda *_: on_change())
@@ -162,10 +233,16 @@ class SecretEntry(Gtk.Box):
     untouched) until Show fetches it or the user types a new one."""
 
     def __init__(self, page, setting, placeholder="Saved (Show to reveal)"):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=4, hexpand=True)
+        super().__init__(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=4, hexpand=True
+        )
         self.page, self.setting, self.placeholder = page, setting, placeholder
-        self.entry = Gtk.Entry(visibility=False, hexpand=True, placeholder_text=placeholder,
-                               input_purpose=Gtk.InputPurpose.PASSWORD)
+        self.entry = Gtk.Entry(
+            visibility=False,
+            hexpand=True,
+            placeholder_text=placeholder,
+            input_purpose=Gtk.InputPurpose.PASSWORD,
+        )
         self.entry.add_css_class("net-entry")
         self._handler = self.entry.connect("changed", self._changed)
         self.append(self.entry)
@@ -186,6 +263,7 @@ class SecretEntry(Gtk.Box):
         def show():
             self.entry.set_visibility(True)
             self.show_btn.set_label("Hide")
+
         if self.loaded or self.edited:
             show()
         else:
@@ -211,7 +289,10 @@ class RowList(Gtk.Box):
 
     def __init__(self, columns, on_change, add_label="Add"):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
-        self.columns, self.on_change = columns, on_change  # [(placeholder, width_chars)]
+        self.columns, self.on_change = (
+            columns,
+            on_change,
+        )  # [(placeholder, width_chars)]
         self.rows = vbox(4)
         self.append(self.rows)
         add = button(add_label, on_click=lambda: (self.add_row(), self.on_change()))
@@ -222,7 +303,9 @@ class RowList(Gtk.Box):
         row = hbox(4)
         row.entries = []
         for i, (ph, width) in enumerate(self.columns):
-            ent = text_entry(self.on_change, placeholders[i] if i < len(placeholders) else ph)
+            ent = text_entry(
+                self.on_change, placeholders[i] if i < len(placeholders) else ph
+            )
             ent.set_width_chars(width)
             ent.set_hexpand(i == 0)
             if i < len(values) and values[i] is not None:
@@ -233,7 +316,8 @@ class RowList(Gtk.Box):
         def remove():
             self.rows.remove(row)
             self.on_change()
-        row.append(glyph_button("\U000F0156", "Remove", remove))  # nf-md-close
+
+        row.append(glyph_button("\U000f0156", "Remove", remove))  # nf-md-close
         self.rows.append(row)
         return row
 
@@ -258,7 +342,9 @@ class EapForm(Gtk.Box):
         self.on_change = on_change
         self._inner_method = None
         self.method = Choice(EAP_METHODS, self._method_changed)
-        self.inner = Choice([(v, t) for v, t, _ in EAP_INNER["peap"]], on_change)  # rebuilt per method
+        self.inner = Choice(
+            [(v, t) for v, t, _ in EAP_INNER["peap"]], on_change
+        )  # rebuilt per method
         self.anonymous = text_entry(on_change, "optional")
         self.identity = text_entry(on_change, "username")
         if password is None:
@@ -271,16 +357,21 @@ class EapForm(Gtk.Box):
         self.domain = text_entry(on_change, "optional, e.g. example.org")
         self.inner_row = field_row("Inner auth", self.inner)
         self.rows = {}
-        for key, name, widget in (("method", "EAP method", self.method),
-                                  ("anonymous", "Anonymous ID", self.anonymous),
-                                  ("identity", "Identity", self.identity),
-                                  ("password", "Password", self.password)):
+        for key, name, widget in (
+            ("method", "EAP method", self.method),
+            ("anonymous", "Anonymous ID", self.anonymous),
+            ("identity", "Identity", self.identity),
+            ("password", "Password", self.password),
+        ):
             self.rows[key] = field_row(name, widget)
             self.append(self.rows[key])
         self.append(field_row("", self.ask))
         self.append(self.inner_row)
         self.append(field_row("Domain", self.domain))
-        warn = label("No CA certificate: the server's identity is not verified", "net-form-warning")
+        warn = label(
+            "No CA certificate: the server's identity is not verified",
+            "net-form-warning",
+        )
         warn.set_wrap(True)
         self.append(warn)
         self._set_inner("peap")
@@ -306,7 +397,8 @@ class EapForm(Gtk.Box):
         self.password.set_sensitive(not ask)
         if isinstance(self.password, SecretEntry):
             self.password.entry.set_placeholder_text(
-                "Asked when connecting" if ask else self.password.placeholder)
+                "Asked when connecting" if ask else self.password.placeholder
+            )
 
     def set_values(self, v):
         self.method.set_value(v["method"])
@@ -318,10 +410,14 @@ class EapForm(Gtk.Box):
         self._sync_password()
 
     def values(self):
-        return {"method": self.method.value(), "inner": self.inner.value(),
-                "identity": self.identity.get_text().strip(),
-                "anonymous": self.anonymous.get_text().strip(),
-                "domain": self.domain.get_text().strip(), "ask": self.ask.get_active()}
+        return {
+            "method": self.method.value(),
+            "inner": self.inner.value(),
+            "identity": self.identity.get_text().strip(),
+            "anonymous": self.anonymous.get_text().strip(),
+            "domain": self.domain.get_text().strip(),
+            "ask": self.ask.get_active(),
+        }
 
     def password_value(self):
         if isinstance(self.password, SecretEntry):
@@ -337,7 +433,9 @@ class FieldRow(Gtk.Box):
         line = hbox(8)
         key = label(name, "net-edit-key")
         key.set_width_chars(LABEL_CHARS)
-        key.set_valign(Gtk.Align.START if isinstance(widget, RowList) else Gtk.Align.CENTER)
+        key.set_valign(
+            Gtk.Align.START if isinstance(widget, RowList) else Gtk.Align.CENTER
+        )
         line.append(key)
         line.append(widget)
         self.line, self.widget = line, widget
@@ -379,7 +477,9 @@ class More(Gtk.Box):
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.add_css_class("net-more")
-        self.toggle = button("More", "net-more-btn", on_click=lambda: self.set_open(not self.is_open()))
+        self.toggle = button(
+            "More", "net-more-btn", on_click=lambda: self.set_open(not self.is_open())
+        )
         self.toggle.set_halign(Gtk.Align.START)
         self.content = vbox(6)
         self.content.more = self
@@ -393,17 +493,20 @@ class More(Gtk.Box):
     def set_open(self, open_):
         self.content.set_visible(open_)
         # nf-md-chevron_down / nf-md-chevron_right
-        self.toggle.set_label(("\U000F0140" if open_ else "\U000F0142") + " More")
+        self.toggle.set_label(("\U000f0140" if open_ else "\U000f0142") + " More")
 
 
 # --- the page ---
+
 
 class EditPage(Gtk.Box):
     def __init__(self, app, on_back):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.app, self.on_back = app, on_back
         header = hbox(6)
-        header.append(glyph_button("\U000F004D", "Back", self._cancel))  # nf-md-arrow_left
+        header.append(
+            glyph_button("\U000f004d", "Back", self._cancel)
+        )  # nf-md-arrow_left
         self.title = label("", "net-title", hexpand=True, ellipsize=True)
         header.append(self.title)
         self.append(header)
@@ -440,9 +543,9 @@ class EditPage(Gtk.Box):
         self.remote = remote
         self.base = NM.SimpleConnection.new_clone(remote)
         self._fetched = set()
-        self._secret_fields = []   # (setting, SecretEntry, getter(conn) -> value)
-        self._appliers = []        # apply(candidate) raising FieldError
-        self._rows = {}            # "setting.property" -> FieldRow (inline errors)
+        self._secret_fields = []  # (setting, SecretEntry, getter(conn) -> value)
+        self._appliers = []  # apply(candidate) raising FieldError
+        self._rows = {}  # "setting.property" -> FieldRow (inline errors)
         self._peers = []
         self._loading = True
         while child := self.body.get_first_child():
@@ -451,8 +554,14 @@ class EditPage(Gtk.Box):
         self.apply_bar.set_visible(False)
         self._show_msg(None)
         ctype = remote.get_connection_type()
-        self.active = next((ac for ac in self.app.client.get_active_connections()
-                            if ac.get_uuid() == remote.get_uuid()), None)
+        self.active = next(
+            (
+                ac
+                for ac in self.app.client.get_active_connections()
+                if ac.get_uuid() == remote.get_uuid()
+            ),
+            None,
+        )
         self._build_general(ctype)
         if ctype == "802-11-wireless":
             self._build_wifi()
@@ -491,7 +600,11 @@ class EditPage(Gtk.Box):
             return self.active.get_devices()[0]
         iface = self.base.get_setting_connection().get_interface_name()
         for dev in self.app.client.get_devices():
-            if isinstance(dev, cls) and dev.get_managed() and (not iface or dev.get_iface() == iface):
+            if (
+                isinstance(dev, cls)
+                and dev.get_managed()
+                and (not iface or dev.get_iface() == iface)
+            ):
                 return dev
         return None
 
@@ -510,8 +623,13 @@ class EditPage(Gtk.Box):
         prio = Spin(-999, 999, self.changed)
         prio.set_value(s_con.get_autoconnect_priority())
         prio.set_halign(Gtk.Align.START)
-        self._row(sec, "connection.autoconnect-priority", "Priority", prio,
-                  None if vpn else "Higher is tried first among autoconnect profiles")
+        self._row(
+            sec,
+            "connection.autoconnect-priority",
+            "Priority",
+            prio,
+            None if vpn else "Higher is tried first among autoconnect profiles",
+        )
         metered = Choice(METERED, self.changed)
         metered.set_value(shown_metered(s_con))
         self._row(sec, "connection.metered", "Metered", metered)
@@ -524,9 +642,18 @@ class EditPage(Gtk.Box):
         everyone.set_active(not perms)
         everyone.set_halign(Gtk.Align.START)
         users = [p.split(":")[1] for p in perms if p.startswith("user:")]
-        hint = (f"Now only {', '.join(users) or 'nobody'}, while logged in"
-                if perms and users != [me] else f"Off: only {me}, and only while logged in")
-        self._row(more.content, "connection.permissions", "All users", everyone, on_reconnect(hint))
+        hint = (
+            f"Now only {', '.join(users) or 'nobody'}, while logged in"
+            if perms and users != [me]
+            else f"Off: only {me}, and only while logged in"
+        )
+        self._row(
+            more.content,
+            "connection.permissions",
+            "All users",
+            everyone,
+            on_reconnect(hint),
+        )
         more.set_open(bool(perms))
         self.body.append(sec)
         uuid = s_con.get_uuid()
@@ -536,9 +663,13 @@ class EditPage(Gtk.Box):
             new = name.get_text().strip()
             if not new:
                 raise FieldError("connection.id", "Enter a name")
-            if any(x.get_id() == new and x.get_uuid() != uuid
-                   for x in self.app.client.get_connections()):
-                raise FieldError("connection.id", f"Another profile is already named {new}")
+            if any(
+                x.get_id() == new and x.get_uuid() != uuid
+                for x in self.app.client.get_connections()
+            ):
+                raise FieldError(
+                    "connection.id", f"Another profile is already named {new}"
+                )
             c.set_property("id", new)
             if not vpn:
                 c.set_property("autoconnect", auto.get_active())
@@ -549,6 +680,7 @@ class EditPage(Gtk.Box):
                 c.set_property("permissions", [])
             elif not perms:  # a stored user list stays as it is
                 c.set_property("permissions", [f"user:{me}:"])
+
         self._appliers.append(apply)
 
     def _build_wifi(self):
@@ -567,14 +699,21 @@ class EditPage(Gtk.Box):
             def sync_channels(keep):
                 b = band.value()
                 listed = channels(b) if b in ("bg", "a") else []
-                channel.set_options([(0, "Automatic")] + [(c, str(c)) for c in listed], keep)
+                channel.set_options(
+                    [(0, "Automatic")] + [(c, str(c)) for c in listed], keep
+                )
                 if keep and channel.value() != keep and b == stored_band:
                     channel.set_value(keep, f"{keep} (kept)")  # e.g. a 6 GHz channel
                 channel.set_sensitive(bool(listed) or channel.value() != 0)
-                chan_row.hint.set_text(on_reconnect(
-                    "Only channels your country allows will start" if listed
-                    else "Pick a band to choose a channel"))
+                chan_row.hint.set_text(
+                    on_reconnect(
+                        "Only channels your country allows will start"
+                        if listed
+                        else "Pick a band to choose a channel"
+                    )
+                )
                 chan_row.hint.set_visible(True)
+
             sync_channels(s_wifi.get_channel())
             band.connect("notify::selected", lambda *_: sync_channels(channel.value()))
 
@@ -583,11 +722,18 @@ class EditPage(Gtk.Box):
         options = [(None, "Any")]
         dev = self._device(NM.DeviceWifi)
         if isinstance(dev, NM.DeviceWifi) and ssid:
-            aps = [ap for ap in dev.get_access_points() if ssid_text(ap.get_ssid()) == ssid]
+            aps = [
+                ap for ap in dev.get_access_points() if ssid_text(ap.get_ssid()) == ssid
+            ]
             aps.sort(key=lambda ap: -ap.get_strength())
             for ap in aps:
-                options.append((ap.get_bssid().upper(), f"{ap.get_bssid()} · {ap.get_strength()}% · "
-                                f"{freq_band(ap.get_frequency())}"))
+                options.append(
+                    (
+                        ap.get_bssid().upper(),
+                        f"{ap.get_bssid()} · {ap.get_strength()}% · "
+                        f"{freq_band(ap.get_frequency())}",
+                    )
+                )
         options.append(("custom", "Other…"))
         bssid = Choice(options, self.changed)
         custom = text_entry(self.changed, "aa:bb:cc:dd:ee:ff")
@@ -600,9 +746,16 @@ class EditPage(Gtk.Box):
         else:
             bssid.set_value(cur_bssid)
         custom.set_visible(False)
-        bssid.connect("notify::selected", lambda *_: custom.set_visible(bssid.value() == "custom"))
-        self._row(sec, "802-11-wireless.bssid", "BSSID lock", box,
-                  on_reconnect("Locking to one access point stops roaming between them"))
+        bssid.connect(
+            "notify::selected", lambda *_: custom.set_visible(bssid.value() == "custom")
+        )
+        self._row(
+            sec,
+            "802-11-wireless.bssid",
+            "BSSID lock",
+            box,
+            on_reconnect("Locking to one access point stops roaming between them"),
+        )
         mtu = Spin(0, 9000, self.changed)
         mtu.set_value(s_wifi.get_mtu())
         mtu.set_halign(Gtk.Align.START)
@@ -610,16 +763,30 @@ class EditPage(Gtk.Box):
         more = self._more(sec)
         powersave = Choice(POWERSAVE, self.changed)
         powersave.set_value(int(s_wifi.get_powersave()), "Not managed (kept)")
-        self._row(more.content, "802-11-wireless.powersave", "Power saving", powersave,
-                  on_reconnect("Default leaves it to the driver unless NetworkManager.conf sets it"))
+        self._row(
+            more.content,
+            "802-11-wireless.powersave",
+            "Power saving",
+            powersave,
+            on_reconnect(
+                "Default leaves it to the driver unless NetworkManager.conf sets it"
+            ),
+        )
         wowl = None
         if not hotspot:
             wowl = Choice(WAKE_ON_WLAN, self.changed)
             wowl.set_value(int(s_wifi.get_wake_on_wlan()), "Custom (kept)")
-            self._row(more.content, "802-11-wireless.wake-on-wlan", "Wake on WLAN", wowl,
-                      "Wake from suspend on a packet from the network; not every card can")
-        more.set_open(powersave.value() != POWERSAVE[0][0]
-                      or (wowl is not None and wowl.value() != WAKE_ON_WLAN[0][0]))
+            self._row(
+                more.content,
+                "802-11-wireless.wake-on-wlan",
+                "Wake on WLAN",
+                wowl,
+                "Wake from suspend on a packet from the network; not every card can",
+            )
+        more.set_open(
+            powersave.value() != POWERSAVE[0][0]
+            or (wowl is not None and wowl.value() != WAKE_ON_WLAN[0][0])
+        )
         self.body.append(sec)
 
         def apply(cand):
@@ -638,6 +805,7 @@ class EditPage(Gtk.Box):
             w.set_property("powersave", powersave.value())
             if wowl is not None:
                 w.set_property("wake-on-wlan", wowl.value())
+
         self._appliers.append(apply)
 
     def _build_security(self):
@@ -649,8 +817,13 @@ class EditPage(Gtk.Box):
         if km in ("wpa-psk", "sae"):
             pw = SecretEntry(self, "802-11-wireless-security")
             self._row(sec, "802-11-wireless-security.psk", "Password", pw)
-            self._secret_fields.append(("802-11-wireless-security", pw,
-                                        lambda c: c.get_setting_wireless_security().get_psk()))
+            self._secret_fields.append(
+                (
+                    "802-11-wireless-security",
+                    pw,
+                    lambda c: c.get_setting_wireless_security().get_psk(),
+                )
+            )
             check = "psk" if km == "wpa-psk" else "sae"
 
             def apply(cand):
@@ -661,6 +834,7 @@ class EditPage(Gtk.Box):
                 if problem:
                     raise FieldError("802-11-wireless-security.psk", problem)
                 cand.get_setting_wireless_security().set_property("psk", value)
+
             self._appliers.append(apply)
         elif km == "wpa-eap" and eap_values(self.base.get_setting_802_1x()) is not None:
             pw = SecretEntry(self, "802-1x")
@@ -668,8 +842,14 @@ class EditPage(Gtk.Box):
             form.set_values(eap_values(self.base.get_setting_802_1x()))
             sec.append(form)
             self._rows["802-1x.identity"] = form.rows["identity"]
-            self._secret_fields.append(("802-1x", pw, lambda c: c.get_setting_802_1x().get_password()))
-            stored = self.base.get_setting_802_1x().get_password_flags() & NM.SettingSecretFlags.NOT_SAVED == 0
+            self._secret_fields.append(
+                ("802-1x", pw, lambda c: c.get_setting_802_1x().get_password())
+            )
+            stored = (
+                self.base.get_setting_802_1x().get_password_flags()
+                & NM.SettingSecretFlags.NOT_SAVED
+                == 0
+            )
 
             def apply(cand):
                 values, password = form.values(), form.password_value()
@@ -677,17 +857,23 @@ class EditPage(Gtk.Box):
                 if problem:
                     raise FieldError("802-1x.identity", problem)
                 apply_eap(cand.get_setting_802_1x(), values, password)
+
             self._appliers.append(apply)
         elif km:
             # nothing of it is shown, so a save carries none of its secrets and
             # NM keeps the stored ones (see the module docstring)
-            hint = label("This security type isn't editable here; it is kept as is.", "net-edit-hint")
+            hint = label(
+                "This security type isn't editable here; it is kept as is.",
+                "net-edit-hint",
+            )
             hint.set_wrap(True)
             sec.append(hint)
         self.body.append(sec)
 
     def _build_mac(self, ctype):
-        setting_name = "802-11-wireless" if ctype == "802-11-wireless" else "802-3-ethernet"
+        setting_name = (
+            "802-11-wireless" if ctype == "802-11-wireless" else "802-3-ethernet"
+        )
         setting = self.base.get_setting_by_name(setting_name)
         cur = setting.get_cloned_mac_address() if setting else None
         sec = edit_section("MAC address")
@@ -703,15 +889,33 @@ class EditPage(Gtk.Box):
         else:
             mode.set_value(cur)
         custom.set_visible(mode.value() == "custom")
-        mode.connect("notify::selected", lambda *_: custom.set_visible(mode.value() == "custom"))
-        dev = self._device(NM.DeviceWifi if ctype == "802-11-wireless" else NM.DeviceEthernet)
+        mode.connect(
+            "notify::selected", lambda *_: custom.set_visible(mode.value() == "custom")
+        )
+        dev = self._device(
+            NM.DeviceWifi if ctype == "802-11-wireless" else NM.DeviceEthernet
+        )
         hint = None
         if dev is not None:
-            perm = dev.get_permanent_hw_address() if hasattr(dev, "get_permanent_hw_address") else None
+            perm = (
+                dev.get_permanent_hw_address()
+                if hasattr(dev, "get_permanent_hw_address")
+                else None
+            )
             hint = f"Device {dev.get_iface()}: {perm or dev.get_hw_address()}"
-            if perm and dev.get_hw_address() and dev.get_hw_address().upper() != perm.upper():
+            if (
+                perm
+                and dev.get_hw_address()
+                and dev.get_hw_address().upper() != perm.upper()
+            ):
                 hint += f" (now {dev.get_hw_address()})"
-        self._row(sec, f"{setting_name}.cloned-mac-address", "Cloned MAC", box, on_reconnect(hint))
+        self._row(
+            sec,
+            f"{setting_name}.cloned-mac-address",
+            "Cloned MAC",
+            box,
+            on_reconnect(hint),
+        )
         self.body.append(sec)
 
         def apply(cand):
@@ -719,15 +923,22 @@ class EditPage(Gtk.Box):
             if value == "custom":
                 value = custom.get_text().strip()
                 if mac_problem(value):
-                    raise FieldError(f"{setting_name}.cloned-mac-address", mac_problem(value))
+                    raise FieldError(
+                        f"{setting_name}.cloned-mac-address", mac_problem(value)
+                    )
             s = cand.get_setting_by_name(setting_name)
             if s is None:
                 if value is None:
                     return
-                s = NM.SettingWireless.new() if setting_name == "802-11-wireless" else NM.SettingWired.new()
+                s = (
+                    NM.SettingWireless.new()
+                    if setting_name == "802-11-wireless"
+                    else NM.SettingWired.new()
+                )
                 cand.add_setting(s)
             if (value or None) != s.get_cloned_mac_address():
                 s.set_property("cloned-mac-address", value)
+
         self._appliers.append(apply)
 
     def _build_ethernet(self):
@@ -738,7 +949,9 @@ class EditPage(Gtk.Box):
         wol.set_active(bool(flags & WOL.MAGIC))
         wol.set_halign(Gtk.Align.START)
         other = flags & ~(WOL.MAGIC | WOL.DEFAULT | WOL.IGNORE)
-        hint = "Off: the system default" + (" (other wake flags stay as set)" if other else "")
+        hint = "Off: the system default" + (
+            " (other wake flags stay as set)" if other else ""
+        )
         self._row(sec, "802-3-ethernet.wake-on-lan", "Wake on LAN", wol, hint)
         more = self._more(sec)
         mtu = Spin(0, 9000, self.changed)
@@ -750,14 +963,27 @@ class EditPage(Gtk.Box):
         # mode is kept as it is until another one is picked.
         speed = s_wired.get_speed() if s_wired else 0
         duplex = s_wired.get_duplex() if s_wired else None
-        forced = bool(s_wired) and not s_wired.get_auto_negotiate() and bool(speed or duplex)
-        stored_mode = None if not (speed or duplex) else "kept" if forced else (speed, duplex)
+        forced = (
+            bool(s_wired) and not s_wired.get_auto_negotiate() and bool(speed or duplex)
+        )
+        stored_mode = (
+            None if not (speed or duplex) else "kept" if forced else (speed, duplex)
+        )
         link = Choice(LINK_MODES, self.changed)
-        link.set_value(stored_mode, f"{speed or '?'} Mb/s, {duplex or '?'} duplex, "
-                                    f"{'forced' if forced else 'negotiated'} (kept)")
-        self._row(more.content, "802-3-ethernet.speed", "Link speed", link,
-                  "Forced without negotiation; another choice turns negotiation back on" if forced
-                  else "A fixed speed is still negotiated: only that mode is offered")
+        link.set_value(
+            stored_mode,
+            f"{speed or '?'} Mb/s, {duplex or '?'} duplex, "
+            f"{'forced' if forced else 'negotiated'} (kept)",
+        )
+        self._row(
+            more.content,
+            "802-3-ethernet.speed",
+            "Link speed",
+            link,
+            "Forced without negotiation; another choice turns negotiation back on"
+            if forced
+            else "A fixed speed is still negotiated: only that mode is offered",
+        )
         more.set_open(mtu.value() != 0 or stored_mode is not None)
         self.body.append(sec)
 
@@ -770,8 +996,13 @@ class EditPage(Gtk.Box):
             if s is None:
                 s = NM.SettingWired.new()
                 cand.add_setting(s)
-            new = (flags & ~(WOL.DEFAULT | WOL.IGNORE)) | WOL.MAGIC if on else flags & ~WOL.MAGIC
+            new = (
+                (flags & ~(WOL.DEFAULT | WOL.IGNORE)) | WOL.MAGIC
+                if on
+                else flags & ~WOL.MAGIC
+            )
             s.set_property("wake-on-lan", int(new) or int(WOL.DEFAULT))
+
         self._appliers.append(apply)
 
         def apply_link(cand):
@@ -789,13 +1020,18 @@ class EditPage(Gtk.Box):
             s.set_property("speed", new_speed)
             s.set_property("duplex", new_duplex)
             s.set_property("auto-negotiate", True)  # never false: see above
+
         self._appliers.append(apply_link)
 
     def _runtime(self, key):
         """Active connection's IP config for placeholders, or None."""
         if not self.active:
             return None
-        return self.active.get_ip4_config() if key == "ipv4" else self.active.get_ip6_config()
+        return (
+            self.active.get_ip4_config()
+            if key == "ipv4"
+            else self.active.get_ip6_config()
+        )
 
     def _build_ip(self, family, key, title):
         s_ip = self.base.get_setting_by_name(key)
@@ -810,7 +1046,11 @@ class EditPage(Gtk.Box):
         orig_addrs = [s_ip.get_address(i) for i in range(s_ip.get_num_addresses())]
         for a in orig_addrs:
             addrs.add_row((f"{a.get_address()}/{a.get_prefix()}",))
-        rt_addrs = [f"{a.get_address()}/{a.get_prefix()}" for a in rt.get_addresses()] if rt else []
+        rt_addrs = (
+            [f"{a.get_address()}/{a.get_prefix()}" for a in rt.get_addresses()]
+            if rt
+            else []
+        )
         if not orig_addrs and rt_addrs:
             addrs.add_row((), (rt_addrs[0],))
         addr_row = self._row(sec, f"{key}.addresses", "Addresses", addrs)
@@ -824,10 +1064,16 @@ class EditPage(Gtk.Box):
         ignore_dns = toggle(self.changed)
         ignore_dns.set_active(s_ip.get_ignore_auto_dns())
         ignore_dns.set_halign(Gtk.Align.START)
-        ign_row = self._row(sec, f"{key}.ignore-auto-dns", "Ignore auto DNS", ignore_dns)
+        ign_row = self._row(
+            sec, f"{key}.ignore-auto-dns", "Ignore auto DNS", ignore_dns
+        )
         rt_dom = ", ".join(rt.get_domains() or []) if rt else ""
         search = text_entry(self.changed, rt_dom or "comma-separated")
-        search.set_text(", ".join(s_ip.get_dns_search(i) for i in range(s_ip.get_num_dns_searches())))
+        search.set_text(
+            ", ".join(
+                s_ip.get_dns_search(i) for i in range(s_ip.get_num_dns_searches())
+            )
+        )
         search_row = self._row(sec, f"{key}.dns-search", "Search domains", search)
         more = self._more(sec)
         extra = self._ip_extra(more.content, key, title, s_ip)
@@ -844,6 +1090,7 @@ class EditPage(Gtk.Box):
                 row.set_visible(not off)
             more.set_visible(not off)
             extra.sync_visible(m)
+
         sync_visible()
         method.connect("notify::selected", lambda *_: sync_visible())
 
@@ -859,8 +1106,14 @@ class EditPage(Gtk.Box):
             # keep the stored address objects (and any attributes) for unchanged rows
             s.clear_addresses()
             for addr, prefix in parsed:
-                same = next((a for a in orig_addrs
-                             if a.get_address() == addr and a.get_prefix() == prefix), None)
+                same = next(
+                    (
+                        a
+                        for a in orig_addrs
+                        if a.get_address() == addr and a.get_prefix() == prefix
+                    ),
+                    None,
+                )
                 s.add_address(same or NM.IPAddress.new(family, addr, prefix))
             gateway = gw.get_text().strip()
             if gateway:
@@ -882,6 +1135,7 @@ class EditPage(Gtk.Box):
             s.clear_dns_searches()
             for d in domains:
                 s.add_dns_search(d)
+
         self._appliers.append(apply)
         self._appliers.append(extra.apply)
 
@@ -890,21 +1144,38 @@ class EditPage(Gtk.Box):
         require = toggle(self.changed)
         require.set_active(not s_ip.get_may_fail())
         require.set_halign(Gtk.Align.START)
-        self._row(box, f"{key}.may-fail", f"Require {title}", require,
-                  f"Off: the connection comes up without {title} when it gets none")
+        self._row(
+            box,
+            f"{key}.may-fail",
+            f"Require {title}",
+            require,
+            f"Off: the connection comes up without {title} when it gets none",
+        )
         # NM 1.52 made this a ternary; "default" falls back to NetworkManager.conf,
         # then to the deprecated boolean, which must match any explicit value
         stored_send = s_ip.get_property("dhcp-send-hostname-v2")
         old_no = stored_send == -1 and not s_ip.get_property("dhcp-send-hostname")
-        send = Choice([(-1, f"Default ({'no' if old_no else 'yes'})"), (1, "Yes"), (0, "No")],
-                      self.changed)
+        send = Choice(
+            [(-1, f"Default ({'no' if old_no else 'yes'})"), (1, "Yes"), (0, "No")],
+            self.changed,
+        )
         send.set_value(stored_send)
-        send_row = self._row(box, f"{key}.dhcp-send-hostname", "Send hostname", send,
-                             "Some DHCP servers put it in local DNS")
+        send_row = self._row(
+            box,
+            f"{key}.dhcp-send-hostname",
+            "Send hostname",
+            send,
+            "Some DHCP servers put it in local DNS",
+        )
         hostname = text_entry(self.changed, socket.gethostname())
         hostname.set_text(s_ip.get_dhcp_hostname() or "")
-        host_row = self._row(box, f"{key}.dhcp-hostname", "DHCP hostname", hostname,
-                             "Empty: this computer's hostname")
+        host_row = self._row(
+            box,
+            f"{key}.dhcp-hostname",
+            "DHCP hostname",
+            hostname,
+            "Empty: this computer's hostname",
+        )
         client_id = custom_id = cid_row = privacy = privacy_row = None
         stored_cid = s_ip.get_dhcp_client_id() if key == "ipv4" else None
         if key == "ipv4":
@@ -923,31 +1194,58 @@ class EditPage(Gtk.Box):
             cid_box.append(client_id)
             cid_box.append(custom_id)
             custom_id.set_visible(client_id.value() == "custom")
-            client_id.connect("notify::selected",
-                              lambda *_: custom_id.set_visible(client_id.value() == "custom"))
-            cid_row = self._row(box, f"{key}.dhcp-client-id", "DHCP client ID", cid_box,
-                                "What the DHCP server keys the lease on")
+            client_id.connect(
+                "notify::selected",
+                lambda *_: custom_id.set_visible(client_id.value() == "custom"),
+            )
+            cid_row = self._row(
+                box,
+                f"{key}.dhcp-client-id",
+                "DHCP client ID",
+                cid_box,
+                "What the DHCP server keys the lease on",
+            )
         else:
             privacy = Choice(IP6_PRIVACY, self.changed)
             privacy.set_value(int(s_ip.get_ip6_privacy()))
-            privacy_row = self._row(box, f"{key}.ip6-privacy", "IPv6 privacy", privacy,
-                                    "Temporary addresses for outgoing connections (SLAAC)")
+            privacy_row = self._row(
+                box,
+                f"{key}.ip6-privacy",
+                "IPv6 privacy",
+                privacy,
+                "Temporary addresses for outgoing connections (SLAAC)",
+            )
         dns_prio = Spin(-2147483648, 2147483647, self.changed)
         dns_prio.set_value(s_ip.get_dns_priority())
         dns_prio.set_halign(Gtk.Align.START)
-        self._row(box, f"{key}.dns-priority", "DNS priority", dns_prio,
-                  "Lower wins; 0 = default (100, VPNs 50). Negative, with systemd-resolved here: "
-                  "while it is up, lookups in its search domains go only to its DNS servers, "
-                  "and all lookups do if it has the default route")
+        self._row(
+            box,
+            f"{key}.dns-priority",
+            "DNS priority",
+            dns_prio,
+            "Lower wins; 0 = default (100, VPNs 50). Negative, with systemd-resolved here: "
+            "while it is up, lookups in its search domains go only to its DNS servers, "
+            "and all lookups do if it has the default route",
+        )
         table = Spin(0, 4294967295, self.changed)
         table.set_value(s_ip.get_route_table())
         table.set_halign(Gtk.Align.START)
-        self._row(box, f"{key}.route-table", "Route table", table,
-                  "0 = main. Another table turns on policy routing: its routes go there")
+        self._row(
+            box,
+            f"{key}.route-table",
+            "Route table",
+            table,
+            "0 = main. Another table turns on policy routing: its routes go there",
+        )
         nondefault = bool(
-            not s_ip.get_may_fail() or stored_send != -1 or s_ip.get_dhcp_hostname() or stored_cid
+            not s_ip.get_may_fail()
+            or stored_send != -1
+            or s_ip.get_dhcp_hostname()
+            or stored_cid
             or (privacy is not None and privacy.value() != -1)
-            or s_ip.get_dns_priority() or s_ip.get_route_table())
+            or s_ip.get_dns_priority()
+            or s_ip.get_route_table()
+        )
 
         def sync_visible(method):
             dhcp = method in (("auto",) if key == "ipv4" else ("auto", "dhcp"))
@@ -957,8 +1255,13 @@ class EditPage(Gtk.Box):
                 cid_row.set_visible(dhcp)
             if privacy_row:
                 privacy_row.set_visible(method == "auto")
-        send.connect("notify::selected", lambda *_: host_row.set_visible(
-            send_row.get_visible() and send.value() != 0))
+
+        send.connect(
+            "notify::selected",
+            lambda *_: host_row.set_visible(
+                send_row.get_visible() and send.value() != 0
+            ),
+        )
 
         def apply(cand):
             s = cand.get_setting_by_name(key)
@@ -974,20 +1277,28 @@ class EditPage(Gtk.Box):
                     if not value:
                         raise FieldError(f"{key}.dhcp-client-id", "Enter the client ID")
                     if value != stored_cid and not HEX_ID.fullmatch(value):
-                        raise FieldError(f"{key}.dhcp-client-id",
-                                         "Hex bytes, e.g. 01:aa:bb:cc:dd:ee:ff (01 = Ethernet MAC)")
+                        raise FieldError(
+                            f"{key}.dhcp-client-id",
+                            "Hex bytes, e.g. 01:aa:bb:cc:dd:ee:ff (01 = Ethernet MAC)",
+                        )
                 s.set_property("dhcp-client-id", value)
             if privacy is not None:
                 s.set_property("ip6-privacy", privacy.value())
             s.set_property("dns-priority", dns_prio.value())
             s.set_property("route-table", table.value())
-        return SimpleNamespace(nondefault=nondefault, sync_visible=sync_visible, apply=apply)
+
+        return SimpleNamespace(
+            nondefault=nondefault, sync_visible=sync_visible, apply=apply
+        )
 
     def _build_routes(self, ctype):
         sec = edit_section("Routes")
         if ctype == "wireguard":
-            note = label("Peer Allowed IPs are the main way to choose what goes through the "
-                         "tunnel; routes here are extra.", "net-edit-hint")
+            note = label(
+                "Peer Allowed IPs are the main way to choose what goes through the "
+                "tunnel; routes here are extra.",
+                "net-edit-hint",
+            )
             note.set_wrap(True)
             sec.append(note)
         any_family = False
@@ -997,11 +1308,19 @@ class EditPage(Gtk.Box):
                 continue
             any_family = True
             orig = [s_ip.get_route(i) for i in range(s_ip.get_num_routes())]
-            routes = RowList([("destination/prefix", 18), ("next hop", 12), ("metric", 6)],
-                             self.changed, "Add route")
+            routes = RowList(
+                [("destination/prefix", 18), ("next hop", 12), ("metric", 6)],
+                self.changed,
+                "Add route",
+            )
             for r in orig:
-                routes.add_row((f"{r.get_dest()}/{r.get_prefix()}", r.get_next_hop() or "",
-                                r.get_metric() if r.get_metric() >= 0 else ""))
+                routes.add_row(
+                    (
+                        f"{r.get_dest()}/{r.get_prefix()}",
+                        r.get_next_hop() or "",
+                        r.get_metric() if r.get_metric() >= 0 else "",
+                    )
+                )
             self._row(sec, f"{key}.routes", f"{title} routes", routes)
             ign = toggle(self.changed)
             ign.set_active(s_ip.get_ignore_auto_routes())
@@ -1010,9 +1329,16 @@ class EditPage(Gtk.Box):
             never = toggle(self.changed)
             never.set_active(s_ip.get_never_default())
             never.set_halign(Gtk.Align.START)
-            self._row(sec, f"{key}.never-default", "Only its network", never,
-                      f"Use {title} only for resources on this connection's network (never-default)")
-            self._appliers.append(self._routes_applier(family, key, routes, orig, ign, never))
+            self._row(
+                sec,
+                f"{key}.never-default",
+                "Only its network",
+                never,
+                f"Use {title} only for resources on this connection's network (never-default)",
+            )
+            self._appliers.append(
+                self._routes_applier(family, key, routes, orig, ign, never)
+            )
         if any_family:
             self.body.append(sec)
 
@@ -1023,21 +1349,35 @@ class EditPage(Gtk.Box):
             new = []
             for dest, hop, metric in routes.values():
                 try:
-                    addr, prefix = parse_cidr(dest, family, 32 if family == socket.AF_INET else 128)
+                    addr, prefix = parse_cidr(
+                        dest, family, 32 if family == socket.AF_INET else 128
+                    )
                     hop = parse_ip(hop, family) if hop else None
                 except ValueError as e:
                     raise FieldError(f"{key}.routes", str(e)) from None
                 if metric and not metric.isdigit():
-                    raise FieldError(f"{key}.routes", f"{metric}: metric must be a number")
+                    raise FieldError(
+                        f"{key}.routes", f"{metric}: metric must be a number"
+                    )
                 m = int(metric) if metric else -1
-                same = next((r for r in orig if r.get_dest() == addr and r.get_prefix() == prefix
-                             and (r.get_next_hop() or None) == hop and r.get_metric() == m), None)
+                same = next(
+                    (
+                        r
+                        for r in orig
+                        if r.get_dest() == addr
+                        and r.get_prefix() == prefix
+                        and (r.get_next_hop() or None) == hop
+                        and r.get_metric() == m
+                    ),
+                    None,
+                )
                 new.append(same or NM.IPRoute.new(family, addr, prefix, hop, m))
             s.clear_routes()
             for r in new:
                 s.add_route(r)
             s.set_property("ignore-auto-routes", ign.get_active())
             s.set_property("never-default", never.get_active())
+
         return apply
 
     def _build_wireguard(self):
@@ -1045,15 +1385,26 @@ class EditPage(Gtk.Box):
         sec = edit_section("WireGuard")
         key = SecretEntry(self, "wireguard")
         self._row(sec, "wireguard.private-key", "Private key", key)
-        self._secret_fields.append(("wireguard", key,
-                                    lambda c: c.get_setting_by_name("wireguard").get_private_key()))
+        self._secret_fields.append(
+            (
+                "wireguard",
+                key,
+                lambda c: c.get_setting_by_name("wireguard").get_private_key(),
+            )
+        )
         pub = label("", "net-edit-value", hexpand=True, ellipsize=True)
         pub.set_selectable(True)
         pub_row = self._row(sec, None, "Public key", pub)
-        dev = self.active.get_devices()[0] if self.active and self.active.get_devices() else None
+        dev = (
+            self.active.get_devices()[0]
+            if self.active and self.active.get_devices()
+            else None
+        )
         pub_row.set_visible(False)
         if isinstance(dev, NM.DeviceWireGuard) and dev.get_public_key():
-            pub.set_text(base64.b64encode(bytes(dev.get_public_key().get_data())).decode())
+            pub.set_text(
+                base64.b64encode(bytes(dev.get_public_key().get_data())).decode()
+            )
             pub_row.set_visible(True)
         self._pub = (pub, pub_row, key)
         self._pub_for = None  # private key the shown public key was derived from
@@ -1071,15 +1422,24 @@ class EditPage(Gtk.Box):
         peer_routes = toggle(self.changed)
         peer_routes.set_active(s_wg.get_peer_routes())
         peer_routes.set_halign(Gtk.Align.START)
-        self._row(sec, "wireguard.peer-routes", "Peer routes", peer_routes,
-                  "Add routes for the peers' Allowed IPs")
+        self._row(
+            sec,
+            "wireguard.peer-routes",
+            "Peer routes",
+            peer_routes,
+            "Add routes for the peers' Allowed IPs",
+        )
         self.body.append(sec)
 
         def apply(cand):
             s = cand.get_setting_by_name("wireguard")
             value = key.value()
             if value is not None:
-                problem = wg_key_problem(value, "Private key") if value else "Enter the private key"
+                problem = (
+                    wg_key_problem(value, "Private key")
+                    if value
+                    else "Enter the private key"
+                )
                 if problem:
                     raise FieldError("wireguard.private-key", problem)
                 s.set_property("private-key", value)
@@ -1088,25 +1448,39 @@ class EditPage(Gtk.Box):
             try:
                 mark = int(text, 0)
             except ValueError:
-                raise FieldError("wireguard.fwmark", "A number (decimal or 0x hex)") from None
+                raise FieldError(
+                    "wireguard.fwmark", "A number (decimal or 0x hex)"
+                ) from None
             if not 0 <= mark <= 0xFFFFFFFF:
                 raise FieldError("wireguard.fwmark", "At most 0xffffffff")
             s.set_property("fwmark", mark)
             s.set_property("mtu", mtu.value())
             s.set_property("peer-routes", peer_routes.get_active())
+
         self._appliers.append(apply)
 
     def _update_public_key(self):
         """Public key from the private key via `wg pubkey` (shown only when wg exists)."""
         pub, row, key = self._pub
         value = key.value()
-        if not value or value == self._pub_for or wg_key_problem(value) or not shutil.which("wg"):
+        if (
+            not value
+            or value == self._pub_for
+            or wg_key_problem(value)
+            or not shutil.which("wg")
+        ):
             return
         self._pub_for = value
         try:
-            out = subprocess.run(["wg", "pubkey"], input=value, capture_output=True,
-                                 text=True, timeout=2, check=True).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
+            out = subprocess.run(
+                ["wg", "pubkey"],
+                input=value,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            ).stdout.strip()
+        except OSError, subprocess.SubprocessError:
             return
         pub.set_text(out)
         row.set_visible(bool(out))
@@ -1116,7 +1490,9 @@ class EditPage(Gtk.Box):
         sec = edit_section("Peers")
         self._peer_box = vbox(8)
         sec.append(self._peer_box)
-        add = button("Add peer", on_click=lambda: (self._add_peer(None), self.changed()))
+        add = button(
+            "Add peer", on_click=lambda: (self._add_peer(None), self.changed())
+        )
         add.set_halign(Gtk.Align.START)
         sec.append(add)
         self._peers_row = self._row(sec, "wireguard.peers", "", Gtk.Box())
@@ -1130,6 +1506,7 @@ class EditPage(Gtk.Box):
             s.clear_peers()
             for peer in peers:
                 s.append_peer(peer)
+
         self._appliers.append(apply)
 
     def _add_peer(self, peer):
@@ -1180,6 +1557,7 @@ class EditPage(Gtk.Box):
                     entry.fill(getter(self.base))
             self.changed()
             then()
+
         remote.get_secrets_async(setting, None, done)
 
     # --- candidate, validation, save ---
@@ -1226,23 +1604,36 @@ class EditPage(Gtk.Box):
         self._msg_error = bool(text) and error
         self.msg.set_text(text or "")
         self.msg.set_visible(bool(text))
-        self.msg.set_css_classes(["net-edit-msg"] + (["net-status-err"] if error else [])
-                                 + (["net-status-ok"] if ok else []))
+        self.msg.set_css_classes(
+            ["net-edit-msg"]
+            + (["net-status-err"] if error else [])
+            + (["net-status-ok"] if ok else [])
+        )
         copyable(self.msg, error)
 
     @staticmethod
     def _peer_keys(conn):
         s_wg = conn.get_setting_by_name("wireguard")
-        return {s_wg.get_peer(i).get_public_key() for i in range(s_wg.get_peers_len())} if s_wg else set()
+        return (
+            {s_wg.get_peer(i).get_public_key() for i in range(s_wg.get_peers_len())}
+            if s_wg
+            else set()
+        )
 
     def _missing_secrets(self, cand):
         """Settings whose stored secrets must be fetched before `cand` can be
         sent: none if it carries no secret and keeps the same peers."""
         carried = cand.to_dbus(NM.ConnectionSerializationFlags.ONLY_SECRETS).unpack()
-        if not any(carried.values()) and self._peer_keys(cand) == self._peer_keys(self.base):
+        if not any(carried.values()) and self._peer_keys(cand) == self._peer_keys(
+            self.base
+        ):
             return []
-        return [name for name in SECRET_SETTINGS
-                if self.base.get_setting_by_name(name) is not None and name not in self._fetched]
+        return [
+            name
+            for name in SECRET_SETTINGS
+            if self.base.get_setting_by_name(name) is not None
+            and name not in self._fetched
+        ]
 
     def _save(self):
         cand, errors = self.candidate()
@@ -1273,8 +1664,14 @@ class EditPage(Gtk.Box):
             self.base = cand
             self._rebase_peers()
             self.title.set_text(f"Edit {name}")
-            self.active = next((ac for ac in self.app.client.get_active_connections()
-                                if ac.get_uuid() == rc.get_uuid()), None)
+            self.active = next(
+                (
+                    ac
+                    for ac in self.app.client.get_active_connections()
+                    if ac.get_uuid() == rc.get_uuid()
+                ),
+                None,
+            )
             devs = self.active.get_devices() if self.active else []
             if devs:
                 self._reapply(devs[0], name)
@@ -1282,8 +1679,14 @@ class EditPage(Gtk.Box):
                 self._show_msg(f"Saved {name}", ok=True)
             self.changed()
             self.app.queue_sync()
-        remote.update2(cand.to_dbus(NM.ConnectionSerializationFlags.ALL),
-                       NM.SettingsUpdate2Flags.TO_DISK, None, None, done)
+
+        remote.update2(
+            cand.to_dbus(NM.ConnectionSerializationFlags.ALL),
+            NM.SettingsUpdate2Flags.TO_DISK,
+            None,
+            None,
+            done,
+        )
 
     def _save_unreadable(self, setting, err):
         """NM answers "no agents" when a required secret is already missing (it
@@ -1311,8 +1714,10 @@ class EditPage(Gtk.Box):
                 if remote is not self.remote:
                     return
                 self._show_msg(None)
-                self.apply_msg.set_text(f"Saved. Takes effect after reconnecting "
-                                        f"({reapply_refusal_text(e)})")
+                self.apply_msg.set_text(
+                    f"Saved. Takes effect after reconnecting "
+                    f"({reapply_refusal_text(e)})"
+                )
                 copyable(self.apply_msg)
                 self.reconnect_btn.set_visible(True)
                 self.apply_bar.set_visible(True)
@@ -1320,7 +1725,10 @@ class EditPage(Gtk.Box):
             if remote is self.remote:
                 self._show_msg(f"Saved and applied to {name}", ok=True)
             self.app.queue_sync()
-        dev.reapply_async(None, 0, 0, None, reapplied)  # None: the saved profile, secrets included
+
+        dev.reapply_async(
+            None, 0, 0, None, reapplied
+        )  # None: the saved profile, secrets included
 
     def _reconnect(self):
         ac, remote = self.active, self.remote
@@ -1341,6 +1749,7 @@ class EditPage(Gtk.Box):
                 return
             self.apply_msg.set_text(f"Reconnected {name}: the changes are applied")
             self.app.queue_sync()
+
         self.app.client.activate_connection_async(remote, dev, None, None, reconnected)
 
     def _cancel(self):
@@ -1358,33 +1767,56 @@ class PeerEditor(Gtk.Box):
         self.page, self.peer = page, peer
         ch = page.changed
         head = hbox(6)
-        head.append(label("Peer" if peer else "New peer", "net-row-title", hexpand=True))
-        head.append(glyph_button("\U000F0A7A", "Remove peer",  # nf-md-trash_can_outline
-                                 lambda: page.remove_peer(self), "net-delete-btn"))
+        head.append(
+            label("Peer" if peer else "New peer", "net-row-title", hexpand=True)
+        )
+        head.append(
+            glyph_button(
+                "\U000f0a7a",
+                "Remove peer",  # nf-md-trash_can_outline
+                lambda: page.remove_peer(self),
+                "net-delete-btn",
+            )
+        )
         self.append(head)
         self.pubkey = text_entry(ch, "base64 public key")
         self.endpoint = text_entry(ch, "host:port")
         self.allowed = text_entry(ch, "e.g. 0.0.0.0/0, ::/0")
-        self.psk = SecretEntry(page, "wireguard",
-                               "Saved (Show to reveal)" if peer else "optional")
+        self.psk = SecretEntry(
+            page, "wireguard", "Saved (Show to reveal)" if peer else "optional"
+        )
         if peer is None:
             self.psk.loaded = True  # nothing stored to fetch
         self.keepalive = Spin(0, 65535, ch)
         self.keepalive.set_halign(Gtk.Align.START)
         self.rows = {}
         for key, name, widget, hint in (
-                ("pubkey", "Public key", self.pubkey, None),
-                ("endpoint", "Endpoint", self.endpoint, None),
-                ("allowed", "Allowed IPs", self.allowed, "Comma-separated; what goes through the tunnel"),
-                ("psk", "Preshared key", self.psk, None),
-                ("keepalive", "Keepalive (s)", self.keepalive, "0 = off")):
+            ("pubkey", "Public key", self.pubkey, None),
+            ("endpoint", "Endpoint", self.endpoint, None),
+            (
+                "allowed",
+                "Allowed IPs",
+                self.allowed,
+                "Comma-separated; what goes through the tunnel",
+            ),
+            ("psk", "Preshared key", self.psk, None),
+            ("keepalive", "Keepalive (s)", self.keepalive, "0 = off"),
+        ):
             self.rows[key] = field_row(name, widget, hint)
             self.append(self.rows[key])
         if peer is not None:
             self.pubkey.set_text(peer.get_public_key() or "")
             self.endpoint.set_text(peer.get_endpoint() or "")
-            self.allowed.set_text(", ".join(
-                x for x in (peer.get_allowed_ip(i, None) for i in range(peer.get_allowed_ips_len())) if x))
+            self.allowed.set_text(
+                ", ".join(
+                    x
+                    for x in (
+                        peer.get_allowed_ip(i, None)
+                        for i in range(peer.get_allowed_ips_len())
+                    )
+                    if x
+                )
+            )
             self.keepalive.set_value(peer.get_persistent_keepalive())
 
     def stored_psk(self, conn):

@@ -24,11 +24,12 @@ runs as a one-shot process of its own.
 import os
 import sys
 
-
 from gtk_widgets.widgets.launcher import protocol
 
-USAGE = ("usage: launcher [--daemon | --dmenu [--prompt TEXT] [--after-tab] [--action LABEL]"
-         " [--delete CMD]]")
+USAGE = (
+    "usage: launcher [--daemon | --dmenu [--prompt TEXT] [--after-tab] [--action LABEL]"
+    " [--delete CMD]]"
+)
 _PRELOAD = "libgtk4-layer-shell.so.0"
 
 
@@ -100,8 +101,18 @@ def client(mode, prompt, after_tab, action, delete):
         data = sys.stdin.buffer.read()
         lines = protocol.split_lines(data)
         try:
-            sock.sendall(protocol.header("dmenu", len(data), prompt, t0, int(after_tab),
-                                         action, int(bool(delete))) + data)
+            sock.sendall(
+                protocol.header(
+                    "dmenu",
+                    len(data),
+                    prompt,
+                    t0,
+                    int(after_tab),
+                    action,
+                    int(bool(delete)),
+                )
+                + data
+            )
             reply = _reply(sock, lines, delete)
         except OSError as e:
             reply = None
@@ -148,6 +159,7 @@ def _main():
         os.environ["LD_PRELOAD"] = f"{preload}:{_PRELOAD}" if preload else _PRELOAD
         os.execv(sys.executable, [sys.executable] + sys.argv)
     from gtk_widgets.widgets.launcher.ui import app
+
     if mode == "dmenu":
         return app.run_dmenu_once(prompt, after_tab, action, delete)
     return app.run_resident(hidden=mode == "daemon")

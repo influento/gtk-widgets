@@ -10,6 +10,7 @@ bytes); file descriptors travel beside them as SCM_RIGHTS.
 """
 
 import os
+import pathlib
 import socket
 import struct
 
@@ -48,7 +49,7 @@ class Reader:
 
     def string(self):
         n = self.uint()
-        raw = self.body[self.pos:self.pos + n]
+        raw = self.body[self.pos : self.pos + n]
         self.pos += pad(n)
         return raw.rstrip(b"\0").decode(errors="replace")
 
@@ -65,12 +66,14 @@ class Connection:
 
     def __init__(self):
         display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
-        if not os.path.isabs(display):
+        if not pathlib.Path(display).is_absolute():
             runtime = os.environ.get("XDG_RUNTIME_DIR")
             if not runtime:
                 raise WaylandError("XDG_RUNTIME_DIR is not set")
             display = os.path.join(runtime, display)
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+        self.sock = socket.socket(
+            socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC
+        )
         try:
             self.sock.connect(display)
         except OSError as e:
@@ -104,7 +107,9 @@ class Connection:
     def _display_event(self, opcode, r):
         if opcode == 0:  # error(object, code, message)
             obj, code, message = r.uint(), r.uint(), r.string()
-            raise WaylandError(f"Wayland protocol error on object {obj} ({code}): {message}")
+            raise WaylandError(
+                f"Wayland protocol error on object {obj} ({code}): {message}"
+            )
         # 1: delete_id; ids are never reused here
 
     def dispatch(self):
@@ -135,13 +140,21 @@ class Connection:
         """[(name, interface, version)] the compositor announces."""
         found = []
         self.registry = self.new_id(
-            lambda op, r: found.append((r.uint(), r.string(), r.uint())) if op == 0 else None)
+            lambda op, r: (
+                found.append((r.uint(), r.string(), r.uint())) if op == 0 else None
+            )
+        )
         self.send(self.DISPLAY, 1, struct.pack("=I", self.registry))  # get_registry
         self.roundtrip()
         return found
 
     def bind(self, name, interface, version, handler):
         oid = self.new_id(handler)
-        self.send(self.registry, 0,
-                  struct.pack("=I", name) + string(interface) + struct.pack("=II", version, oid))
+        self.send(
+            self.registry,
+            0,
+            struct.pack("=I", name)
+            + string(interface)
+            + struct.pack("=II", version, oid),
+        )
         return oid

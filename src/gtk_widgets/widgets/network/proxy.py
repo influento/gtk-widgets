@@ -10,33 +10,53 @@ helper last applied. The helper gets only the request (never a config or a
 path) on stdin and writes the root-only sing-box config itself.
 """
 
-import hashlib, ipaddress, json, os, re, subprocess, tempfile
+import hashlib
+import ipaddress
+import json
+import os
+import pathlib
+import re
+import subprocess
+import tempfile
 
 from gi.repository import Gio, GLib
 
-STATE_PATH = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
-                          "gtk-widgets", "network-proxy.json")
+STATE_PATH = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "gtk-widgets",
+    "network-proxy.json",
+)
 HELPER = "/usr/lib/gtk-widgets/proxy-helper"
 UNIT = "gtk-widgets-proxy.service"
 DIRECT = "direct"
 MAX_PROXIES = 32
 
 SD_BUS, SD_PATH = "org.freedesktop.systemd1", "/org/freedesktop/systemd1"
-SD_MANAGER, SD_UNIT = "org.freedesktop.systemd1.Manager", "org.freedesktop.systemd1.Unit"
+SD_MANAGER, SD_UNIT = (
+    "org.freedesktop.systemd1.Manager",
+    "org.freedesktop.systemd1.Unit",
+)
 
 
 # --- state ---
 
+
 def empty_state():
-    return {"proxies": [], "rules": [], "default": DIRECT, "kill_switch": False,
-            "checks": {}, "applied": None}
+    return {
+        "proxies": [],
+        "rules": [],
+        "default": DIRECT,
+        "kill_switch": False,
+        "checks": {},
+        "applied": None,
+    }
 
 
 def load_state(path=None):
     try:
-        with open(path or STATE_PATH) as f:
+        with pathlib.Path(path or STATE_PATH).open() as f:
             data = json.load(f)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return empty_state()
     state = empty_state()
     if isinstance(data, dict):
@@ -48,17 +68,17 @@ def save_state(state, path=None):
     """Atomic write, 0600 in a 0700 directory: the file holds proxy passwords."""
     path = path or STATE_PATH
     folder = os.path.dirname(path)
-    os.makedirs(folder, mode=0o700, exist_ok=True)
+    pathlib.Path(folder).mkdir(mode=0o700, exist_ok=True, parents=True)
     fd, tmp = tempfile.mkstemp(prefix=".network-proxy.", dir=folder)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
             f.write("\n")
-        os.replace(tmp, path)
+        pathlib.Path(tmp).replace(path)
     except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+        if pathlib.Path(tmp).exists():
+            pathlib.Path(tmp).unlink()
         raise
 
 
@@ -87,8 +107,13 @@ def remove_proxy(state, pid):
 def request(state):
     """What the helper gets: only the fields it validates, no names or checks."""
     return {
-        "proxies": [{k: p[k] for k in ("id", "host", "port", "username", "password", "block_quic")}
-                    for p in state["proxies"]],
+        "proxies": [
+            {
+                k: p[k]
+                for k in ("id", "host", "port", "username", "password", "block_quic")
+            }
+            for p in state["proxies"]
+        ],
         "rules": [{"app": r["app"], "exit": r["exit"]} for r in state["rules"]],
         "default": state["default"],
         "kill_switch": bool(state["kill_switch"]),
@@ -103,7 +128,9 @@ def usable_problem(state):
     """Why Proxy rules cannot be turned on, or None."""
     if not state["proxies"]:
         return "Add a proxy first"
-    if state["default"] == DIRECT and not any(r["exit"] != DIRECT for r in state["rules"]):
+    if state["default"] == DIRECT and not any(
+        r["exit"] != DIRECT for r in state["rules"]
+    ):
         return "Route an app through a proxy, or pick a proxy for everything else"
     return None
 
@@ -113,8 +140,11 @@ def summary(state):
     proxied = [r for r in state["rules"] if r["exit"] != DIRECT]
     used = {r["exit"] for r in proxied}
     apps = len(proxied)
-    text = f"{apps} app{'s' * (apps != 1)} via {len(used)} prox{'ies' if len(used) != 1 else 'y'}" \
-        if apps else "no app rules"
+    text = (
+        f"{apps} app{'s' * (apps != 1)} via {len(used)} prox{'ies' if len(used) != 1 else 'y'}"
+        if apps
+        else "no app rules"
+    )
     if state["default"] != DIRECT:
         text += f", everything else via {exit_name(state, state['default'])}"
     return text
@@ -128,7 +158,9 @@ def exit_label(state, exit_):
 
 # --- pasted proxies ---
 
-HOST_RE = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.?$")
+HOST_RE = re.compile(
+    r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.?$"
+)
 
 
 def _host_port(host, port):
@@ -151,7 +183,7 @@ def parse_line(line):
     line = line.strip()
     for prefix in ("socks5h://", "socks5://", "socks://"):
         if line.lower().startswith(prefix):
-            line = line[len(prefix):]
+            line = line[len(prefix) :]
             break
     user = password = ""
     if "@" in line:
@@ -203,8 +235,15 @@ def import_lines(state, text):
         except ValueError as e:
             errors.append((n, str(e)))
             continue
-        same = next((q for q in state["proxies"] if (q["host"], q["port"], q["username"])
-                     == (p["host"], p["port"], p["username"])), None)
+        same = next(
+            (
+                q
+                for q in state["proxies"]
+                if (q["host"], q["port"], q["username"])
+                == (p["host"], p["port"], p["username"])
+            ),
+            None,
+        )
         if same:
             same["password"] = p["password"]
             continue
@@ -218,6 +257,7 @@ def import_lines(state, text):
 
 
 # --- running processes (the app picker) ---
+
 
 def running_apps(proc="/proc", uid=None):
     """{executable name: path} of this user's processes: the names sing-box's
@@ -243,10 +283,14 @@ def running_apps(proc="/proc", uid=None):
 def window_pids():
     """PIDs owning a Sway window, to list apps with windows first."""
     try:
-        out = subprocess.run(["swaymsg", "-t", "get_tree", "-r"], capture_output=True,
-                             timeout=2, check=True).stdout
+        out = subprocess.run(
+            ["swaymsg", "-t", "get_tree", "-r"],
+            capture_output=True,
+            timeout=2,
+            check=True,
+        ).stdout
         stack = [json.loads(out)]
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except OSError, subprocess.SubprocessError, ValueError:
         return set()
     pids = set()
     while stack:
@@ -261,7 +305,11 @@ def window_apps(proc="/proc"):
     names = set()
     for pid in window_pids():
         try:
-            names.add(os.path.basename(os.readlink(f"{proc}/{pid}/exe")).removesuffix(" (deleted)"))
+            names.add(
+                os.path.basename(os.readlink(f"{proc}/{pid}/exe")).removesuffix(
+                    " (deleted)"
+                )
+            )
         except OSError:
             pass
     return names
@@ -269,12 +317,16 @@ def window_apps(proc="/proc"):
 
 # --- helper ---
 
+
 def run_helper(args, stdin_text, on_done):
     """pkexec the root helper asynchronously; on_done(error or None)."""
     try:
-        proc = Gio.Subprocess.new(["pkexec", HELPER] + args,
-                                  Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE
-                                  | Gio.SubprocessFlags.STDERR_PIPE)
+        proc = Gio.Subprocess.new(
+            ["pkexec", HELPER] + args,
+            Gio.SubprocessFlags.STDIN_PIPE
+            | Gio.SubprocessFlags.STDOUT_PIPE
+            | Gio.SubprocessFlags.STDERR_PIPE,
+        )
     except GLib.Error as e:
         on_done(f"cannot run pkexec: {e.message}")
         return
@@ -290,12 +342,13 @@ def run_helper(args, stdin_text, on_done):
             on_done(None)
         elif status == 126:
             on_done("authorisation was dismissed")
-        elif status == 127 and not os.path.exists(HELPER):
+        elif status == 127 and not pathlib.Path(HELPER).exists():
             on_done("the proxy helper is not installed: run install.sh")
         else:
             lines = (err or "").strip().splitlines()
             msg = lines[-1] if lines else f"helper failed ({status})"
             on_done(msg.removeprefix("proxy-helper: "))
+
     proc.communicate_utf8_async(stdin_text, None, done)
 
 
@@ -308,6 +361,7 @@ def apply(state, on_done):
             state["applied"] = digest(req)
             save_state(state)
         on_done(err)
+
     run_helper(["apply"], json.dumps(req), done)
 
 
@@ -321,6 +375,7 @@ def pending_changes(state):
 
 # --- service ---
 
+
 class ServiceState:
     """One synchronous read of the unit (for --once callers)."""
 
@@ -328,12 +383,28 @@ class ServiceState:
         self.installed = self.state = self.sub_state = None
         try:
             bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
-            path = bus.call_sync(SD_BUS, SD_PATH, SD_MANAGER, "LoadUnit",
-                                 GLib.Variant("(s)", (UNIT,)), GLib.VariantType("(o)"),
-                                 Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
-            props = bus.call_sync(SD_BUS, path, "org.freedesktop.DBus.Properties", "GetAll",
-                                  GLib.Variant("(s)", (SD_UNIT,)), GLib.VariantType("(a{sv})"),
-                                  Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+            path = bus.call_sync(
+                SD_BUS,
+                SD_PATH,
+                SD_MANAGER,
+                "LoadUnit",
+                GLib.Variant("(s)", (UNIT,)),
+                GLib.VariantType("(o)"),
+                Gio.DBusCallFlags.NONE,
+                2000,
+                None,
+            ).unpack()[0]
+            props = bus.call_sync(
+                SD_BUS,
+                path,
+                "org.freedesktop.DBus.Properties",
+                "GetAll",
+                GLib.Variant("(s)", (SD_UNIT,)),
+                GLib.VariantType("(a{sv})"),
+                Gio.DBusCallFlags.NONE,
+                2000,
+                None,
+            ).unpack()[0]
         except GLib.Error:
             return
         self.installed = props.get("LoadState") == "loaded"
@@ -375,18 +446,47 @@ class ServiceWatch:
             return
         # Subscribe: systemd only broadcasts unit property changes while
         # someone is subscribed (unprivileged callers may subscribe)
-        bus.call(SD_BUS, SD_PATH, SD_MANAGER, "Subscribe", None, None,
-                 Gio.DBusCallFlags.NONE, -1, None, None)
+        bus.call(
+            SD_BUS,
+            SD_PATH,
+            SD_MANAGER,
+            "Subscribe",
+            None,
+            None,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+            None,
+        )
 
         def loaded(conn, res2):
             try:
                 path = conn.call_finish(res2).unpack()[0]
             except GLib.Error:
                 return
-            Gio.DBusProxy.new(conn, Gio.DBusProxyFlags.NONE, None, SD_BUS, path, SD_UNIT,
-                              None, self._on_proxy)
-        bus.call(SD_BUS, SD_PATH, SD_MANAGER, "LoadUnit", GLib.Variant("(s)", (UNIT,)),
-                 GLib.VariantType("(o)"), Gio.DBusCallFlags.NONE, -1, None, loaded)
+            Gio.DBusProxy.new(
+                conn,
+                Gio.DBusProxyFlags.NONE,
+                None,
+                SD_BUS,
+                path,
+                SD_UNIT,
+                None,
+                self._on_proxy,
+            )
+
+        bus.call(
+            SD_BUS,
+            SD_PATH,
+            SD_MANAGER,
+            "LoadUnit",
+            GLib.Variant("(s)", (UNIT,)),
+            GLib.VariantType("(o)"),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+            loaded,
+        )
 
     def _on_proxy(self, _src, res):
         try:
@@ -400,6 +500,7 @@ class ServiceWatch:
         def prop(name):
             v = self.proxy.get_cached_property(name)
             return v.unpack() if v is not None else None
+
         before = (self.installed, self.state, self.sub_state)
         self.installed = prop("LoadState") == "loaded"
         self.state, self.sub_state = prop("ActiveState"), prop("SubState")

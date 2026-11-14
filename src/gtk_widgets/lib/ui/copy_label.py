@@ -2,9 +2,9 @@
 
 import subprocess
 
-from gtk_widgets.lib.ui.widget_base import Gtk
-
 from gi.repository import GLib, Pango
+
+from gtk_widgets.lib.ui.widget_base import Gtk
 
 FLASH_MS = 1000  # how long a clicked label reads "Copied"
 COPIED = "Copied to clipboard"
@@ -14,8 +14,11 @@ def copy_to_clipboard(text):
     """Copy via wl-copy, which keeps serving the text after the popup exits.
     Returns False if wl-clipboard is missing."""
     try:
-        subprocess.Popen(["wl-copy", "--", text],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["wl-copy", "--", text],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except OSError:
         return False
     return True

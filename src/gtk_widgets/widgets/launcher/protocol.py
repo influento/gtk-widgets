@@ -62,9 +62,11 @@ def run_delete(cmd, line):
     with the deleted line and a newline on stdin; its stdout goes to stderr,
     so it can't end up in the pick."""
     import subprocess
+
     try:
-        done = subprocess.run(shlex.split(cmd), input=line + b"\n", stdout=sys.stderr,
-                              check=False)
+        done = subprocess.run(
+            shlex.split(cmd), input=line + b"\n", stdout=sys.stderr, check=False
+        )
     except (OSError, ValueError) as e:
         print(f"launcher: --delete: {e}", file=sys.stderr)
         return

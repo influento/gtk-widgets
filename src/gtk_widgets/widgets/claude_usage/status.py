@@ -9,11 +9,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-
 from gtk_widgets.lib.paths import module_child
 from gtk_widgets.widgets.claude_usage.usage import (
-    describe_charge_date, format_reset_absolute, format_reset_relative,
-    reset_in_future, roll_charge_date, severity,
+    describe_charge_date,
+    format_reset_absolute,
+    format_reset_relative,
+    reset_in_future,
+    roll_charge_date,
+    severity,
 )
 
 SUBSCRIPTION_CACHE = Path.home() / ".claude" / "subscription_cache.json"
@@ -24,7 +27,7 @@ CACHE_TTL = 600  # 10 minutes
 def load_token():
     """Read OAuth access token from Claude Code credentials."""
     creds_path = Path.home() / ".claude" / ".credentials.json"
-    with open(creds_path) as f:
+    with Path(creds_path).open() as f:
         creds = json.load(f)
     return creds["claudeAiOauth"]["accessToken"]
 
@@ -45,18 +48,18 @@ def fetch_usage_api(token):
 def load_usage_cache():
     """Load cached usage data and freshness flag."""
     try:
-        with open(USAGE_CACHE) as f:
+        with Path(USAGE_CACHE).open() as f:
             cache = json.load(f)
         fresh = time.time() - cache.get("_cached_at", 0) < CACHE_TTL
         return cache, fresh
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return None, False
 
 
 def save_usage_cache(data):
     """Save usage data to cache with timestamp."""
     data["_cached_at"] = time.time()
-    with open(USAGE_CACHE, "w") as f:
+    with Path(USAGE_CACHE).open("w") as f:
         json.dump(data, f)
 
 
@@ -70,12 +73,12 @@ def fetch_usage(token):
 def load_cached_charge_date():
     """The next charge: the cached one, rolled forward a month at a time once it passes."""
     try:
-        with open(SUBSCRIPTION_CACHE) as f:
+        with Path(SUBSCRIPTION_CACHE).open() as f:
             cache = json.load(f)
         charge_date = cache.get("next_charge_date")
         if charge_date:
             return roll_charge_date(charge_date)
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+    except FileNotFoundError, json.JSONDecodeError, KeyError, ValueError:
         pass
     return None
 
@@ -99,7 +102,11 @@ def normalize_limits(data):
         kind = lim.get("kind")
         scope = lim.get("scope") or {}
         model = (scope.get("model") or {}).get("display_name")
-        surface = (scope.get("surface") or {}).get("display_name") if isinstance(scope.get("surface"), dict) else scope.get("surface")
+        surface = (
+            (scope.get("surface") or {}).get("display_name")
+            if isinstance(scope.get("surface"), dict)
+            else scope.get("surface")
+        )
         if kind == "session":
             short, label = "5h", "Current session"
         elif kind == "weekly_all":
@@ -110,15 +117,17 @@ def normalize_limits(data):
         else:
             name = model or surface or kind or "other"
             short, label = name.lower(), name
-        windows.append({
-            "kind": kind,
-            "short": short,
-            "label": label,
-            "percent": float(lim.get("percent") or 0),
-            "resets_at": lim.get("resets_at"),
-            "severity": lim.get("severity") or "normal",
-            "is_active": bool(lim.get("is_active")),
-        })
+        windows.append(
+            {
+                "kind": kind,
+                "short": short,
+                "label": label,
+                "percent": float(lim.get("percent") or 0),
+                "resets_at": lim.get("resets_at"),
+                "severity": lim.get("severity") or "normal",
+                "is_active": bool(lim.get("is_active")),
+            }
+        )
     if windows:
         return windows
 
@@ -126,15 +135,17 @@ def normalize_limits(data):
         win = data.get(key)
         if not win or win.get("utilization") is None:
             continue
-        windows.append({
-            "kind": kind,
-            "short": short,
-            "label": label,
-            "percent": float(win["utilization"]),
-            "resets_at": win.get("resets_at"),
-            "severity": "normal",
-            "is_active": False,
-        })
+        windows.append(
+            {
+                "kind": kind,
+                "short": short,
+                "label": label,
+                "percent": float(win["utilization"]),
+                "resets_at": win.get("resets_at"),
+                "severity": "normal",
+                "is_active": False,
+            }
+        )
     return windows
 
 
@@ -156,7 +167,9 @@ def format_output(data):
 
     charge_date = load_cached_charge_date()
     if charge_date:
-        tooltip_lines.append(f"{'next charge:':<{width}}{describe_charge_date(charge_date)}")
+        tooltip_lines.append(
+            f"{'next charge:':<{width}}{describe_charge_date(charge_date)}"
+        )
 
     parts = []
     for w in windows:

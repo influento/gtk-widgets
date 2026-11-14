@@ -39,7 +39,7 @@ class Field:
     it is the costly part for a long dmenu list) a copy where every word,
     after a separator or a camelCase bump, starts after a space."""
 
-    __slots__ = ("text", "low", "_words")
+    __slots__ = ("_words", "low", "text")
 
     def __init__(self, text):
         self.text = text
@@ -49,7 +49,9 @@ class Field:
     @property
     def words(self):
         if self._words is None:
-            self._words = " " + _SEPARATORS.sub(" ", _CAMEL.sub(" ", self.text)).casefold()
+            self._words = (
+                " " + _SEPARATORS.sub(" ", _CAMEL.sub(" ", self.text)).casefold()
+            )
         return self._words
 
 

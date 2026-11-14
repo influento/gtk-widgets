@@ -21,8 +21,14 @@ _MEMORY_FORMATS = {
 # which turns the buffer into the picture on screen (checked on a headless
 # sway in all eight transforms)
 _UPRIGHT = {
-    0: (False, 0), 1: (False, 270), 2: (False, 180), 3: (False, 90),
-    4: (True, 0), 5: (True, 90), 6: (True, 180), 7: (True, 270),
+    0: (False, 0),
+    1: (False, 270),
+    2: (False, 180),
+    3: (False, 90),
+    4: (True, 0),
+    5: (True, 90),
+    6: (True, 180),
+    7: (True, 270),
 }
 _ROTATIONS = {
     90: GdkPixbuf.PixbufRotation.COUNTERCLOCKWISE,
@@ -49,25 +55,37 @@ class Picture:
     def texture(self):
         if self._texture is None:
             self._texture = Gdk.MemoryTexture.new(
-                self.width, self.height, self.format, GLib.Bytes.new(self.data), self.stride)
+                self.width,
+                self.height,
+                self.format,
+                GLib.Bytes.new(self.data),
+                self.stride,
+            )
         return self._texture
 
     def pixel(self, x, y):
         """(r, g, b) of the pixel at (x, y)."""
         i = y * self.stride + x * self.bpp
-        a, b, c = self.data[i:i + 3]
+        a, b, c = self.data[i : i + 3]
         return (c, b, a) if self.format == Gdk.MemoryFormat.B8G8R8X8 else (a, b, c)
 
     def crop(self, x, y, w, h):
         """The w x h rectangle at (x, y) as a texture of its own. It shares the
         rows' stride, so it is one contiguous slice of the frame's bytes."""
-        if not (0 <= x and 0 <= y and w > 0 and h > 0
-                and x + w <= self.width and y + h <= self.height):
+        if not (
+            x >= 0
+            and y >= 0
+            and w > 0
+            and h > 0
+            and x + w <= self.width
+            and y + h <= self.height
+        ):
             raise ValueError(f"crop {w}x{h}+{x}+{y} outside {self.width}x{self.height}")
         start = y * self.stride + x * self.bpp
         end = start + (h - 1) * self.stride + w * self.bpp
-        return Gdk.MemoryTexture.new(w, h, self.format, GLib.Bytes.new(self.data[start:end]),
-                                     self.stride)
+        return Gdk.MemoryTexture.new(
+            w, h, self.format, GLib.Bytes.new(self.data[start:end]), self.stride
+        )
 
 
 def upright(frame):
@@ -76,23 +94,34 @@ def upright(frame):
     fmt = _MEMORY_FORMATS[screencopy.SHM_FORMATS[frame.format][1]]
     flip, turn = _UPRIGHT.get(frame.output.transform, (False, 0))
     if not (frame.y_invert or flip or turn):
-        return Picture(frame.output, frame.data, frame.width, frame.height, frame.stride, fmt, 4)
+        return Picture(
+            frame.output, frame.data, frame.width, frame.height, frame.stride, fmt, 4
+        )
     # Lossless flips and quarter turns go through GdkPixbuf, which wants RGB
-    tex = Gdk.MemoryTexture.new(frame.width, frame.height, fmt, GLib.Bytes.new(frame.data),
-                                frame.stride)
+    tex = Gdk.MemoryTexture.new(
+        frame.width, frame.height, fmt, GLib.Bytes.new(frame.data), frame.stride
+    )
     down = Gdk.TextureDownloader.new(tex)
     down.set_format(Gdk.MemoryFormat.R8G8B8)
     rgb, stride = down.download_bytes()
-    pb = GdkPixbuf.Pixbuf.new_from_bytes(rgb, GdkPixbuf.Colorspace.RGB, False, 8,
-                                         frame.width, frame.height, stride)
+    pb = GdkPixbuf.Pixbuf.new_from_bytes(
+        rgb, GdkPixbuf.Colorspace.RGB, False, 8, frame.width, frame.height, stride
+    )
     if frame.y_invert:
         pb = pb.flip(False)
     if flip:
         pb = pb.flip(True)
     if turn:
         pb = pb.rotate_simple(_ROTATIONS[turn])
-    return Picture(frame.output, pb.read_pixel_bytes().get_data(), pb.get_width(),
-                   pb.get_height(), pb.get_rowstride(), Gdk.MemoryFormat.R8G8B8, 3)
+    return Picture(
+        frame.output,
+        pb.read_pixel_bytes().get_data(),
+        pb.get_width(),
+        pb.get_height(),
+        pb.get_rowstride(),
+        Gdk.MemoryFormat.R8G8B8,
+        3,
+    )
 
 
 def save_png(texture, path):

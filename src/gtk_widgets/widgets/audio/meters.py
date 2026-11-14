@@ -10,20 +10,25 @@ wanted set of streams (set_targets, latest wins) and takes the peaks collected
 since its last look (take_peaks) after on_peaks wakes it via GLib.idle_add.
 """
 
-import ctypes, threading
+import ctypes
+import threading
 
 from gi.repository import GLib
 
 from gtk_widgets.lib import pulsectl
 from gtk_widgets.lib.pulsectl import _pulsectl as c
 
-METER_RATE = 30        # peaks per second per stream
-MIN_PEAK = 1e-6        # 1% of a meter on its cubic scale; silence is not sent to GTK
+METER_RATE = 30  # peaks per second per stream
+MIN_PEAK = 1e-6  # 1% of a meter on its cubic scale; silence is not sent to GTK
 APP_ID = "dev.dotfiles.audio"
 # Mixers' meter streams (ours included) are source outputs; like pavucontrol,
 # the Recording tab hides them.
-MIXER_APP_IDS = {APP_ID, "org.PulseAudio.pavucontrol", "org.gnome.VolumeControl",
-                 "org.kde.kmixd"}
+MIXER_APP_IDS = {
+    APP_ID,
+    "org.PulseAudio.pavucontrol",
+    "org.gnome.VolumeControl",
+    "org.kde.kmixd",
+}
 
 _FLAGS = c.PA_STREAM_DONT_MOVE | c.PA_STREAM_PEAK_DETECT | c.PA_STREAM_ADJUST_LATENCY
 _NO_CALLBACK = c.PA_STREAM_REQUEST_CB_T()  # NULL
@@ -41,12 +46,12 @@ class MeterThread(threading.Thread):
         super().__init__(daemon=True)
         self._on_peaks = on_peaks
         self._lock = threading.Lock()
-        self._loop = None          # set while the mainloop may be woken
+        self._loop = None  # set while the mainloop may be woken
         self._stopping = False
-        self._targets = None       # pending set_targets() value
-        self._peaks = {}           # key -> max peak since the last take_peaks()
-        self._streams = {}         # key -> (spec, stream, read callback); thread only
-        self._closing = []         # streams closed while still being created; thread only
+        self._targets = None  # pending set_targets() value
+        self._peaks = {}  # key -> max peak since the last take_peaks()
+        self._streams = {}  # key -> (spec, stream, read callback); thread only
+        self._closing = []  # streams closed while still being created; thread only
         self._proplist = None
 
     # --- main thread ---
@@ -113,7 +118,9 @@ class MeterThread(threading.Thread):
             pulse.close()
 
     def _apply(self, pulse, targets):
-        for key in [k for k, (spec, _, _) in self._streams.items() if targets.get(k) != spec]:
+        for key in [
+            k for k, (spec, _, _) in self._streams.items() if targets.get(k) != spec
+        ]:
             self._close(key)
         for key, spec in targets.items():
             if key not in self._streams:
@@ -123,11 +130,14 @@ class MeterThread(threading.Thread):
         source, monitor, passive = spec
         ss = c.PA_SAMPLE_SPEC(format=c.PA_SAMPLE_FLOAT32NE, rate=METER_RATE, channels=1)
         stream = c.pa.stream_new_with_proplist(
-            pulse._ctx, "Peak detect", ctypes.byref(ss), None, self._proplist)
+            pulse._ctx, "Peak detect", ctypes.byref(ss), None, self._proplist
+        )
         if not stream:
             return
         callback = c.PA_STREAM_REQUEST_CB_T(lambda s, _n, _u: self._on_read(s, key))
-        attr = c.PA_BUFFER_ATTR(maxlength=2**32 - 1, fragsize=ctypes.sizeof(ctypes.c_float))
+        attr = c.PA_BUFFER_ATTR(
+            maxlength=2**32 - 1, fragsize=ctypes.sizeof(ctypes.c_float)
+        )
         try:
             if monitor is not None:
                 c.pa.stream_set_monitor_stream(stream, monitor)
@@ -151,8 +161,9 @@ class MeterThread(threading.Thread):
             self._release(stream)
 
     def _reap(self):
-        for stream in [s for s in self._closing
-                       if c.pa.stream_get_state(s) != c.PA_STREAM_CREATING]:
+        for stream in [
+            s for s in self._closing if c.pa.stream_get_state(s) != c.PA_STREAM_CREATING
+        ]:
             self._closing.remove(stream)
             self._release(stream)
 
@@ -163,7 +174,9 @@ class MeterThread(threading.Thread):
                 c.pa.stream_disconnect(stream)
             except c.pa.CallError:
                 pass
-        c.pa.stream_unref(stream)  # a failed one (device or monitored stream gone) is gone
+        c.pa.stream_unref(
+            stream
+        )  # a failed one (device or monitored stream gone) is gone
 
     def _on_read(self, stream, key):
         data, nbytes = ctypes.c_void_p(), ctypes.c_size_t()

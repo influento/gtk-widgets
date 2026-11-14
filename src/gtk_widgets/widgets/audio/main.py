@@ -8,28 +8,40 @@ its own thread for the peak meter streams (meters.py). Rows are keyed by pulse
 index and updated in place; the lists are never rebuilt.
 """
 
-import json, math, os, signal, subprocess, threading, time
+import json
+import math
+import os
+import pathlib
+import signal
+import subprocess
+import threading
+import time
+
+from gi.repository import GLib, Pango
 
 from gtk_widgets.lib.ui.copy_label import CopyLabel, copyable
 from gtk_widgets.lib.ui.widget_base import Gdk, Gtk, VScroller, WidgetPopup, pass_wheel
 
-from gi.repository import GLib, Pango
-
 try:
     from gtk_widgets.lib import pulsectl
-    from gtk_widgets.widgets.audio.meters import APP_ID, METER_RATE, MIXER_APP_IDS, MeterThread
+    from gtk_widgets.widgets.audio.meters import (
+        APP_ID,
+        METER_RATE,
+        MIXER_APP_IDS,
+        MeterThread,
+    )
     from gtk_widgets.widgets.audio.recorder import Recorder
 except OSError:  # libpulse.so.0 missing
     pulsectl = None
 
 PA_INVALID = 2**32 - 1
-VOLUME_UI_MAX = 153            # PA_VOLUME_UI_MAX (+11 dB) in percent
-SCROLL_STEP = 5                # percent per Page Up/Down on a slider
-DRAG_GRACE = 0.2               # seconds volume events stay ignored after a drag
+VOLUME_UI_MAX = 153  # PA_VOLUME_UI_MAX (+11 dB) in percent
+SCROLL_STEP = 5  # percent per Page Up/Down on a slider
+DRAG_GRACE = 0.2  # seconds volume events stay ignored after a drag
 BACKOFF_START, BACKOFF_MAX = 0.5, 5  # reconnect delay doubles from 0.5 s, capped at 5 s
 LATENCY_RANGE_MS = 2000
 EVENT_ROLE = "sink-input-by-media-role:event"
-METER_DECAY = 0.5              # meter fall per second, in bar lengths
+METER_DECAY = 0.5  # meter fall per second, in bar lengths
 
 
 def meter_position(peak):
@@ -39,48 +51,85 @@ def meter_position(peak):
 
 
 # level bar offsets (name, upper bound in dBFS): green, yellow, red near clipping
-METER_BANDS = [(name, meter_position(10 ** (db / 20)))
-               for name, db in (("low", -6), ("high", -1), ("full", 0))]
+METER_BANDS = [
+    (name, meter_position(10 ** (db / 20)))
+    for name, db in (("low", -6), ("high", -1), ("full", 0))
+]
 
 STATE_FILE = os.path.join(
     os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
-    "gtk-widgets", "audio.json")
+    "gtk-widgets",
+    "audio.json",
+)
 
 ICON = {
-    "speaker": "\U000F057E",      # nf-md-volume_high
-    "speaker_mute": "\U000F0581",  # nf-md-volume_off
-    "mic": "\U000F036C",          # nf-md-microphone
-    "mic_mute": "\U000F036D",     # nf-md-microphone_off
-    "lock": "\U000F033E",         # nf-md-lock
-    "unlock": "\U000F033F",       # nf-md-lock_open
-    "expand": "\U000F0142",       # nf-md-chevron_right
-    "collapse": "\U000F0140",     # nf-md-chevron_down
-    "default": "\U000F04CE",      # nf-md-star
-    "not_default": "\U000F04D2",  # nf-md-star_outline
-    "card": "\U000F04C3",         # nf-md-speaker
-    "bell": "\U000F009A",         # nf-md-bell
-    "offline": "\U000F0581",      # nf-md-volume_off
-    "kill": "\U000F0156",         # nf-md-close
-    "meters": "\U000F0128",       # nf-md-chart_bar
-    "record": "\U000F044A",       # nf-md-record
-    "stop": "\U000F04DB",         # nf-md-stop
+    "speaker": "\U000f057e",  # nf-md-volume_high
+    "speaker_mute": "\U000f0581",  # nf-md-volume_off
+    "mic": "\U000f036c",  # nf-md-microphone
+    "mic_mute": "\U000f036d",  # nf-md-microphone_off
+    "lock": "\U000f033e",  # nf-md-lock
+    "unlock": "\U000f033f",  # nf-md-lock_open
+    "expand": "\U000f0142",  # nf-md-chevron_right
+    "collapse": "\U000f0140",  # nf-md-chevron_down
+    "default": "\U000f04ce",  # nf-md-star
+    "not_default": "\U000f04d2",  # nf-md-star_outline
+    "card": "\U000f04c3",  # nf-md-speaker
+    "bell": "\U000f009a",  # nf-md-bell
+    "offline": "\U000f0581",  # nf-md-volume_off
+    "kill": "\U000f0156",  # nf-md-close
+    "meters": "\U000f0128",  # nf-md-chart_bar
+    "record": "\U000f044a",  # nf-md-record
+    "stop": "\U000f04db",  # nf-md-stop
 }
 
 # (key, label, list facility, empty-list message, filters, default filter)
 TABS = [
-    ("playback", "Playback", "sink_input",
-     "No application is currently playing audio.",
-     [("all", "All streams"), ("apps", "Applications"), ("virtual", "Virtual streams")], "apps"),
-    ("recording", "Recording", "source_output",
-     "No application is currently recording audio.",
-     [("all", "All streams"), ("apps", "Applications"), ("virtual", "Virtual streams")], "apps"),
-    ("outputs", "Output Devices", "sink",
-     "No output devices available.",
-     [("all", "All"), ("hardware", "Hardware"), ("virtual", "Virtual")], "all"),
-    ("inputs", "Input Devices", "source",
-     "No input devices available.",
-     [("all", "All"), ("no-monitors", "All except monitors"), ("hardware", "Hardware"),
-      ("virtual", "Virtual"), ("monitors", "Monitors")], "no-monitors"),
+    (
+        "playback",
+        "Playback",
+        "sink_input",
+        "No application is currently playing audio.",
+        [
+            ("all", "All streams"),
+            ("apps", "Applications"),
+            ("virtual", "Virtual streams"),
+        ],
+        "apps",
+    ),
+    (
+        "recording",
+        "Recording",
+        "source_output",
+        "No application is currently recording audio.",
+        [
+            ("all", "All streams"),
+            ("apps", "Applications"),
+            ("virtual", "Virtual streams"),
+        ],
+        "apps",
+    ),
+    (
+        "outputs",
+        "Output Devices",
+        "sink",
+        "No output devices available.",
+        [("all", "All"), ("hardware", "Hardware"), ("virtual", "Virtual")],
+        "all",
+    ),
+    (
+        "inputs",
+        "Input Devices",
+        "source",
+        "No input devices available.",
+        [
+            ("all", "All"),
+            ("no-monitors", "All except monitors"),
+            ("hardware", "Hardware"),
+            ("virtual", "Virtual"),
+            ("monitors", "Monitors"),
+        ],
+        "no-monitors",
+    ),
     ("config", "Configuration", "card", "No cards available.", None, None),
 ]
 TAB_KEYS = [t[0] for t in TABS]
@@ -95,7 +144,9 @@ def channel_label(name):
 
 def volume_db(v):
     """pa_sw_volume_to_dB: libpulse volumes are cubic, so dB = 60 * log10(v)."""
-    return "-inf dB" if v <= 0 else f"{60 * math.log10(v):+.1f} dB".replace("+0.0", "0.0")
+    return (
+        "-inf dB" if v <= 0 else f"{60 * math.log10(v):+.1f} dB".replace("+0.0", "0.0")
+    )
 
 
 def scale_volume(values, new_max):
@@ -108,16 +159,16 @@ def scale_volume(values, new_max):
 
 def load_state():
     try:
-        with open(STATE_FILE) as f:
+        with pathlib.Path(STATE_FILE).open() as f:
             return json.load(f)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
 
 
 def save_state(state):
     try:
-        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-        with open(STATE_FILE, "w") as f:
+        pathlib.Path(os.path.dirname(STATE_FILE)).mkdir(exist_ok=True, parents=True)
+        with pathlib.Path(STATE_FILE).open("w") as f:
             json.dump(state, f)
     except OSError:
         pass
@@ -225,7 +276,9 @@ class VolumeControl(Gtk.Box):
         main.append(self._mute)
 
         self._base = 1.0
-        self._scale, self._scale_handler = self._make_scale(self._on_main_changed, labeled=True)
+        self._scale, self._scale_handler = self._make_scale(
+            self._on_main_changed, labeled=True
+        )
         slider = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0, hexpand=True)
         slider.append(self._scale)
         main.append(slider)
@@ -290,10 +343,14 @@ class VolumeControl(Gtk.Box):
         scale.add_mark(0, Gtk.PositionType.BOTTOM, "Silence" if labeled else None)
         scale.add_mark(100, Gtk.PositionType.BOTTOM, "100% (0 dB)" if labeled else None)
         if 0 < self._base < 1:
-            scale.add_mark(self._base * 100, Gtk.PositionType.BOTTOM, "Base" if labeled else None)
+            scale.add_mark(
+                self._base * 100, Gtk.PositionType.BOTTOM, "Base" if labeled else None
+            )
 
     def _make_scale(self, callback, *args, labeled=False):
-        adj = Gtk.Adjustment(lower=0, upper=VOLUME_UI_MAX, step_increment=1, page_increment=SCROLL_STEP)
+        adj = Gtk.Adjustment(
+            lower=0, upper=VOLUME_UI_MAX, step_increment=1, page_increment=SCROLL_STEP
+        )
         scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
         scale.set_draw_value(False)
         scale.set_round_digits(0)
@@ -426,8 +483,11 @@ class VolumeControl(Gtk.Box):
         kind = event.get_event_type()
         if kind in (Gdk.EventType.BUTTON_PRESS, Gdk.EventType.TOUCH_BEGIN):
             self._pressed = True
-        elif kind in (Gdk.EventType.BUTTON_RELEASE, Gdk.EventType.TOUCH_END,
-                      Gdk.EventType.TOUCH_CANCEL):
+        elif kind in (
+            Gdk.EventType.BUTTON_RELEASE,
+            Gdk.EventType.TOUCH_END,
+            Gdk.EventType.TOUCH_CANCEL,
+        ):
             self._pressed = False
             self._touch()
         return False
@@ -493,21 +553,27 @@ class DeviceRow(Gtk.Box):
             self._record.connect("clicked", lambda _: app.toggle_record(self))
             header.append(self._record)
         self._default = glyph_button("au-default-btn")
-        self._default.connect("clicked", lambda _: app.set_default(kind, self.info.name))
+        self._default.connect(
+            "clicked", lambda _: app.set_default(kind, self.info.name)
+        )
         header.append(self._default)
         self.append(header)
 
         self.volume = VolumeControl(
             lambda values: app.set_volume(kind, index, values),
             lambda mute: app.set_mute(kind, index, mute),
-            mic=(kind == "source"), meter=app.show_meters)
+            mic=(kind == "source"),
+            meter=app.show_meters,
+        )
         self.append(self.volume)
 
         self._port_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         label = Gtk.Label(label="Port", xalign=0, hexpand=True)
         label.add_css_class("au-field-label")
         self._port_row.append(label)
-        self._ports = Choice(lambda port: app.set_port(kind, index, port, self._ports), 30)
+        self._ports = Choice(
+            lambda port: app.set_port(kind, index, port, self._ports), 30
+        )
         self._port_row.append(self._ports)
         self.append(self._port_row)
 
@@ -515,8 +581,12 @@ class DeviceRow(Gtk.Box):
         label = Gtk.Label(label="Latency offset", xalign=0, hexpand=True)
         label.add_css_class("au-field-label")
         self._latency_row.append(label)
-        adj = Gtk.Adjustment(lower=-LATENCY_RANGE_MS, upper=LATENCY_RANGE_MS,
-                             step_increment=1, page_increment=10)
+        adj = Gtk.Adjustment(
+            lower=-LATENCY_RANGE_MS,
+            upper=LATENCY_RANGE_MS,
+            step_increment=1,
+            page_increment=10,
+        )
         self._latency = Gtk.SpinButton(adjustment=adj, numeric=True)
         self._latency.set_width_chars(5)
         self._latency.add_css_class("au-spin")
@@ -530,23 +600,36 @@ class DeviceRow(Gtk.Box):
 
     def update(self, info, is_default, card):
         self.info = info
-        self._title.set_content(info.description, f"{info.description} ({info.name})",
-                                f"{info.description}\n{info.name}")
+        self._title.set_content(
+            info.description,
+            f"{info.description} ({info.name})",
+            f"{info.description}\n{info.name}",
+        )
         self.volume.set_base(info.base_volume)
         self.volume.update(info.volume.values, info.channel_list, bool(info.mute))
 
-        items = [(p.name, p.description + (" (unplugged)" if p.available == "no" else ""),
-                  p.available != "no") for p in info.port_list]
+        items = [
+            (
+                p.name,
+                p.description + (" (unplugged)" if p.available == "no" else ""),
+                p.available != "no",
+            )
+            for p in info.port_list
+        ]
         show_ports = len(items) >= 2
         self._port_row.set_visible(show_ports)
         if show_ports:
-            self._ports.set_items(items, info.port_active.name if info.port_active else None)
+            self._ports.set_items(
+                items, info.port_active.name if info.port_active else None
+            )
         self.update_context(is_default, card)
 
     def update_context(self, is_default, card):
         """Parts owned by other objects: the server default and the card's port latency."""
         self._default.set_label(ICON["default" if is_default else "not_default"])
-        self._default.set_tooltip_text("Default device" if is_default else "Set as default")
+        self._default.set_tooltip_text(
+            "Default device" if is_default else "Set as default"
+        )
         if is_default:
             self._default.add_css_class("au-default-on")
         else:
@@ -581,8 +664,9 @@ class DeviceRow(Gtk.Box):
 
     def _on_latency(self, spin):
         if self._card_port is not None:
-            self._app.set_latency(self._card.name, self._card_port.name,
-                                  int(spin.get_value()) * 1000)
+            self._app.set_latency(
+                self._card.name, self._card_port.name, int(spin.get_value()) * 1000
+            )
 
     def matches(self, flt):
         monitor = self._kind == "source" and self.info.monitor_of_sink != PA_INVALID
@@ -618,11 +702,15 @@ class StreamRow(Gtk.Box):
         names.append(self._app_name)
         names.append(self._media)
         header.append(names)
-        self._device = Choice(lambda dev: app.move_stream(kind, index, dev, self._device), 18)
+        self._device = Choice(
+            lambda dev: app.move_stream(kind, index, dev, self._device), 18
+        )
         self._device.set_valign(Gtk.Align.CENTER)
         header.append(self._device)
-        kill = glyph_button("au-kill-btn", "Terminate playback" if kind == "sink_input"
-                            else "Terminate recording")
+        kill = glyph_button(
+            "au-kill-btn",
+            "Terminate playback" if kind == "sink_input" else "Terminate recording",
+        )
         kill.set_label(ICON["kill"])
         kill.connect("clicked", lambda _: app.kill_stream(kind, index))
         header.append(kill)
@@ -631,13 +719,17 @@ class StreamRow(Gtk.Box):
         self.volume = VolumeControl(
             lambda values: app.set_volume(kind, index, values),
             lambda mute: app.set_mute(kind, index, mute),
-            mic=(kind == "source_output"), meter=app.show_meters)
+            mic=(kind == "source_output"),
+            meter=app.show_meters,
+        )
         self.append(self.volume)
 
     def update(self, info, devices):
         self.info = info
         props = info.proplist
-        self._icon.set_from_icon_name(props.get("application.icon_name") or "audio-card")
+        self._icon.set_from_icon_name(
+            props.get("application.icon_name") or "audio-card"
+        )
         self._app_name.set_text(props.get("application.name") or info.name or "Unknown")
         media = props.get("media.name") or info.name or ""
         self._media.set_text(media)
@@ -709,8 +801,14 @@ class CardRow(Gtk.Box):
         desc = info.proplist.get("device.description") or info.name
         self._title.set_content(desc, f"{desc} ({info.name})", f"{desc}\n{info.name}")
         profiles = sorted(info.profile_list, key=lambda p: -p.priority)
-        items = [(p.name, p.description + ("" if p.available else " (unavailable)"),
-                  bool(p.available)) for p in profiles]
+        items = [
+            (
+                p.name,
+                p.description + ("" if p.available else " (unavailable)"),
+                bool(p.available),
+            )
+            for p in profiles
+        ]
         self._profiles.set_items(items, info.profile_active.name)
 
     def matches(self, _flt):
@@ -748,6 +846,7 @@ class Tab:
                 # active item right away (else picking back the old one is ignored)
                 choice.set_items(items, flt)
                 on_filter(self, flt)
+
             choice = Choice(pick)
             choice.set_items(items, default_filter)
             bar.append(choice)
@@ -776,14 +875,21 @@ class EventThread(threading.Thread):
 
     def __init__(self, pulse, on_event, on_disconnect):
         super().__init__(daemon=True)
-        self._pulse, self._on_event, self._on_disconnect = pulse, on_event, on_disconnect
+        self._pulse, self._on_event, self._on_disconnect = (
+            pulse,
+            on_event,
+            on_disconnect,
+        )
         self._stopping = self._closed = False
         self._lock = threading.Lock()
 
     def run(self):
         # Never call pulsectl from the callback: just hand the event to GTK.
-        self._pulse.event_callback_set(lambda ev: GLib.idle_add(
-            self._on_event, ev.facility._value, ev.t._value, ev.index))
+        self._pulse.event_callback_set(
+            lambda ev: GLib.idle_add(
+                self._on_event, ev.facility._value, ev.t._value, ev.index
+            )
+        )
         try:
             while not self._stopping:
                 self._pulse.event_listen()
@@ -819,7 +925,7 @@ class AudioPopup(WidgetPopup):
         self._state = load_state()
         self.show_meters = self._state.get("meters", True)
         self._meters = None
-        self._meter_targets = {}   # (facility, index) -> stream spec sent to the thread
+        self._meter_targets = {}  # (facility, index) -> stream spec sent to the thread
         self._meter_sync_id = self._tick_id = 0
         self._frame_time = 0.0
         self._recorder = Recorder(self._on_record_change) if pulsectl else None
@@ -838,8 +944,12 @@ class AudioPopup(WidgetPopup):
         self._container.append(header)
 
         if pulsectl is None:
-            self._container.append(self._error_box(
-                "libpulse not found", "Install libpulse (pulled in by pipewire-pulse)"))
+            self._container.append(
+                self._error_box(
+                    "libpulse not found",
+                    "Install libpulse (pulled in by pipewire-pulse)",
+                )
+            )
             return self._container
 
         meters = glyph_button("au-meters-btn", "Show volume meters", toggle=True)
@@ -867,7 +977,9 @@ class AudioPopup(WidgetPopup):
             self._stack.add_named(tab.page, key)
         self._container.append(tab_bar)
 
-        self._offline = self._error_box("Not connected", "Waiting for the sound server…")
+        self._offline = self._error_box(
+            "Not connected", "Waiting for the sound server…"
+        )
         self._offline.set_visible(False)
         self._container.append(self._offline)
         self._container.append(self._stack)
@@ -971,7 +1083,7 @@ class AudioPopup(WidgetPopup):
         self._sync_all()
 
     def _schedule_reconnect(self):
-        delay = min(BACKOFF_START * 2 ** self._backoff, BACKOFF_MAX)
+        delay = min(BACKOFF_START * 2**self._backoff, BACKOFF_MAX)
         self._backoff += 1
         self._reconnect_id = GLib.timeout_add(int(delay * 1000), self._reconnect)
 
@@ -1018,11 +1130,16 @@ class AudioPopup(WidgetPopup):
         """Full read after (re)connect; rows are diffed by index, not rebuilt."""
         c = self._cmd
         server = self._call(c.server_info)
-        lists = {fac: self._call(getattr(c, f"{fac}_list"))
-                 for fac in ("card", "sink", "source", "sink_input", "source_output")}
+        lists = {
+            fac: self._call(getattr(c, f"{fac}_list"))
+            for fac in ("card", "sink", "source", "sink_input", "source_output")
+        }
         if server is None or any(v is None for v in lists.values()):
             return
-        self._defaults = {"sink": server.default_sink_name, "source": server.default_source_name}
+        self._defaults = {
+            "sink": server.default_sink_name,
+            "source": server.default_source_name,
+        }
         for fac in ("card", "sink", "source", "sink_input", "source_output"):
             seen = set()
             for info in lists[fac]:
@@ -1070,8 +1187,10 @@ class AudioPopup(WidgetPopup):
             if facility == "server":
                 server = self._call(self._cmd.server_info)
                 if server is not None:
-                    self._defaults = {"sink": server.default_sink_name,
-                                      "source": server.default_source_name}
+                    self._defaults = {
+                        "sink": server.default_sink_name,
+                        "source": server.default_source_name,
+                    }
                     touched.update(("sink", "source"))
                 continue
             touched.add(facility)
@@ -1109,7 +1228,9 @@ class AudioPopup(WidgetPopup):
         return self._tab_for(facility).rows
 
     def _devices(self, facility):
-        return [(i, info.description) for i, info in sorted(self._infos[facility].items())]
+        return [
+            (i, info.description) for i, info in sorted(self._infos[facility].items())
+        ]
 
     def _upsert(self, facility, info):
         app_id = info.proplist.get("application.id")
@@ -1171,8 +1292,9 @@ class AudioPopup(WidgetPopup):
         default = self._defaults[facility]
         for row in self._rows(facility).values():
             if row.info is not None:
-                row.update_context(row.info.name == default,
-                                   self._infos["card"].get(row.info.card))
+                row.update_context(
+                    row.info.name == default, self._infos["card"].get(row.info.card)
+                )
 
     # --- peak meters ---
 
@@ -1207,15 +1329,25 @@ class AudioPopup(WidgetPopup):
                 device, source, stream = info, info.index, None
             elif facility == "sink_input":
                 device = self._infos["sink"].get(info.sink)
-                source, stream = (device.monitor_source if device else PA_INVALID), info.index
+                source, stream = (
+                    (device.monitor_source if device else PA_INVALID),
+                    info.index,
+                )
             elif facility == "source_output":
-                device, source, stream = self._infos["source"].get(info.source), info.source, None
+                device, source, stream = (
+                    self._infos["source"].get(info.source),
+                    info.source,
+                    None,
+                )
             else:
                 continue  # cards have no volume
             if device is None or source == PA_INVALID:
                 continue
             # the source of a sink's meter is its monitor; a source's is itself
-            passive = facility in ("sink", "sink_input") or device.monitor_of_sink != PA_INVALID
+            passive = (
+                facility in ("sink", "sink_input")
+                or device.monitor_of_sink != PA_INVALID
+            )
             if passive and device.state == "suspended":
                 continue
             targets[(facility, index)] = (source, stream, passive)
@@ -1254,7 +1386,9 @@ class AudioPopup(WidgetPopup):
         """Meter updates at METER_RATE on frame boundaries, until every meter is at zero."""
         now = clock.get_frame_time() / 1e6
         if self._frame_time and now - self._frame_time < 0.9 / METER_RATE:
-            return GLib.SOURCE_CONTINUE  # between updates: nothing changes, nothing redraws
+            return (
+                GLib.SOURCE_CONTINUE
+            )  # between updates: nothing changes, nothing redraws
         dt = now - self._frame_time if self._frame_time else 0.0
         self._frame_time = now
         peaks = self._meters.take_peaks() if self._meters is not None else {}
@@ -1286,8 +1420,11 @@ class AudioPopup(WidgetPopup):
         rec = self._recorder
         for index, row in self._rows("source").items():
             mine = index == rec.source
-            row.show_record(rec.state if mine else "idle", rec.seconds(),
-                            rec.state == "idle" or mine)
+            row.show_record(
+                rec.state if mine else "idle",
+                rec.seconds(),
+                rec.state == "idle" or mine,
+            )
 
     def _record_tick(self):
         if self._recorder.state == "idle":
@@ -1313,7 +1450,9 @@ class AudioPopup(WidgetPopup):
             choice.revert()
 
     def set_volume(self, facility, index, values):
-        self._act(f"{facility}_volume_set", index, pulsectl.PulseVolumeInfo(list(values)))
+        self._act(
+            f"{facility}_volume_set", index, pulsectl.PulseVolumeInfo(list(values))
+        )
 
     def set_mute(self, facility, index, mute):
         self._act(f"{facility}_mute", index, mute)
@@ -1335,9 +1474,11 @@ class AudioPopup(WidgetPopup):
 
     def set_latency(self, card_name, port_name, offset_us):
         # pulsectl has no call for this; pactl is the documented fallback.
-        subprocess.Popen(["pactl", "set-port-latency-offset", card_name, port_name,
-                          str(offset_us)],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["pactl", "set-port-latency-offset", card_name, port_name, str(offset_us)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def _write_event_sounds(self, volume=None, mute=None):
         entry = self._event_row.info
@@ -1347,13 +1488,22 @@ class AudioPopup(WidgetPopup):
             entry.volume = pulsectl.PulseVolumeInfo(list(volume))
         if mute is not None:
             entry.mute = int(mute)
-        self._act("stream_restore_write",
-                  pulsectl.PulseExtStreamRestoreInfo(
-                      entry.name, entry.volume, entry.channel_list,
-                      bool(entry.mute), entry.device or None),
-                  mode="replace", apply_immediately=True)
+        self._act(
+            "stream_restore_write",
+            pulsectl.PulseExtStreamRestoreInfo(
+                entry.name,
+                entry.volume,
+                entry.channel_list,
+                bool(entry.mute),
+                entry.device or None,
+            ),
+            mode="replace",
+            apply_immediately=True,
+        )
         # stream-restore writes emit no subscription events; show the new state now
-        self._event_row.volume.update(entry.volume.values, entry.channel_list, bool(entry.mute))
+        self._event_row.volume.update(
+            entry.volume.values, entry.channel_list, bool(entry.mute)
+        )
 
     def set_event_volume(self, values):
         self._write_event_sounds(volume=values)

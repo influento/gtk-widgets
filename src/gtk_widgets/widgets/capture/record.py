@@ -62,7 +62,9 @@ def _axis(start, size, scale, logical):
                 best = (lstart, length, bstart, reach - bstart)
             length += 1
     if best is None or best[2] + best[3] <= start:
-        raise ValueError(f"no logical region records pixels {start}..{end - 1} at scale {scale}")
+        raise ValueError(
+            f"no logical region records pixels {start}..{end - 1} at scale {scale}"
+        )
     lstart, length, bstart, _ = best
     return lstart, length, bstart, best[2] + best[3] - start
 
@@ -94,11 +96,29 @@ def command(output, origin, p, path):
     update before it looks at SIGINT, so on a still screen it never stops."""
     x, y, w, h = p.box
     cx, cy, cw, ch = p.crop
-    return ["wf-recorder", "-y", "-D", "-o", output,
-            "-g", f"{origin[0] + x},{origin[1] + y} {w}x{h}",
-            "-r", str(FPS), "-x", "bgr0", "-c", "libx264rgb",
-            "-p", "crf=0", "-p", "preset=ultrafast",
-            "-F", f"crop={cw}:{ch}:{cx}:{cy}", "-f", path]
+    return [
+        "wf-recorder",
+        "-y",
+        "-D",
+        "-o",
+        output,
+        "-g",
+        f"{origin[0] + x},{origin[1] + y} {w}x{h}",
+        "-r",
+        str(FPS),
+        "-x",
+        "bgr0",
+        "-c",
+        "libx264rgb",
+        "-p",
+        "crf=0",
+        "-p",
+        "preset=ultrafast",
+        "-F",
+        f"crop={cw}:{ch}:{cx}:{cy}",
+        "-f",
+        path,
+    ]
 
 
 class Recorder:
@@ -116,8 +136,13 @@ class Recorder:
         if shutil.which("setpriv"):
             # Stops cleanly if we die without stopping it
             argv = ["setpriv", "--pdeathsig", "INT", *argv]
-        self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=self._log,
-                                     stderr=subprocess.STDOUT, start_new_session=True)
+        self.proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=self._log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
 
     def exited(self):
         return self.proc.poll() is not None

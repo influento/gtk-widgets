@@ -6,11 +6,16 @@ providers often claim UDP support and then drop every datagram. Blocking
 sockets with timeouts; callers run it off the GTK main thread.
 """
 
-import ipaddress, os, socket, ssl, struct, time
+import ipaddress
+import os
+import socket
+import ssl
+import struct
+import time
 
 TIMEOUT = 6.0
 UDP_TRIES, UDP_WAIT = 3, 1.5
-TRACE = ("1.1.1.1", 443, True)   # host, port, TLS: https://1.1.1.1/cdn-cgi/trace
+TRACE = ("1.1.1.1", 443, True)  # host, port, TLS: https://1.1.1.1/cdn-cgi/trace
 DNS = ("1.1.1.1", 53)
 
 REPLIES = {
@@ -71,16 +76,16 @@ def _parse_udp(data):
         raise Socks5Error("bad or fragmented UDP reply")
     atyp, i = data[3], 4
     if atyp == 1:
-        host, i = str(ipaddress.IPv4Address(data[i:i + 4])), i + 4
+        host, i = str(ipaddress.IPv4Address(data[i : i + 4])), i + 4
     elif atyp == 4:
-        host, i = str(ipaddress.IPv6Address(data[i:i + 16])), i + 16
+        host, i = str(ipaddress.IPv6Address(data[i : i + 16])), i + 16
     elif atyp == 3:
         n = data[i]
-        host, i = data[i + 1:i + 1 + n].decode("idna", "replace"), i + 1 + n
+        host, i = data[i + 1 : i + 1 + n].decode("idna", "replace"), i + 1 + n
     else:
         raise Socks5Error("bad address type in the UDP reply")
-    port = struct.unpack("!H", data[i:i + 2])[0]
-    return host, port, data[i + 2:]
+    port = struct.unpack("!H", data[i : i + 2])[0]
+    return host, port, data[i + 2 :]
 
 
 def open_session(host, port, username="", password="", timeout=TIMEOUT):
@@ -102,8 +107,11 @@ def open_session(host, port, username="", password="", timeout=TIMEOUT):
         if ver != 5:
             raise Socks5Error("not a SOCKS5 proxy")
         if method == 0xFF:
-            raise Socks5Error("the proxy wants a username and password" if not username
-                              else "the proxy refused every login method")
+            raise Socks5Error(
+                "the proxy wants a username and password"
+                if not username
+                else "the proxy refused every login method"
+            )
         if method == 2:
             if not username:
                 raise Socks5Error("the proxy wants a username and password")
@@ -137,8 +145,10 @@ def _trace(sock, host, tls):
     """GET /cdn-cgi/trace over the tunnel: {'ip': ..., 'loc': ...}."""
     if tls:
         sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
-    sock.sendall(f"GET /cdn-cgi/trace HTTP/1.1\r\nHost: {host}\r\n"
-                 "Connection: close\r\nUser-Agent: gtk-widgets\r\n\r\n".encode())
+    sock.sendall(
+        f"GET /cdn-cgi/trace HTTP/1.1\r\nHost: {host}\r\n"
+        "Connection: close\r\nUser-Agent: gtk-widgets\r\n\r\n".encode()
+    )
     data = b""
     while len(data) < 65536:
         chunk = sock.recv(4096)
@@ -148,8 +158,11 @@ def _trace(sock, host, tls):
     head, _, body = data.partition(b"\r\n\r\n")
     if not head.startswith(b"HTTP/1.1 200") and not head.startswith(b"HTTP/1.0 200"):
         raise Socks5Error("the trace page did not load through the proxy")
-    fields = dict(line.split("=", 1) for line in body.decode(errors="replace").splitlines()
-                  if "=" in line)
+    fields = dict(
+        line.split("=", 1)
+        for line in body.decode(errors="replace").splitlines()
+        if "=" in line
+    )
     return fields
 
 
@@ -188,10 +201,13 @@ def udp_check(host, port, username="", password="", target=DNS, timeout=TIMEOUT)
                     while True:
                         data, _src = udp.recvfrom(4096)
                         _h, _p, payload = _parse_udp(data)
-                        if len(payload) >= 4 and payload[:2] == qid.to_bytes(2, "big") \
-                                and payload[2] & 0x80:
+                        if (
+                            len(payload) >= 4
+                            and payload[:2] == qid.to_bytes(2, "big")
+                            and payload[2] & 0x80
+                        ):
                             return round((time.monotonic() - start) * 1000)
-                except (TimeoutError, Socks5Error):
+                except TimeoutError, Socks5Error:
                     continue
             raise Socks5Error("UDP accepted, but no reply came back")
         finally:
@@ -200,11 +216,29 @@ def udp_check(host, port, username="", password="", target=DNS, timeout=TIMEOUT)
         ctrl.close()
 
 
-def check(host, port, username="", password="", trace=TRACE, dns=DNS, timeout=TIMEOUT, udp=True):
+def check(
+    host,
+    port,
+    username="",
+    password="",
+    trace=TRACE,
+    dns=DNS,
+    timeout=TIMEOUT,
+    udp=True,
+):
     """Full check. Returns a dict: ok, error, latency_ms, ip, country, udp
     (True/False/None when not run), udp_ms, udp_error, checked (epoch)."""
-    res = {"ok": False, "error": None, "latency_ms": None, "ip": None, "country": None,
-           "udp": None, "udp_ms": None, "udp_error": None, "checked": int(time.time())}
+    res = {
+        "ok": False,
+        "error": None,
+        "latency_ms": None,
+        "ip": None,
+        "country": None,
+        "udp": None,
+        "udp_ms": None,
+        "udp_error": None,
+        "checked": int(time.time()),
+    }
     try:
         sock = open_session(host, port, username, password, timeout)
         try:
@@ -216,9 +250,13 @@ def check(host, port, username="", password="", trace=TRACE, dns=DNS, timeout=TI
             sock.close()
         res["ok"], res["ip"] = True, fields.get("ip")
         loc = fields.get("loc", "")
-        res["country"] = loc if len(loc) == 2 and loc.isalpha() and loc != "XX" else None
+        res["country"] = (
+            loc if len(loc) == 2 and loc.isalpha() and loc != "XX" else None
+        )
     except (Socks5Error, ssl.SSLError) as e:
-        res["error"] = str(e) if isinstance(e, Socks5Error) else f"TLS failed: {e.reason or e}"
+        res["error"] = (
+            str(e) if isinstance(e, Socks5Error) else f"TLS failed: {e.reason or e}"
+        )
         return res
     except TimeoutError:
         res["error"] = "the proxy stopped answering (timed out)"

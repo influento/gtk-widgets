@@ -42,10 +42,7 @@ import time
 from pathlib import Path
 
 from gtk_widgets.lib.paths import SRC
-from gtk_widgets.widgets.capture import process
-from gtk_widgets.widgets.capture import record
-from gtk_widgets.widgets.capture import screencopy
-from gtk_widgets.widgets.capture import swayipc
+from gtk_widgets.widgets.capture import process, record, screencopy, swayipc
 
 USAGE = "usage: capture region [--dir DIR] [--copy]\n       capture gif [--dir DIR] [--copy] | --cancel"
 _PRELOAD = "libgtk4-layer-shell.so.0"
@@ -91,27 +88,30 @@ def pictures_dir():
     if not value:
         config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
         try:
-            with open(os.path.join(config, "user-dirs.dirs")) as f:
+            with Path(os.path.join(config, "user-dirs.dirs")).open() as f:
                 for line in f:
                     key, _, raw = line.strip().partition("=")
                     if key == "XDG_PICTURES_DIR":
                         value = raw.strip('"').replace("$HOME", home)
         except OSError:
             pass
-    if not value or not os.path.isabs(value):
+    if not value or not Path(value).is_absolute():
         value = os.path.join(home, "Pictures")
     return value
 
 
 def runtime_dir():
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return runtime if os.path.isdir(runtime) else "/tmp"
+    return runtime if Path(runtime).is_dir() else "/tmp"
 
 
 def take_lock():
     """An open fd holding the lock, or None when another capture holds it."""
-    fd = os.open(os.path.join(runtime_dir(), "gtk-widgets-capture.lock"),
-                 os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    fd = os.open(
+        os.path.join(runtime_dir(), "gtk-widgets-capture.lock"),
+        os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC,
+        0o600,
+    )
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -150,10 +150,19 @@ def copy_uri(*paths):
     # wl-copy stays behind to serve the clipboard: keep it off our stdout, or
     # a caller reading it ($(capture region)) would wait for it to exit
     try:
-        subprocess.run(["wl-copy", "-t", "text/uri-list",
-                        "\r\n".join(Path(p).as_uri() for p in paths)],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, check=True, timeout=5)
+        subprocess.run(
+            [
+                "wl-copy",
+                "-t",
+                "text/uri-list",
+                "\r\n".join(Path(p).as_uri() for p in paths),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=5,
+        )
     except (OSError, subprocess.SubprocessError) as e:
         print(f"capture: copying to the clipboard failed: {e}", file=sys.stderr)
         return False
@@ -184,9 +193,13 @@ def copy_sheets(sheets, before):
 def _cliphist_top():
     """cliphist's newest entry, "" for none, None without cliphist."""
     try:
-        r = subprocess.run(["cliphist", "list"], stdin=subprocess.DEVNULL,
-                           capture_output=True, timeout=2)
-    except (OSError, subprocess.SubprocessError):
+        r = subprocess.run(
+            ["cliphist", "list"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=2,
+        )
+    except OSError, subprocess.SubprocessError:
         return None
     return r.stdout.split(b"\n", 1)[0]
 
@@ -197,18 +210,18 @@ def pid_path():
 
 def write_pid():
     tmp = pid_path() + ".new"
-    with open(tmp, "w") as f:
+    with Path(tmp).open("w") as f:
         f.write(f"{os.getpid()}\n")
-    os.replace(tmp, pid_path())
+    Path(tmp).replace(pid_path())
 
 
 def remove_pid():
     try:
-        with open(pid_path()) as f:
+        with Path(pid_path()).open() as f:
             if f.read().strip() != str(os.getpid()):
                 return
-        os.remove(pid_path())
-    except (OSError, ValueError):
+        Path(pid_path()).unlink()
+    except OSError, ValueError:
         pass
 
 
@@ -217,15 +230,17 @@ def signal_recorder(cancel):
     throw it away (SIGUSR2, --cancel) and exit 0 quietly; else another
     capture is open."""
     try:
-        with open(pid_path()) as f:
+        with Path(pid_path()).open() as f:
             pid = int(f.read().strip())
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
+        with Path(f"/proc/{pid}/cmdline").open("rb") as f:
             argv = f.read().split(b"\0")
         # a pid file left by a killed recording may name another process now
-        if b"gif" in argv and any(os.path.basename(a) in (b"capture", b"main.py") for a in argv):
+        if b"gif" in argv and any(
+            os.path.basename(a) in (b"capture", b"main.py") for a in argv
+        ):
             os.kill(pid, signal.SIGUSR2 if cancel else signal.SIGUSR1)
             return 0
-    except (OSError, ValueError):
+    except OSError, ValueError:
         pass
     if not cancel:
         print("capture: another capture is open", file=sys.stderr)
@@ -239,9 +254,12 @@ def fail(message):
 
 def notify(summary, body, urgency="normal"):
     try:
-        subprocess.Popen(["notify-send", "-a", "capture", "-u", urgency, summary, body],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["notify-send", "-a", "capture", "-u", urgency, summary, body],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except OSError:
         pass
 
@@ -261,8 +279,12 @@ def main_region(directory, copy):
     windows = swayipc.windows()  # as the frames show them
     if t0:
         t0 = int(t0)
-        print(f"capture: {len(frames)} output(s) grabbed {(time.time_ns() - t0) / 1e6:.1f} ms"
-              " after launch", file=sys.stderr, flush=True)
+        print(
+            f"capture: {len(frames)} output(s) grabbed {(time.time_ns() - t0) / 1e6:.1f} ms"
+            " after launch",
+            file=sys.stderr,
+            flush=True,
+        )
 
     app = load_gtk()
     result = app.pick_region(frames, scales, t0, windows)
@@ -270,10 +292,11 @@ def main_region(directory, copy):
         return 1
     picture, rect = result
 
-    directory = os.path.abspath(os.path.expanduser(
-        directory or os.path.join(pictures_dir(), "screenshots")))
+    directory = os.path.abspath(
+        os.path.expanduser(directory or os.path.join(pictures_dir(), "screenshots"))
+    )
     try:
-        os.makedirs(directory, exist_ok=True)
+        Path(directory).mkdir(exist_ok=True, parents=True)
         path = free_path(directory, stamp)
         app.image.save_png(picture.crop(*rect), path)
     except (OSError, ValueError) as e:
@@ -290,7 +313,9 @@ def main_gif(directory, copy, cancel):
         return signal_recorder(cancel)
     if cancel:
         return 1  # no recording going
-    missing = [tool for tool in ("wf-recorder", "ffmpeg", "ffprobe") if not shutil.which(tool)]
+    missing = [
+        tool for tool in ("wf-recorder", "ffmpeg", "ffprobe") if not shutil.which(tool)
+    ]
     if missing:
         return fail(f"gif needs {', '.join(missing)}")
     try:
@@ -301,8 +326,9 @@ def main_gif(directory, copy, cancel):
     windows = swayipc.windows()
 
     app = load_gtk()
-    result = app.pick_region(frames, {name: o.scale for name, o in outputs.items()},
-                             windows=windows)
+    result = app.pick_region(
+        frames, {name: o.scale for name, o in outputs.items()}, windows=windows
+    )
     if result is None:
         return 1
     picture, rect = result
@@ -310,15 +336,20 @@ def main_gif(directory, copy, cancel):
     out = outputs.get(name)
     if out is None:
         return fail(f"gif needs sway's output layout for {name!r} (is $SWAYSOCK set?)")
-    if out.transform != "normal" or any(f.y_invert for f in frames if f.output.name == name):
+    if out.transform != "normal" or any(
+        f.y_invert for f in frames if f.output.name == name
+    ):
         return fail("gif can't record a rotated or flipped output")
     try:
         plan = record.plan(rect, out.scale, out.rect[2:])
     except ValueError as e:
         return fail(e)
     if plan.rect != tuple(rect):
-        print(f"capture: the output's far edge can't be recorded at scale {out.scale}:"
-              f" recording {plan.rect[2]}x{plan.rect[3]} of {rect[2]}x{rect[3]}", file=sys.stderr)
+        print(
+            f"capture: the output's far edge can't be recorded at scale {out.scale}:"
+            f" recording {plan.rect[2]}x{plan.rect[3]} of {rect[2]}x{rect[3]}",
+            file=sys.stderr,
+        )
 
     # The first frame must not show the picker: the compositor has handled
     # its unmap after the roundtrip, and a screencopy returns only once it
@@ -329,21 +360,24 @@ def main_gif(directory, copy, cancel):
     except (screencopy.CaptureError, OSError) as e:
         return fail(e)
 
-    directory = os.path.abspath(os.path.expanduser(
-        directory or os.path.join(pictures_dir(), "recordings")))
+    directory = os.path.abspath(
+        os.path.expanduser(directory or os.path.join(pictures_dir(), "recordings"))
+    )
     try:
-        os.makedirs(directory, exist_ok=True)
+        Path(directory).mkdir(exist_ok=True, parents=True)
         folder = free_path(directory, time.strftime("%Y%m%d-%H%M%S"), "recording", "")
-        os.mkdir(folder)
+        Path(folder).mkdir()
     except OSError as e:
         return fail(e)
-    rec = record.Recorder(record.command(name, out.rect[:2], plan,
-                                         os.path.join(folder, process.RAW)))
+    rec = record.Recorder(
+        record.command(name, out.rect[:2], plan, os.path.join(folder, process.RAW))
+    )
 
     try:
         rec.start()
-        outcome = app.record(name, plan.rect, out.scale, rec, record.MAX_SECONDS,
-                             write_pid, remove_pid)
+        outcome = app.record(
+            name, plan.rect, out.scale, rec, record.MAX_SECONDS, write_pid, remove_pid
+        )
     except BaseException as e:
         remove_pid()
         if rec.proc is not None:
@@ -376,7 +410,9 @@ def main_gif(directory, copy, cancel):
         return fail(f"the recording is kept in {folder}; retry with {retry}")
     print(folder, flush=True)
     frames, sheets = len(result["frames"]), len(result["sheets"])
-    summary = f"{frames} frame{'s' * (frames != 1)} on {sheets} sheet{'s' * (sheets != 1)}"
+    summary = (
+        f"{frames} frame{'s' * (frames != 1)} on {sheets} sheet{'s' * (sheets != 1)}"
+    )
     if copy:
         copy_sheets(result["sheets"], before)
         notify("Recording ready", f"{summary}, copied")

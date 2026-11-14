@@ -52,18 +52,44 @@ import subprocess
 import sys
 import urllib.parse
 
-CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-                     "launcher", "clipboard")
+CACHE = os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+    "launcher",
+    "clipboard",
+)
 BINARY = re.compile(r"^\[\[ binary data (\S+ \S+) (\w+) (\d+)x(\d+) \]\]$")
 MARKER = "application/x-launcher-clipboard"
 # Formats sent as image bytes as well as a file; GIF is left out on purpose
-STILL_MIME = {"png": "image/png", "jpeg": "image/jpeg", "jpg": "image/jpeg",
-              "webp": "image/webp", "bmp": "image/bmp", "avif": "image/avif",
-              "heic": "image/heic", "jxl": "image/jxl"}
+STILL_MIME = {
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "avif": "image/avif",
+    "heic": "image/heic",
+    "jxl": "image/jxl",
+}
 # What wl-copy offers for text: apps ask for any of these
 TEXT_TYPES = ("text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT")
-IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic", ".heif", ".jxl",
-             ".bmp", ".tif", ".tiff", ".svg", ".ico", ".qoi", ".tga"}
+IMAGE_EXT = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".avif",
+    ".heic",
+    ".heif",
+    ".jxl",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".svg",
+    ".ico",
+    ".qoi",
+    ".tga",
+}
 
 
 def human(n):
@@ -76,7 +102,9 @@ def human(n):
 
 def short(path):
     home = os.path.expanduser("~")
-    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
+    return (
+        "~" + path[len(home) :] if path == home or path.startswith(home + "/") else path
+    )
 
 
 def sniff(raw):
@@ -89,8 +117,12 @@ def sniff(raw):
         return "heic"
     if raw[:2] == b"\xff\x0a" or raw[:12] == b"\0\0\0\x0cJXL \r\n\x87\n":
         return "jxl"
-    for magic, fmt in ((b"\x89PNG", "png"), (b"\xff\xd8\xff", "jpeg"), (b"GIF8", "gif"),
-                       (b"BM", "bmp")):
+    for magic, fmt in (
+        (b"\x89PNG", "png"),
+        (b"\xff\xd8\xff", "jpeg"),
+        (b"GIF8", "gif"),
+        (b"BM", "bmp"),
+    ):
         if raw.startswith(magic):
             return fmt
     return None
@@ -106,8 +138,8 @@ class Cache:
     def __init__(self, root, decode):
         self.root, self.decode = root, decode
         self.kept = set()
-        os.makedirs(root, mode=0o700, exist_ok=True)
-        os.chmod(root, 0o700)
+        pathlib.Path(root).mkdir(mode=0o700, exist_ok=True, parents=True)
+        pathlib.Path(root).chmod(0o700)
         self.files = {}
         for name in os.listdir(root):
             if not name.endswith(".tmp"):  # a write cut short; prune() drops it
@@ -120,9 +152,11 @@ class Cache:
             raw = self.decode(cid)
             name = f"{cid}.{fmt or sniff(raw) or 'bin'}"
             tmp = os.path.join(self.root, name + ".tmp")
-            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+            with os.fdopen(
+                os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb"
+            ) as f:
                 f.write(raw)
-            os.replace(tmp, os.path.join(self.root, name))
+            pathlib.Path(tmp).replace(os.path.join(self.root, name))
             self.files[cid] = name
         self.kept.add(name)
         return os.path.join(self.root, name)
@@ -131,7 +165,7 @@ class Cache:
         for name in os.listdir(self.root):
             if name not in self.kept:
                 try:
-                    os.remove(os.path.join(self.root, name))
+                    pathlib.Path(os.path.join(self.root, name)).unlink()
                 except OSError:
                     pass
 
@@ -141,16 +175,26 @@ def from_paths(paths):
     if len(paths) == 1:
         p = paths[0]
         name = os.path.basename(p.rstrip("/")) or p
-        if not os.path.exists(p):
-            return "missing", name, f"{short(os.path.dirname(p))} · missing", {"preview": [p]}
-        if os.path.isdir(p):
-            return "folder", name + "/", short(os.path.dirname(p.rstrip("/"))), {"preview": [p]}
+        if not pathlib.Path(p).exists():
+            return (
+                "missing",
+                name,
+                f"{short(os.path.dirname(p))} · missing",
+                {"preview": [p]},
+            )
+        if pathlib.Path(p).is_dir():
+            return (
+                "folder",
+                name + "/",
+                short(os.path.dirname(p.rstrip("/"))),
+                {"preview": [p]},
+            )
         if is_image(p):
             kind = "gif" if p.lower().endswith(".gif") else "image"
             return kind, name, short(os.path.dirname(p)), {"preview": [p], "icon": [p]}
         return "file", name, short(os.path.dirname(p)), {"preview": [p]}
     opts = {"preview": list(paths), "count": [str(len(paths))]}
-    thumb = next((p for p in paths if is_image(p) and os.path.isfile(p)), None)
+    thumb = next((p for p in paths if is_image(p) and pathlib.Path(p).is_file()), None)
     if thumb:
         opts["icon"] = [thumb]
     label = f"{len(paths)} files: " + ", ".join(os.path.basename(p) for p in paths)
@@ -158,8 +202,11 @@ def from_paths(paths):
 
 
 def uri_paths(text):
-    return [urllib.parse.unquote(u[len("file://"):]) for u in re.split(r"[\r\n ]+", text)
-            if u.startswith("file://")]
+    return [
+        urllib.parse.unquote(u[len("file://") :])
+        for u in re.split(r"[\r\n ]+", text)
+        if u.startswith("file://")
+    ]
 
 
 def classify(cid, text, cache):
@@ -168,24 +215,48 @@ def classify(cid, text, cache):
     if m:
         size, fmt, w, h = m.groups()
         path = cache.data(cid, fmt)
-        return ("gif" if fmt == "gif" else "image"), f"{fmt.upper()} image · {w}×{h}", size, {
-            "preview": [path], "icon": [path], "info": ["image data"], "meta": ["image", fmt]}
+        return (
+            ("gif" if fmt == "gif" else "image"),
+            f"{fmt.upper()} image · {w}×{h}",
+            size,
+            {
+                "preview": [path],
+                "icon": [path],
+                "info": ["image data"],
+                "meta": ["image", fmt],
+            },
+        )
     if "�" in text or any(ord(c) < 32 and c != "\t" for c in text):
         path = cache.data(cid)  # bytes cliphist couldn't name
         fmt = path.rsplit(".", 1)[-1]
-        size = human(os.path.getsize(path))
+        size = human(pathlib.Path(path).stat().st_size)
         if fmt == "bin":
             return "binary", f"Binary data · {size}", "", {"meta": ["binary"]}
-        return ("gif" if fmt == "gif" else "image"), f"{fmt.upper()} image", size, {
-            "preview": [path], "icon": [path], "info": ["image data"], "meta": ["image", fmt]}
+        return (
+            ("gif" if fmt == "gif" else "image"),
+            f"{fmt.upper()} image",
+            size,
+            {
+                "preview": [path],
+                "icon": [path],
+                "info": ["image data"],
+                "meta": ["image", fmt],
+            },
+        )
     if text.startswith("file://"):
         # cliphist cuts its preview at 100 characters with an ellipsis
-        full = cache.decode(cid).decode("utf-8", "replace") if text.endswith("…") else text
+        full = (
+            cache.decode(cid).decode("utf-8", "replace") if text.endswith("…") else text
+        )
         paths = uri_paths(full)
         if paths:
             return from_paths(paths)
     plain = os.path.expanduser(text)
-    if plain.startswith("/") and not text.endswith("…") and os.path.exists(plain):
+    if (
+        plain.startswith("/")
+        and not text.endswith("…")
+        and pathlib.Path(plain).exists()
+    ):
         return from_paths([plain])
     return "text", text, "", {"text": [cache.data(cid, "txt")]}
 
@@ -194,7 +265,9 @@ def line(cid, kind, label, detail, opts):
     opts = dict(opts, kind=[kind])
     if detail:
         opts["detail"] = [detail]
-    fields = "\x1f".join(x for key, values in opts.items() for v in values for x in (key, v))
+    fields = "\x1f".join(
+        x for key, values in opts.items() for v in values for x in (key, v)
+    )
     label = label.replace("\0", "").replace("\n", " ")
     return f"{cid}\t{label}\0{fields}"
 
@@ -210,7 +283,7 @@ def run(listing, decode, root=CACHE):
         cid, text = cid.decode(), text.decode("utf-8", "replace")
         try:
             out.append(line(cid, *classify(cid, text, cache)))
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except OSError, ValueError, subprocess.SubprocessError:
             out.append(f"{cid}\t{text}")  # as cliphist shows it
     cache.prune()
     return out
@@ -238,8 +311,12 @@ def image_forms(raw, fmt, path):
     """Image data: its bytes (still formats only), the cached file, the
     file's path."""
     forms = [(STILL_MIME[fmt], raw)] if fmt in STILL_MIME else []
-    return (forms + [("text/uri-list", pathlib.Path(path).as_uri().encode())]
-            + _text_forms(path) + [(MARKER, b"")])
+    return (
+        forms
+        + [("text/uri-list", pathlib.Path(path).as_uri().encode())]
+        + _text_forms(path)
+        + [(MARKER, b"")]
+    )
 
 
 def file_forms(raw, paths):
@@ -248,8 +325,8 @@ def file_forms(raw, paths):
     forms = [("text/uri-list", raw)]
     if len(paths) == 1:
         ext = os.path.splitext(paths[0])[1].lower().lstrip(".")
-        if ext in STILL_MIME and os.path.isfile(paths[0]):
-            with open(paths[0], "rb") as f:
+        if ext in STILL_MIME and pathlib.Path(paths[0]).is_file():
+            with pathlib.Path(paths[0]).open("rb") as f:
                 forms.append((STILL_MIME[ext], f.read()))
     return forms + _text_forms("\n".join(paths)) + [(MARKER, b"")]
 
@@ -259,8 +336,14 @@ def restore(cid, cliphist, serve, wl_copy, root=CACHE, offer=False):
     offer (a copy cliphist-store has just stored), only image data and file
     links go up, without moving the entry: anything else is left as the app
     offered it."""
-    text = next((t for i, _, t in (ln.partition(b"\t") for ln in cliphist("list").split(b"\n"))
-                 if i.decode() == cid), b"").decode("utf-8", "replace")
+    text = next(
+        (
+            t
+            for i, _, t in (ln.partition(b"\t") for ln in cliphist("list").split(b"\n"))
+            if i.decode() == cid
+        ),
+        b"",
+    ).decode("utf-8", "replace")
     raw = cliphist("decode", data=f"{cid}\t\n".encode())
     kind = restore_kind(text, raw)
     if kind is None:
@@ -272,14 +355,21 @@ def restore(cid, cliphist, serve, wl_copy, root=CACHE, offer=False):
         cliphist("store", data=raw)  # to the top, under a new id
         # The newest entry with the pick's text: a copy can land on top
         # meanwhile (no store, no match: cid is still the pick)
-        top = next((i.decode() for i, _, t in (ln.partition(b"\t")
-                                               for ln in cliphist("list").split(b"\n"))
-                    if t.decode("utf-8", "replace") == text), cid)
+        top = next(
+            (
+                i.decode()
+                for i, _, t in (
+                    ln.partition(b"\t") for ln in cliphist("list").split(b"\n")
+                )
+                if t.decode("utf-8", "replace") == text
+            ),
+            cid,
+        )
     if kind[0] == "image":
         path = Cache(root, lambda _: raw).data(cid, kind[1])
         if top != cid:
             new = os.path.join(root, f"{top}.{kind[1]}")
-            os.replace(path, new)
+            pathlib.Path(path).replace(new)
             path = new
         forms = image_forms(raw, kind[1], path)
     else:
@@ -293,22 +383,27 @@ def restore(cid, cliphist, serve, wl_copy, root=CACHE, offer=False):
 
 def _main():
     def cliphist(*args, data=None):
-        return subprocess.run(["cliphist", *args], input=data, capture_output=True,
-                              timeout=10).stdout
+        return subprocess.run(
+            ["cliphist", *args], input=data, capture_output=True, timeout=10
+        ).stdout
 
     if sys.argv[1:2] in (["--restore"], ["--offer"]) and len(sys.argv) == 3:
+
         def wl_copy(raw):
             subprocess.run(["wl-copy"], input=raw, check=False)
 
         def serve(forms):
             from gtk_widgets.widgets.launcher import selection
+
             try:
                 selection.serve(forms)
             except selection.WaylandError as e:
                 raise OSError(str(e)) from None
 
         try:
-            restore(sys.argv[2], cliphist, serve, wl_copy, offer=sys.argv[1] == "--offer")
+            restore(
+                sys.argv[2], cliphist, serve, wl_copy, offer=sys.argv[1] == "--offer"
+            )
         except (OSError, subprocess.SubprocessError) as e:
             sys.exit(f"launcher-clipboard: {e}")
         return

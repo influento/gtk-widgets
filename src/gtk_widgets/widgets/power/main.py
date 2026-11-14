@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Power menu popup — lock, sleep, reboot, shut down."""
 
-import os, subprocess
+import os
+import subprocess
 
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
 
 ACTIONS = [
-    ("󰌾", "Lock",      "color-blue",  [os.path.expanduser("~/.local/bin/lock")]),
-    ("󰤄", "Sleep",     "color-mauve", ["systemctl", "suspend"]),
-    ("󰜉", "Reboot",    "color-peach", ["systemctl", "reboot"]),
-    ("󰐥", "Shut Down", "color-red",   ["systemctl", "poweroff"]),
+    ("󰌾", "Lock", "color-blue", [os.path.expanduser("~/.local/bin/lock")]),
+    ("󰤄", "Sleep", "color-mauve", ["systemctl", "suspend"]),
+    ("󰜉", "Reboot", "color-peach", ["systemctl", "reboot"]),
+    ("󰐥", "Shut Down", "color-red", ["systemctl", "poweroff"]),
 ]
 
 

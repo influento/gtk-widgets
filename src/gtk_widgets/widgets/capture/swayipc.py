@@ -38,7 +38,9 @@ def outputs():
     raw = _query(_GET_OUTPUTS)
     if raw is None:
         return {}
-    return {o["name"]: Output(o) for o in raw if o.get("active") and o.get("scale", 0) > 0}
+    return {
+        o["name"]: Output(o) for o in raw if o.get("active") and o.get("scale", 0) > 0
+    }
 
 
 def windows():
@@ -60,7 +62,9 @@ def windows():
         fullscreen, floating, tiled = [], [], []
         for ws in output.get("nodes", []):
             # workspaces in the tree carry no "visible"; the output names its own
-            if ws.get("type") != "workspace" or ws.get("name") != output.get("current_workspace"):
+            if ws.get("type") != "workspace" or ws.get("name") != output.get(
+                "current_workspace"
+            ):
                 continue
             for node in ws.get("nodes", []):
                 _views(node, tiled, fullscreen)
@@ -70,7 +74,12 @@ def windows():
         rects = []
         for view in fullscreen or floating + tiled:
             x, y, w, h = _content(view)
-            if x < box[0] + box[2] and y < box[1] + box[3] and x + w > box[0] and y + h > box[1]:
+            if (
+                x < box[0] + box[2]
+                and y < box[1] + box[3]
+                and x + w > box[0]
+                and y + h > box[1]
+            ):
                 rects.append((x - box[0], y - box[1], w, h))
         found[output["name"]] = rects
     return found
@@ -110,7 +119,7 @@ def _query(kind):
             header = _recv(sock, 14)
             (length,) = struct.unpack_from("=I", header, 6)
             return json.loads(_recv(sock, length))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

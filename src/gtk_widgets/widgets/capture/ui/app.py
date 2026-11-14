@@ -28,11 +28,17 @@ import sys
 import threading
 import time
 
-from gtk_widgets.lib.ui.widget_base import (Gdk, Gtk, Gtk4LayerShell, install_css, load_css,
-                             render_css)
 import cairo
 from gi.repository import Gio, GLib, Graphene, Gsk
 
+from gtk_widgets.lib.ui.widget_base import (
+    Gdk,
+    Gtk,
+    Gtk4LayerShell,
+    install_css,
+    load_css,
+    render_css,
+)
 from gtk_widgets.widgets.capture import geometry
 from gtk_widgets.widgets.capture.ui import image
 
@@ -69,7 +75,10 @@ class Canvas(Gtk.Widget):
         self.magnify = False
         self.pointer = None  # logical (x, y) while over this output
         self._loupe = None  # (x, y) of the middle pixel, (x, y) logical of the loupe
-        self._slice = (None, None)  # (source rect, texture): one crop per pixel moved to
+        self._slice = (
+            None,
+            None,
+        )  # (source rect, texture): one crop per pixel moved to
         self.add_css_class("capture-canvas")
         self.set_cursor(Gdk.Cursor.new_from_name("crosshair"))
 
@@ -80,7 +89,10 @@ class Canvas(Gtk.Widget):
 
     def target_at(self, pos):
         """The window under logical pos, else the whole output (physical)."""
-        x, y = geometry.pixel_at(pos[0], self.scale), geometry.pixel_at(pos[1], self.scale)
+        x, y = (
+            geometry.pixel_at(pos[0], self.scale),
+            geometry.pixel_at(pos[1], self.scale),
+        )
         for rect in self.targets:
             if rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]:
                 return rect
@@ -114,14 +126,26 @@ class Canvas(Gtk.Widget):
         s, pic = self.scale, self.picture
         x = min(max(geometry.pixel_at(self.pointer[0], s), 0), pic.width - 1)
         y = min(max(geometry.pixel_at(self.pointer[1], s), 0), pic.height - 1)
-        self.readout.set_label("{}, {}  #{:02X}{:02X}{:02X}".format(x, y, *pic.pixel(x, y)))
+        self.readout.set_label(
+            "{}, {}  #{:02X}{:02X}{:02X}".format(x, y, *pic.pixel(x, y))
+        )
         self.readout.set_visible(True)
         # measure() counts the margins that place the label
-        lw = self.readout.measure(Gtk.Orientation.HORIZONTAL, -1)[1] - self.readout.get_margin_start()
-        lh = self.readout.measure(Gtk.Orientation.VERTICAL, -1)[1] - self.readout.get_margin_top()
+        lw = (
+            self.readout.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+            - self.readout.get_margin_start()
+        )
+        lh = (
+            self.readout.measure(Gtk.Orientation.VERTICAL, -1)[1]
+            - self.readout.get_margin_top()
+        )
         size = LOUPE_PIXELS * self._cell() / s
-        lx, ly = geometry.loupe_place(self.pointer, (max(size, lw), size + LABEL_GAP + lh),
-                                      (self.get_width(), self.get_height()), LOUPE_GAP)
+        lx, ly = geometry.loupe_place(
+            self.pointer,
+            (max(size, lw), size + LABEL_GAP + lh),
+            (self.get_width(), self.get_height()),
+            LOUPE_GAP,
+        )
         lx, ly = math.floor(lx), math.floor(ly)
         self.readout.set_margin_start(lx)
         self.readout.set_margin_top(math.ceil(ly + size + LABEL_GAP))
@@ -147,12 +171,16 @@ class Canvas(Gtk.Widget):
         # a rectangle of the logical size GTK 4.22 resamples it. Otherwise the
         # preview is soft; the saved image never comes from it.
         surface = self.get_native().get_surface()
-        filt = (Gsk.ScalingFilter.NEAREST
-                if surface and abs(surface.get_scale() - self.scale) < 1e-3
-                else Gsk.ScalingFilter.LINEAR)
+        filt = (
+            Gsk.ScalingFilter.NEAREST
+            if surface and abs(surface.get_scale() - self.scale) < 1e-3
+            else Gsk.ScalingFilter.LINEAR
+        )
         snapshot.save()
         snapshot.scale(1 / self.scale, 1 / self.scale)
-        snapshot.append_scaled_texture(pic.texture, filt, _rect(0, 0, pic.width, pic.height))
+        snapshot.append_scaled_texture(
+            pic.texture, filt, _rect(0, 0, pic.width, pic.height)
+        )
         snapshot.restore()
 
         shade = self._shade_probe.get_color()
@@ -170,8 +198,12 @@ class Canvas(Gtk.Widget):
                 snapshot.append_border(outline, [f] * 4, [self.get_color()] * 4)
         else:
             x, y, sw, sh = geometry.to_logical(self.rect, self.scale)
-            for r in ((0, 0, w, y), (0, y + sh, w, h - y - sh),
-                      (0, y, x, sh), (x + sw, y, w - x - sw, sh)):
+            for r in (
+                (0, 0, w, y),
+                (0, y + sh, w, h - y - sh),
+                (0, y, x, sh),
+                (x + sw, y, w - x - sw, sh),
+            ):
                 if r[2] > 0 and r[3] > 0:
                     snapshot.append_color(shade, _rect(*r))
             outline.init_from_rect(_rect(x - f, y - f, sw + 2 * f, sh + 2 * f), 0)
@@ -205,9 +237,15 @@ class Canvas(Gtk.Widget):
             if self._slice[0] != src:
                 self._slice = (src, pic.crop(*src))
             snapshot.append_scaled_texture(
-                self._slice[1], Gsk.ScalingFilter.NEAREST,
-                _rect(ox + (x0 - sx) * cell, oy + (y0 - sy) * cell,
-                      (x1 - x0) * cell, (y1 - y0) * cell))
+                self._slice[1],
+                Gsk.ScalingFilter.NEAREST,
+                _rect(
+                    ox + (x0 - sx) * cell,
+                    oy + (y0 - sy) * cell,
+                    (x1 - x0) * cell,
+                    (y1 - y0) * cell,
+                ),
+            )
         for k in range(1, n):
             snapshot.append_color(shade, _rect(ox + k * cell, oy, 1, size))
             snapshot.append_color(shade, _rect(ox, oy + k * cell, size, 1))
@@ -215,16 +253,27 @@ class Canvas(Gtk.Widget):
         if self.shown is not None:
             rx, ry, rw, rh = self.shown
             edges = Gsk.RoundedRect()
-            edges.init_from_rect(_rect(ox + (rx - sx) * cell - line, oy + (ry - sy) * cell - line,
-                                       rw * cell + 2 * line, rh * cell + 2 * line), 0)
+            edges.init_from_rect(
+                _rect(
+                    ox + (rx - sx) * cell - line,
+                    oy + (ry - sy) * cell - line,
+                    rw * cell + 2 * line,
+                    rh * cell + 2 * line,
+                ),
+                0,
+            )
             snapshot.append_border(edges, [line] * 4, [self.get_color()] * 4)
         middle = Gsk.RoundedRect()
-        middle.init_from_rect(_rect(ox + (mx - sx) * cell, oy + (my - sy) * cell, cell, cell), 0)
+        middle.init_from_rect(
+            _rect(ox + (mx - sx) * cell, oy + (my - sy) * cell, cell, cell), 0
+        )
         snapshot.append_border(middle, [line] * 4, [self.readout.get_color()] * 4)
         snapshot.pop()
         f = max(1, round(FRAME_WIDTH * s))
         ring = Gsk.RoundedRect()
-        ring.init_from_rect(_rect(ox - f, oy - f, size + 2 * f, size + 2 * f), LOUPE_RADIUS * s + f)
+        ring.init_from_rect(
+            _rect(ox - f, oy - f, size + 2 * f, size + 2 * f), LOUPE_RADIUS * s + f
+        )
         snapshot.append_border(ring, [f] * 4, [self.get_color()] * 4)
         snapshot.restore()
 
@@ -261,14 +310,19 @@ class Picker(Gtk.Application):
         found, keys = display.map_keyval(Gdk.KEY_z)
         self._z_keys = {k.keycode for k in keys} if found else set()
         monitors = display.get_monitors()
-        by_name = {monitors.get_item(i).get_connector(): monitors.get_item(i)
-                   for i in range(monitors.get_n_items())}
+        by_name = {
+            monitors.get_item(i).get_connector(): monitors.get_item(i)
+            for i in range(monitors.get_n_items())
+        }
         for frame in self.frames:
             monitor = by_name.get(frame.output.name)
             if monitor is None and len(self.frames) == 1 and len(by_name) == 1:
                 monitor = next(iter(by_name.values()))
             if monitor is None:
-                print(f"capture: no monitor for output {frame.output.name!r}", file=sys.stderr)
+                print(
+                    f"capture: no monitor for output {frame.output.name!r}",
+                    file=sys.stderr,
+                )
                 continue
             self.windows.append(self._window(frame, monitor))
         if not self.windows:
@@ -288,24 +342,37 @@ class Picker(Gtk.Application):
         Gtk4LayerShell.set_namespace(win, "capture")
         Gtk4LayerShell.set_layer(win, Gtk4LayerShell.Layer.OVERLAY)
         Gtk4LayerShell.set_monitor(win, monitor)
-        for edge in (Gtk4LayerShell.Edge.TOP, Gtk4LayerShell.Edge.BOTTOM,
-                     Gtk4LayerShell.Edge.LEFT, Gtk4LayerShell.Edge.RIGHT):
+        for edge in (
+            Gtk4LayerShell.Edge.TOP,
+            Gtk4LayerShell.Edge.BOTTOM,
+            Gtk4LayerShell.Edge.LEFT,
+            Gtk4LayerShell.Edge.RIGHT,
+        ):
             Gtk4LayerShell.set_anchor(win, edge, True)
-        Gtk4LayerShell.set_exclusive_zone(win, -1)  # over the bar, at the output's origin
+        Gtk4LayerShell.set_exclusive_zone(
+            win, -1
+        )  # over the bar, at the output's origin
         Gtk4LayerShell.set_keyboard_mode(win, Gtk4LayerShell.KeyboardMode.EXCLUSIVE)
 
         # A widget that is never drawn, for the shade colour from style.css
-        shade_probe = Gtk.Box(can_target=False, halign=Gtk.Align.START,
-                              valign=Gtk.Align.START)
+        shade_probe = Gtk.Box(
+            can_target=False, halign=Gtk.Align.START, valign=Gtk.Align.START
+        )
         shade_probe.add_css_class("capture-shade")
-        readout = Gtk.Label(halign=Gtk.Align.START, valign=Gtk.Align.START,
-                            can_target=False, visible=False)
+        readout = Gtk.Label(
+            halign=Gtk.Align.START,
+            valign=Gtk.Align.START,
+            can_target=False,
+            visible=False,
+        )
         readout.add_css_class("capture-badge")
         canvas = Canvas(picture, scale, shade_probe, readout)
         if scale:
             size = (picture.width, picture.height)
-            placed = (geometry.placed(r, scale, size)
-                      for r in self.windows_by_output.get(frame.output.name, []))
+            placed = (
+                geometry.placed(r, scale, size)
+                for r in self.windows_by_output.get(frame.output.name, [])
+            )
             canvas.targets = [r for r in placed if r is not None]
         overlay = Gtk.Overlay(child=canvas)
         overlay.add_overlay(shade_probe)
@@ -349,9 +416,13 @@ class Picker(Gtk.Application):
 
     def _select(self, canvas, end):
         pic = canvas.picture
-        canvas.rect = geometry.selection(self._start, end, canvas.scale,
-                                         (canvas.get_width(), canvas.get_height()),
-                                         (pic.width, pic.height))
+        canvas.rect = geometry.selection(
+            self._start,
+            end,
+            canvas.scale,
+            (canvas.get_width(), canvas.get_height()),
+            (pic.width, pic.height),
+        )
         canvas.set_pointer(end)
         canvas.queue_draw()
 
@@ -392,12 +463,17 @@ class Picker(Gtk.Application):
 
         def painted(clock):
             clock.disconnect(handler)
-            print(f"capture: frozen frame painted {(time.time_ns() - self.t0) / 1e6:.1f} ms"
-                  " after launch", file=sys.stderr, flush=True)
+            print(
+                f"capture: frozen frame painted {(time.time_ns() - self.t0) / 1e6:.1f} ms"
+                " after launch",
+                file=sys.stderr,
+                flush=True,
+            )
 
         def realized(w):
             nonlocal handler
             handler = w.get_frame_clock().connect("after-paint", painted)
+
         win.connect("realize", realized)
 
 
@@ -441,8 +517,12 @@ class FrameView(Gtk.Widget):
         f = FRAME_WIDTH
         x, y, w, h = x - gap, y - gap, w + 2 * gap, h + 2 * gap
         color = self.get_color()
-        for r in ((x - f, y - f, w + 2 * f, f), (x - f, y + h, w + 2 * f, f),
-                  (x - f, y, f, h), (x + w, y, f, h)):
+        for r in (
+            (x - f, y - f, w + 2 * f, f),
+            (x - f, y + h, w + 2 * f, f),
+            (x - f, y, f, h),
+            (x + w, y, f, h),
+        ):
             snapshot.append_color(color, _rect(*r))
 
 
@@ -457,9 +537,13 @@ def label_position(rect, size, label, frame):
     out = frame + LABEL_GAP
     left = max(0, min(math.floor(x), sw - lw))
     top = max(0, min(math.floor(y), sh - lh))
-    for lx, ly in ((left, math.ceil(y + h + out)), (left, math.floor(y - out - lh)),
-                   (math.ceil(x + w + out), top), (math.floor(x - out - lw), top)):
-        if 0 <= lx and lx + lw <= sw and 0 <= ly and ly + lh <= sh:
+    for lx, ly in (
+        (left, math.ceil(y + h + out)),
+        (left, math.floor(y - out - lh)),
+        (math.ceil(x + w + out), top),
+        (math.floor(x - out - lw), top),
+    ):
+        if lx >= 0 and lx + lw <= sw and ly >= 0 and ly + lh <= sh:
             return lx, ly
     return None
 
@@ -470,7 +554,9 @@ class Recording(Gtk.Application):
     goes at once, and the recorder is stopped in a thread. outcome:
     "stopped", "cancelled", or "failed" (wf-recorder exited by itself)."""
 
-    def __init__(self, output, rect, scale, recorder, max_seconds, on_started, on_stopped):
+    def __init__(
+        self, output, rect, scale, recorder, max_seconds, on_started, on_stopped
+    ):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.output = output
         self.rect = rect
@@ -496,8 +582,12 @@ class Recording(Gtk.Application):
         if monitor is None and monitors.get_n_items() == 1:
             monitor = monitors.get_item(0)
         self.win = self._window(monitor)
-        for signum, cancel in ((signal.SIGUSR1, False), (signal.SIGUSR2, True),
-                               (signal.SIGINT, True), (signal.SIGTERM, True)):
+        for signum, cancel in (
+            (signal.SIGUSR1, False),
+            (signal.SIGUSR2, True),
+            (signal.SIGINT, True),
+            (signal.SIGTERM, True),
+        ):
             GLib.unix_signal_add(GLib.PRIORITY_HIGH, signum, self._on_signal, cancel)
         self._t0 = time.monotonic()
         self._tick()
@@ -512,18 +602,25 @@ class Recording(Gtk.Application):
         Gtk4LayerShell.set_layer(win, Gtk4LayerShell.Layer.OVERLAY)
         if monitor is not None:
             Gtk4LayerShell.set_monitor(win, monitor)
-        for edge in (Gtk4LayerShell.Edge.TOP, Gtk4LayerShell.Edge.BOTTOM,
-                     Gtk4LayerShell.Edge.LEFT, Gtk4LayerShell.Edge.RIGHT):
+        for edge in (
+            Gtk4LayerShell.Edge.TOP,
+            Gtk4LayerShell.Edge.BOTTOM,
+            Gtk4LayerShell.Edge.LEFT,
+            Gtk4LayerShell.Edge.RIGHT,
+        ):
             Gtk4LayerShell.set_anchor(win, edge, True)
         Gtk4LayerShell.set_exclusive_zone(win, -1)
         Gtk4LayerShell.set_keyboard_mode(win, Gtk4LayerShell.KeyboardMode.NONE)
         win.set_can_target(False)
         # Clicks go through to whatever is below
-        win.connect("realize", lambda w: w.get_surface().set_input_region(cairo.Region()))
+        win.connect(
+            "realize", lambda w: w.get_surface().set_input_region(cairo.Region())
+        )
 
         self.frame = FrameView(self.rect, self.scale)
-        self.label = Gtk.Label(halign=Gtk.Align.START, valign=Gtk.Align.START,
-                               can_target=False)
+        self.label = Gtk.Label(
+            halign=Gtk.Align.START, valign=Gtk.Align.START, can_target=False
+        )
         self.label.add_css_class("capture-badge")
         overlay = Gtk.Overlay(child=self.frame)
         overlay.add_overlay(self.label)
@@ -539,8 +636,14 @@ class Recording(Gtk.Application):
         self.label.set_visible(True)
         size = self._size or (self.frame.get_width(), self.frame.get_height())
         # measure() counts the margins that place the label
-        lw = self.label.measure(Gtk.Orientation.HORIZONTAL, -1)[1] - self.label.get_margin_start()
-        lh = self.label.measure(Gtk.Orientation.VERTICAL, -1)[1] - self.label.get_margin_top()
+        lw = (
+            self.label.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+            - self.label.get_margin_start()
+        )
+        lh = (
+            self.label.measure(Gtk.Orientation.VERTICAL, -1)[1]
+            - self.label.get_margin_top()
+        )
         rect, gap = self.frame.logical()
         pos = label_position(rect, size, (lw, lh), FRAME_WIDTH + gap)
         if pos is None:

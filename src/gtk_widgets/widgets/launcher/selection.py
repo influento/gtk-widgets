@@ -15,11 +15,11 @@ The test entry point offers forms by hand:
 """
 
 import os
+import pathlib
 import struct
 import sys
 import threading
 import time
-
 
 from gtk_widgets.lib.wayland import Connection, WaylandError, string
 
@@ -48,8 +48,9 @@ def _start_writers(state):
     writers = [t for t in state["writers"] if t.is_alive()]
     while state["pending"]:
         mime, fd = state["pending"].pop(0)
-        writer = threading.Thread(target=_write, args=(fd, state["data"].get(mime, b"")),
-                                  daemon=True)
+        writer = threading.Thread(
+            target=_write, args=(fd, state["data"].get(mime, b"")), daemon=True
+        )
         writer.start()
         writers.append(writer)
     state["writers"] = writers
@@ -151,7 +152,7 @@ def main(args):
             forms.append((mime, text.encode()))
         else:
             mime, path = arg.split("=", 1)
-            with open(path, "rb") as f:
+            with pathlib.Path(path).open("rb") as f:
                 forms.append((mime, f.read()))
     if not forms:
         sys.exit(__doc__)

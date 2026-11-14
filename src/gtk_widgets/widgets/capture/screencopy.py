@@ -12,7 +12,6 @@ import mmap
 import os
 import struct
 
-
 from gtk_widgets.lib.wayland import Connection, WaylandError
 
 # wl_output.transform: 0 normal, 1-3 rotated 90/180/270 counter-clockwise,
@@ -73,6 +72,7 @@ def _output_handler(out):
             out.scale = r.int()
         elif opcode == 4:  # name
             out.name = r.string()
+
     return handle
 
 
@@ -127,7 +127,9 @@ def _capture(conn):
             out.id = conn.bind(name, interface, min(version, 4), _output_handler(out))
             outputs.append(out)
     if manager is None:
-        raise CaptureError("the compositor has no wlr-screencopy (zwlr_screencopy_manager_v1)")
+        raise CaptureError(
+            "the compositor has no wlr-screencopy (zwlr_screencopy_manager_v1)"
+        )
     if shm is None or not outputs:
         raise CaptureError("the compositor offers no wl_shm or no outputs")
     conn.roundtrip()  # output geometry, mode, name
@@ -141,15 +143,21 @@ def _capture(conn):
         states.append(st)
     # v3 lists every buffer type and ends with buffer_done; before v3 the
     # single buffer event is all there is
-    while not all(st.buffer_done or (manager_version < 3 and st.offers) or st.failed
-                  for st in states):
+    while not all(
+        st.buffer_done or (manager_version < 3 and st.offers) or st.failed
+        for st in states
+    ):
         conn.dispatch()
     for st in states:
         if st.failed:
-            raise CaptureError(f"the compositor refused to capture {st.output.name or 'an output'}")
+            raise CaptureError(
+                f"the compositor refused to capture {st.output.name or 'an output'}"
+            )
         if st.shm is None:
             offered = ", ".join(f"0x{o[0]:08x}" for o in st.offers) or "none"
-            raise CaptureError(f"{st.output.name}: no supported shm format (offered {offered})")
+            raise CaptureError(
+                f"{st.output.name}: no supported shm format (offered {offered})"
+            )
 
     sizes = [st.shm[2] * st.shm[3] for st in states]
     fd = os.memfd_create("capture", os.MFD_CLOEXEC)
@@ -172,10 +180,21 @@ def _capture(conn):
             frames = []
             for st, size in zip(states, sizes):
                 if st.failed:
-                    raise CaptureError(f"capturing {st.output.name or 'an output'} failed")
+                    raise CaptureError(
+                        f"capturing {st.output.name or 'an output'} failed"
+                    )
                 fmt, w, h, stride = st.shm
-                frames.append(Frame(st.output, mem[st.offset:st.offset + size], w, h, stride,
-                                    fmt, bool(st.flags & Y_INVERT)))
+                frames.append(
+                    Frame(
+                        st.output,
+                        mem[st.offset : st.offset + size],
+                        w,
+                        h,
+                        stride,
+                        fmt,
+                        bool(st.flags & Y_INVERT),
+                    )
+                )
     finally:
         os.close(fd)
     return frames
@@ -183,9 +202,23 @@ def _capture(conn):
 
 if __name__ == "__main__":
     import time
+
     t = time.perf_counter()
     for f in capture_outputs():
         o = f.output
-        print(o.name, f"{f.width}x{f.height}", "stride", f.stride, SHM_FORMATS[f.format][0],
-              "transform", o.transform, "y_invert", f.y_invert, "at", (o.x, o.y), "scale", o.scale)
+        print(
+            o.name,
+            f"{f.width}x{f.height}",
+            "stride",
+            f.stride,
+            SHM_FORMATS[f.format][0],
+            "transform",
+            o.transform,
+            "y_invert",
+            f.y_invert,
+            "at",
+            (o.x, o.y),
+            "scale",
+            o.scale,
+        )
     print(f"{(time.perf_counter() - t) * 1000:.1f} ms")

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Timer widget — timer + stopwatch with session-scoped state."""
 
-
 from gi.repository import GLib
 
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
@@ -28,8 +27,9 @@ class TimerPopup(WidgetPopup):
         container.add_css_class("timer-container")
 
         # Mode switcher
-        mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0,
-                           homogeneous=True)
+        mode_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=0, homogeneous=True
+        )
         mode_row.add_css_class("mode-switcher")
         self.mode_buttons = {}
         for mode, label in (("timer", "Timer"), ("stopwatch", "Stopwatch")):
@@ -53,7 +53,11 @@ class TimerPopup(WidgetPopup):
         self.spin_h = self._make_spin(0, 23)
         self.spin_m = self._make_spin(0, 59)
         self.spin_s = self._make_spin(0, 59)
-        for spin, suffix in ((self.spin_h, "h"), (self.spin_m, "m"), (self.spin_s, "s")):
+        for spin, suffix in (
+            (self.spin_h, "h"),
+            (self.spin_m, "m"),
+            (self.spin_s, "s"),
+        ):
             cell = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
             cell.append(spin)
             lbl = Gtk.Label(label=suffix)
@@ -74,8 +78,9 @@ class TimerPopup(WidgetPopup):
         container.append(self.config_box)
 
         # Action row: start/pause + reset
-        action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
-                             homogeneous=True)
+        action_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=8, homogeneous=True
+        )
         self.start_button = Gtk.Button(label="Start")
         self.start_button.add_css_class("action-button")
         self.start_button.add_css_class("primary")
@@ -116,9 +121,11 @@ class TimerPopup(WidgetPopup):
     def _on_spinner_changed(self, _spin):
         if self._suppress_spin:
             return
-        seconds = (int(self.spin_h.get_value()) * 3600
-                   + int(self.spin_m.get_value()) * 60
-                   + int(self.spin_s.get_value()))
+        seconds = (
+            int(self.spin_h.get_value()) * 3600
+            + int(self.spin_m.get_value()) * 60
+            + int(self.spin_s.get_value())
+        )
         ts.set_duration(self.state, seconds)
         ts.save(self.state)
         self._refresh_ui()
@@ -179,11 +186,14 @@ class TimerPopup(WidgetPopup):
 
         if self.state["running"]:
             self.start_button.set_label("Pause")
-        elif is_timer and ts.remaining(self.state) == 0.0 and self.state["duration"] > 0:
+        elif (
+            is_timer and ts.remaining(self.state) == 0.0 and self.state["duration"] > 0
+        ):
             self.start_button.set_label("Restart")
         else:
-            self.start_button.set_label("Start" if self.state["accumulated"] == 0
-                                        else "Resume")
+            self.start_button.set_label(
+                "Start" if self.state["accumulated"] == 0 else "Resume"
+            )
 
         # Disable start when timer has no duration set
         self.start_button.set_sensitive(

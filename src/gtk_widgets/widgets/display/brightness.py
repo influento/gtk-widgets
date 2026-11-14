@@ -17,6 +17,7 @@ CLI usage (symlinked as `display-brightness`):
 """
 
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -37,7 +38,7 @@ def _read_backlight():
         cur = int(_run(["brightnessctl", "-c", "backlight", "get"]).stdout.strip())
         mx = int(_run(["brightnessctl", "-c", "backlight", "max"]).stdout.strip())
         return round(cur * 100 / mx)
-    except (OSError, ValueError, ZeroDivisionError):
+    except OSError, ValueError, ZeroDivisionError:
         return None
 
 
@@ -50,7 +51,7 @@ def _cached_bus():
     global _bus
     if _bus is None:
         try:
-            with open(_bus_file()) as f:
+            with pathlib.Path(_bus_file()).open() as f:
                 _bus = f.read().strip() or None
         except OSError:
             pass
@@ -76,11 +77,11 @@ def _detect_bus():
         return None
     path = _bus_file()
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        pathlib.Path(os.path.dirname(path)).mkdir(exist_ok=True, parents=True)
         tmp = f"{path}.{os.getpid()}"
-        with open(tmp, "w") as f:
+        with pathlib.Path(tmp).open("w") as f:
             f.write(_bus + "\n")
-        os.replace(tmp, path)
+        pathlib.Path(tmp).replace(path)
     except OSError:
         pass
     return _bus
@@ -168,10 +169,21 @@ def notify(pct):
     """Transient OSD-style notification; replaces the previous one in place."""
     try:
         subprocess.Popen(
-            ["notify-send", "-a", "display", "-t", "1500",
-             "-h", f"string:x-canonical-private-synchronous:{_TAG}",
-             "-h", f"int:value:{pct}", "Brightness", f"{pct}%"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [
+                "notify-send",
+                "-a",
+                "display",
+                "-t",
+                "1500",
+                "-h",
+                f"string:x-canonical-private-synchronous:{_TAG}",
+                "-h",
+                f"int:value:{pct}",
+                "Brightness",
+                f"{pct}%",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         pass
