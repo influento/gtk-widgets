@@ -96,6 +96,10 @@ def copyable[L: Gtk.Label](
 
 
 def _copier_of(label: Gtk.Label) -> _Copier | None:
+    # observe_controllers() tracks controllers only while the returned model
+    # lives; it is dropped on return. No attribute or weak dict: a weak entry
+    # goes with the PyGObject wrapper, and the next call would add a second
+    # handler.
     controllers = label.observe_controllers()
     for i in range(controllers.get_n_items()):
         ctrl = controllers.get_item(i)
