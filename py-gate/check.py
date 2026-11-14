@@ -219,11 +219,15 @@ def skips(path: Path, tree: ast.Module) -> list[str]:
 
 
 def _module_file(path: Path, level: int, parts: list[str]) -> Path | None:
-    """The project file an import names: under the importing file's package, or under src/ or the root."""
+    """The project file an import names: under the importing file's package, or under src/ or the root.
+
+    A .pyi beside the module comes first, as the type checker reads it: a kept stub of an excluded module is the
+    interface the gate checks.
+    """
     roots = [path.parents[level - 1]] if level else [Path("src"), Path()]
     for root in roots:
         target = root.joinpath(*parts)
-        for f in (target.with_suffix(".py"), target / "__init__.py"):
+        for f in (target.with_suffix(".pyi"), target / "__init__.pyi", target.with_suffix(".py"), target / "__init__.py"):
             if parts and f.is_file():
                 return f
     return None

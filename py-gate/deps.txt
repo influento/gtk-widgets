@@ -1,14 +1,14 @@
 # Dependencies the user approved, one name per line. The gate fails on any other in pyproject.toml.
 basedpyright
 deptry
+gtk4-layer-shell-stubs
 import-linter
+nm-stubs
+pycairo
+pygobject
+pygobject-stubs
 pytest
 pytest-asyncio
 pytest-randomly
 pytest-timeout
 ruff
-pygobject
-pygobject-stubs
-gtk4-layer-shell-stubs
-pycairo
-nm-stubs
