@@ -250,6 +250,7 @@ gtk-widgets/
 │       │   ├── main.py        # CLI: lock, grab (stdlib), ctypes-load layer-shell (no re-exec), pick, save, copy; gif flow, stop/cancel signals, clipboard order
 │       │   ├── screencopy.py  # wlr-screencopy of every output into one memfd (stdlib, over lib/wayland.py)
 │       │   ├── swayipc.py     # Exact output scales, logical rects and shown windows from sway IPC (stdlib)
+│       │   ├── parse.py       # sway IPC replies, ffprobe/framemd5 listings: NamedTuple models and parsers (no dataclasses before the grab)
 │       │   ├── geometry.py    # Logical -> physical selection and window placement maths (no GTK)
 │       │   ├── record.py      # gif: logical region + crop that record the exact physical pixels, wf-recorder start/stop (no GTK)
 │       │   ├── process.py     # gif: ffmpeg GIF, sheet frames, contact sheets; `python3 -m` with DIR SCALE reruns a failed one (no GTK)

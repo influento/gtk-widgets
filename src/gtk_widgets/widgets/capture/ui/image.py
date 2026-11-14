@@ -30,6 +30,8 @@ _UPRIGHT = {
     6: (True, 180),
     7: (True, 270),
 }
+_BPP_SHM = 4  # the screencopy formats: 4 bytes a pixel
+_BPP_RGB = 3  # GdkPixbuf's RGB without alpha
 _ROTATIONS = {
     90: GdkPixbuf.PixbufRotation.COUNTERCLOCKWISE,
     180: GdkPixbuf.PixbufRotation.UPSIDEDOWN,
@@ -41,18 +43,26 @@ class Picture:
     """An output's frozen frame, upright: rows of stride bytes in a
     GdkMemoryFormat, width x height physical pixels."""
 
-    def __init__(self, output, data, width, height, stride, fmt, bpp):
+    def __init__(
+        self,
+        output: screencopy.Output,
+        data: bytes,
+        size: tuple[int, int],
+        stride: int,
+        fmt: Gdk.MemoryFormat,
+        *,
+        bpp: int,
+    ) -> None:
         self.output = output
         self.data = data
-        self.width = width
-        self.height = height
+        self.width, self.height = size
         self.stride = stride
         self.format = fmt
-        self.bpp = bpp
-        self._texture = None
+        self.bpp = bpp  # bytes per pixel
+        self._texture: Gdk.Texture | None = None
 
     @property
-    def texture(self):
+    def texture(self) -> Gdk.Texture:
         if self._texture is None:
             self._texture = Gdk.MemoryTexture.new(
                 self.width,
@@ -63,13 +73,13 @@ class Picture:
             )
         return self._texture
 
-    def pixel(self, x, y):
+    def pixel(self, x: int, y: int) -> tuple[int, int, int]:
         """(r, g, b) of the pixel at (x, y)."""
         i = y * self.stride + x * self.bpp
         a, b, c = self.data[i : i + 3]
         return (c, b, a) if self.format == Gdk.MemoryFormat.B8G8R8X8 else (a, b, c)
 
-    def crop(self, x, y, w, h):
+    def crop(self, x: int, y: int, w: int, h: int) -> Gdk.Texture:
         """The w x h rectangle at (x, y) as a texture of its own. It shares the
         rows' stride, so it is one contiguous slice of the frame's bytes."""
         if not (
@@ -88,14 +98,19 @@ class Picture:
         )
 
 
-def upright(frame):
+def upright(frame: screencopy.Frame) -> Picture:
     """Picture of a screencopy.Frame with y_invert and the output transform
     applied. A normal output keeps the compositor's bytes untouched."""
     fmt = _MEMORY_FORMATS[screencopy.SHM_FORMATS[frame.format][1]]
     flip, turn = _UPRIGHT.get(frame.output.transform, (False, 0))
     if not (frame.y_invert or flip or turn):
         return Picture(
-            frame.output, frame.data, frame.width, frame.height, frame.stride, fmt, 4
+            frame.output,
+            frame.data,
+            (frame.width, frame.height),
+            frame.stride,
+            fmt,
+            bpp=_BPP_SHM,
         )
     # Lossless flips and quarter turns go through GdkPixbuf, which wants RGB
     tex = Gdk.MemoryTexture.new(
@@ -104,26 +119,32 @@ def upright(frame):
     down = Gdk.TextureDownloader.new(tex)
     down.set_format(Gdk.MemoryFormat.R8G8B8)
     rgb, stride = down.download_bytes()
-    pb = GdkPixbuf.Pixbuf.new_from_bytes(
-        rgb, GdkPixbuf.Colorspace.RGB, False, 8, frame.width, frame.height, stride
+    rgb_pb = GdkPixbuf.Pixbuf.new_from_bytes(
+        rgb,
+        GdkPixbuf.Colorspace.RGB,
+        has_alpha=False,
+        bits_per_sample=8,
+        width=frame.width,
+        height=frame.height,
+        rowstride=stride,
     )
-    if frame.y_invert:
-        pb = pb.flip(False)
-    if flip:
-        pb = pb.flip(True)
-    if turn:
+    pb = rgb_pb.flip(horizontal=False) if frame.y_invert else rgb_pb
+    if pb is not None and flip:
+        pb = pb.flip(horizontal=True)
+    if pb is not None and turn:
         pb = pb.rotate_simple(_ROTATIONS[turn])
+    if pb is None:  # GdkPixbuf's allocation failed
+        raise MemoryError("GdkPixbuf could not turn the frame upright")
     return Picture(
         frame.output,
-        pb.read_pixel_bytes().get_data(),
-        pb.get_width(),
-        pb.get_height(),
+        pb.read_pixel_bytes().get_data() or b"",
+        (pb.get_width(), pb.get_height()),
         pb.get_rowstride(),
         Gdk.MemoryFormat.R8G8B8,
-        3,
+        bpp=_BPP_RGB,
     )
 
 
-def save_png(texture, path):
+def save_png(texture: Gdk.Texture, path: str) -> None:
     if not texture.save_to_png(path):
         raise OSError(f"could not write {path}")

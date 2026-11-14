@@ -46,6 +46,8 @@ _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="launcher-preview")
 
 def _report(done: Future[None]) -> None:
     """Print a bug in a decode: a pool keeps a worker's exception to itself."""
+    if done.cancelled():  # exception() would raise
+        return
     error = done.exception()
     if error is not None:
         print("launcher: bug in a preview decode:", file=sys.stderr)

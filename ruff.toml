@@ -31,3 +31,9 @@ ignore = [
 # Stdlib only, no GLib loop for in_background: its threads write a clipboard
 # form into a paste request's pipe.
 "src/gtk_widgets/widgets/launcher/selection.py" = ["TID251"]
+# Stdlib only, no GLib loop: two readers drain ffmpeg's pipes; each ends
+# its queue with None in a finally, so the reading loop never hangs on one.
+"src/gtk_widgets/widgets/capture/process.py" = ["TID251"]
+# capture grabs the screen before gi is imported (and with it libwayland):
+# GTK comes in after the grab, with gtk4-layer-shell loaded first.
+"src/gtk_widgets/widgets/capture/main.py" = ["PLC0415"]

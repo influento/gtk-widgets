@@ -11,8 +11,9 @@ protocol itself is lib/wayland.py.
 import mmap
 import os
 import struct
+import time
 
-from gtk_widgets.lib.wayland import Connection, WaylandError
+from gtk_widgets.lib.wayland import Connection, Handler, Reader, WaylandError
 
 # wl_output.transform: 0 normal, 1-3 rotated 90/180/270 counter-clockwise,
 # 4-7 the same after a flip around the vertical axis
@@ -28,9 +29,29 @@ SHM_FORMATS = {
 }
 
 Y_INVERT = 1  # zwlr_screencopy_frame_v1.flags
+MODE_CURRENT = 1  # wl_output.mode flags
 
+# Event opcodes
+_OUTPUT_GEOMETRY, _OUTPUT_MODE, _OUTPUT_SCALE, _OUTPUT_NAME = 0, 1, 3, 4
+_FRAME_BUFFER, _FRAME_FLAGS, _FRAME_READY, _FRAME_FAILED = 0, 1, 2, 3
+_FRAME_BUFFER_DONE = 6
+_MANAGER_MAX_VERSION = 3  # buffer_done and the list of every buffer type
+_OUTPUT_MAX_VERSION = 4  # the name event
+
+type ShmOffer = tuple[int, int, int, int]  # format, width, height, stride
 
 CaptureError = WaylandError  # what main.py catches
+
+
+class Output:
+    def __init__(self, global_name: int) -> None:
+        self.global_name = global_name
+        self.id = 0  # the bound wl_output
+        self.name = ""  # connector, e.g. HDMI-A-1 (wl_output v4)
+        self.transform = TRANSFORM_NORMAL
+        self.scale = 1  # integer wl_output.scale; the fractional one comes from GDK
+        self.x = self.y = 0
+        self.mode: tuple[int, int] = (0, 0)
 
 
 class Frame:
@@ -38,71 +59,76 @@ class Frame:
     y_invert not applied yet): data rows of stride bytes, format a key of
     SHM_FORMATS."""
 
-    def __init__(self, output, data, width, height, stride, fmt, y_invert):
+    def __init__(
+        self,
+        output: Output,
+        data: bytes,
+        size: tuple[int, int],
+        stride: int,
+        fmt: int,
+        *,
+        y_invert: bool,
+    ) -> None:
         self.output = output
         self.data = data
-        self.width = width
-        self.height = height
+        self.width, self.height = size
         self.stride = stride
         self.format = fmt
         self.y_invert = y_invert
 
 
-class Output:
-    def __init__(self, global_name):
-        self.global_name = global_name
-        self.name = ""  # connector, e.g. HDMI-A-1 (wl_output v4)
-        self.transform = TRANSFORM_NORMAL
-        self.scale = 1  # integer wl_output.scale; the fractional one comes from GDK
-        self.x = self.y = 0
-        self.mode = (0, 0)
+def _ignore(_opcode: int, _r: Reader) -> None:
+    pass
 
 
-def _output_handler(out):
-    def handle(opcode, r):
-        if opcode == 0:  # geometry(x, y, mm w, mm h, subpixel, make, model, transform)
+def _output_handler(out: Output) -> Handler:
+    def handle(opcode: int, r: Reader) -> None:
+        if opcode == _OUTPUT_GEOMETRY:
+            # x, y, mm width, mm height, subpixel, make, model, transform
             out.x, out.y = r.int(), r.int()
-            r.int(), r.int(), r.int(), r.string(), r.string()
+            _ = r.int(), r.int(), r.int(), r.string(), r.string()
             out.transform = r.int()
-        elif opcode == 1:  # mode(flags, width, height, refresh)
+        elif opcode == _OUTPUT_MODE:  # flags, width, height, refresh
             flags, w, h = r.uint(), r.int(), r.int()
-            if flags & 1:  # current
+            if flags & MODE_CURRENT:
                 out.mode = (w, h)
-        elif opcode == 3:  # scale
+        elif opcode == _OUTPUT_SCALE:
             out.scale = r.int()
-        elif opcode == 4:  # name
+        elif opcode == _OUTPUT_NAME:
             out.name = r.string()
 
     return handle
 
 
 class _FrameState:
-    def __init__(self, output):
+    def __init__(self, output: Output) -> None:
         self.output = output
-        self.shm = None  # (format, width, height, stride) of the first usable shm offer
-        self.offers = []
+        self.id = 0  # the zwlr_screencopy_frame_v1
+        self.offset = 0  # of its buffer in the pool
+        self.shm: ShmOffer | None = None  # the first usable shm offer
+        self.offers: list[ShmOffer] = []
         self.buffer_done = False
         self.flags = 0
         self.ready = False
         self.failed = False
 
-    def handle(self, opcode, r):
-        if opcode == 0:  # buffer(format, width, height, stride)
+    def handle(self, opcode: int, r: Reader) -> None:
+        if opcode == _FRAME_BUFFER:  # format, width, height, stride
             offer = (r.uint(), r.uint(), r.uint(), r.uint())
             self.offers.append(offer)
             if self.shm is None and offer[0] in SHM_FORMATS:
                 self.shm = offer
-        elif opcode == 1:
+        elif opcode == _FRAME_FLAGS:
             self.flags = r.uint()
-        elif opcode == 2:
+        elif opcode == _FRAME_READY:
             self.ready = True
-        elif opcode == 3:
+        elif opcode == _FRAME_FAILED:
             self.failed = True
-        elif opcode == 6:
+        elif opcode == _FRAME_BUFFER_DONE:
             self.buffer_done = True
 
 
-def capture_outputs():
+def capture_outputs() -> list[Frame]:
     """Grab every output. Returns [Frame], in the compositor's output order."""
     conn = Connection()
     try:
@@ -111,30 +137,37 @@ def capture_outputs():
         conn.close()
 
 
-def _capture(conn):
-    globals_ = conn.globals()
-    shm = manager = None
+def _bind(conn: Connection) -> tuple[int, int, int, list[Output]]:
+    """(wl_shm, the screencopy manager, its version, the outputs), bound."""
+    shm = manager = 0
     manager_version = 0
-    outputs = []
-    for name, interface, version in globals_:
+    outputs: list[Output] = []
+    for name, interface, version in conn.globals():
         if interface == "wl_shm":
-            shm = conn.bind(name, interface, 1, lambda op, r: None)
+            shm = conn.bind(name, interface, 1, _ignore)
         elif interface == "zwlr_screencopy_manager_v1":
-            manager_version = min(version, 3)
-            manager = conn.bind(name, interface, manager_version, lambda op, r: None)
+            manager_version = min(version, _MANAGER_MAX_VERSION)
+            manager = conn.bind(name, interface, manager_version, _ignore)
         elif interface == "wl_output":
             out = Output(name)
-            out.id = conn.bind(name, interface, min(version, 4), _output_handler(out))
+            out.id = conn.bind(
+                name, interface, min(version, _OUTPUT_MAX_VERSION), _output_handler(out)
+            )
             outputs.append(out)
-    if manager is None:
+    if not manager:
         raise CaptureError(
             "the compositor has no wlr-screencopy (zwlr_screencopy_manager_v1)"
         )
-    if shm is None or not outputs:
+    if not shm or not outputs:
         raise CaptureError("the compositor offers no wl_shm or no outputs")
-    conn.roundtrip()  # output geometry, mode, name
+    return shm, manager, manager_version, outputs
 
-    states = []
+
+def _offers(
+    conn: Connection, manager: int, manager_version: int, outputs: list[Output]
+) -> list[tuple[_FrameState, ShmOffer]]:
+    """Ask for a frame of each output; each with the shm buffer it takes."""
+    states: list[_FrameState] = []
     for out in outputs:
         st = _FrameState(out)
         st.id = conn.new_id(st.handle)
@@ -144,10 +177,13 @@ def _capture(conn):
     # v3 lists every buffer type and ends with buffer_done; before v3 the
     # single buffer event is all there is
     while not all(
-        st.buffer_done or (manager_version < 3 and st.offers) or st.failed
+        st.buffer_done
+        or (manager_version < _MANAGER_MAX_VERSION and st.offers)
+        or st.failed
         for st in states
     ):
         conn.dispatch()
+    found: list[tuple[_FrameState, ShmOffer]] = []
     for st in states:
         if st.failed:
             raise CaptureError(
@@ -158,41 +194,46 @@ def _capture(conn):
             raise CaptureError(
                 f"{st.output.name}: no supported shm format (offered {offered})"
             )
+        found.append((st, st.shm))
+    return found
 
-    sizes = [st.shm[2] * st.shm[3] for st in states]
+
+def _capture(conn: Connection) -> list[Frame]:
+    shm, manager, manager_version, outputs = _bind(conn)
+    conn.roundtrip()  # output geometry, mode, name
+    states = _offers(conn, manager, manager_version, outputs)
+
+    sizes = [offer[2] * offer[3] for _, offer in states]
     fd = os.memfd_create("capture", os.MFD_CLOEXEC)
     try:
         os.ftruncate(fd, sum(sizes))
-        pool = conn.new_id(lambda op, r: None)
+        pool = conn.new_id(_ignore)
         conn.send(shm, 0, struct.pack("=Ii", pool, sum(sizes)), fds=[fd])  # create_pool
         offset = 0
-        for st, size in zip(states, sizes):
-            fmt, w, h, stride = st.shm
-            buf = conn.new_id(lambda op, r: None)
+        for (st, (fmt, w, h, stride)), size in zip(states, sizes, strict=True):
+            buf = conn.new_id(_ignore)
             conn.send(pool, 0, struct.pack("=IiiiiI", buf, offset, w, h, stride, fmt))
             conn.send(st.id, 0, struct.pack("=I", buf))  # copy
             st.offset = offset
             offset += size
         conn.send(pool, 1)  # destroy: the buffers keep the memory
-        while not all(st.ready or st.failed for st in states):
+        while not all(st.ready or st.failed for st, _ in states):
             conn.dispatch()
         with mmap.mmap(fd, sum(sizes), mmap.MAP_SHARED, mmap.PROT_READ) as mem:
-            frames = []
-            for st, size in zip(states, sizes):
+            frames: list[Frame] = []
+            for (st, (fmt, w, h, stride)), size in zip(states, sizes, strict=True):
                 if st.failed:
                     raise CaptureError(
                         f"capturing {st.output.name or 'an output'} failed"
                     )
-                fmt, w, h, stride = st.shm
                 frames.append(
                     Frame(
                         st.output,
                         mem[st.offset : st.offset + size],
-                        w,
-                        h,
+                        (w, h),
                         stride,
                         fmt,
-                        bool(st.flags & Y_INVERT),
+                        y_invert=bool(st.flags & Y_INVERT),
                     )
                 )
     finally:
@@ -201,8 +242,6 @@ def _capture(conn):
 
 
 if __name__ == "__main__":
-    import time
-
     t = time.perf_counter()
     for f in capture_outputs():
         o = f.output

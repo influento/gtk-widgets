@@ -28,7 +28,6 @@ block differs if its SAD > 0) it then drops exact duplicates only.
 
 import math
 import os
-import pathlib
 import queue
 import shutil
 import subprocess
@@ -37,8 +36,17 @@ import tempfile
 import threading
 from collections import deque
 from fractions import Fraction
+from pathlib import Path
+from typing import IO, NamedTuple
 
 from gtk_widgets.lib import theme
+from gtk_widgets.lib.parse import ParseError
+from gtk_widgets.widgets.capture.parse import (
+    framemd5_pts,
+    framemd5_tb,
+    parse_size,
+    parse_span,
+)
 
 MIN_GAP = Fraction("0.2")  # s, the least time between two frames kept for the sheets
 STATE_AREA = 30 * 30  # logical px changed since the last kept frame: a new state
@@ -76,27 +84,42 @@ SIMILAR = f"{_PAD},mpdecimate,{_UNPAD}"  # near duplicates too (default threshol
 _BITEXACT = ["-fflags", "+bitexact", "-flags:v", "+bitexact"]
 
 
+_STDERR_LINES = 3  # of a failed ffmpeg's stderr, in the error
+_QUARTER = 4  # the Picker's frames: a quarter of the width and of the height
+_FRAME_QUEUE = 32  # quarter-size frames read ahead of the Picker
+_OUTLINE = 2  # px a tile's outline adds to its width and height
+_NO_SCALE = 1.0
+
+
 class ProcessError(Exception):
     pass
 
 
-def _ffmpeg(args, what, cwd=None):
+class Result(NamedTuple):
+    """What make_sheets() made: the distinct frames' count, the kept frames
+    (file name, time) and the sheets' paths."""
+
+    distinct: int
+    frames: list[tuple[str, float]]
+    sheets: list[str]
+
+
+def _ffmpeg(args: list[str], what: str) -> str:
     try:
         r = subprocess.run(
             ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", *args],
             capture_output=True,
             check=False,
-            cwd=cwd,
         )
     except OSError as e:
         raise ProcessError(f"ffmpeg: {e}") from None
     if r.returncode:
-        tail = r.stderr.decode(errors="replace").strip().splitlines()[-3:]
-        raise ProcessError(f"{what} failed: " + " / ".join(tail))
+        tail = r.stderr.decode(errors="replace").strip().splitlines()
+        raise ProcessError(f"{what} failed: " + " / ".join(tail[-_STDERR_LINES:]))
     return r.stdout.decode()
 
 
-def _span(raw):
+def _span(raw: str) -> tuple[Fraction, Fraction]:
     """(first frame's time, end time) of the recording, in seconds, from its
     packets (no decoding)."""
     try:
@@ -115,24 +138,14 @@ def _span(raw):
             ],
             capture_output=True,
             text=True,
+            check=False,
         )
     except OSError as e:
         raise ProcessError(f"ffprobe: {e}") from None
-    tb, starts, ends = None, [], []
-    for line in r.stdout.splitlines():
-        fields = dict(f.split("=", 1) for f in line.split("|") if "=" in f)
-        if "time_base" in fields:
-            tb = Fraction(fields["time_base"])
-        elif fields.get("pts", "N/A") != "N/A":
-            pts = int(fields["pts"])
-            dur = (
-                int(fields["duration"]) if fields.get("duration", "N/A") != "N/A" else 0
-            )
-            starts.append(pts)
-            ends.append(pts + dur)
-    if r.returncode or tb is None or not starts:
+    span = parse_span(r.stdout)
+    if r.returncode or isinstance(span, ParseError):
         raise ProcessError(f"{raw} has no frames")
-    return min(starts) * tb, max(ends) * tb
+    return span
 
 
 _QUANTISE = bytes(
@@ -140,7 +153,7 @@ _QUANTISE = bytes(
 )  # 16 levels: small shading changes don't count
 
 
-def changed(a, b, size):
+def changed(a: int, b: int, size: int) -> int:
     """How many of two quantised frames' size pixels differ (the frames as
     ints: XOR and counting zero bytes run in C)."""
     x = a ^ b
@@ -164,36 +177,37 @@ class Picker:
     kept: a state's last look, which shows what was clicked. So is the first
     and the last frame. There is no cap: the tiles follow the content."""
 
-    def __init__(self, size, scale):
+    def __init__(self, size: int, scale: float) -> None:
         self.size = size
         unit = scale * scale / 16  # a quarter-size pixel is 16 / scale^2 logical px
         self.state = STATE_AREA * unit
         self.busy = BUSY_AREA * unit
-        self.pending = (
-            deque()
-        )  # (index, time, frame), waiting for HOLD s of what follows
-        self.prev = None
-        self.last_switch = None
-        self.busy_since = None
-        self.last = None  # the last kept (index, time, frame)
-        self.kept = []
-        self.before = set()  # frames just before a switch
+        # (index, time, frame), waiting for HOLD s of what follows
+        self.pending: deque[tuple[int, Fraction, int]] = deque()
+        self.prev: int | None = None
+        self.last_switch: Fraction | None = None
+        self.busy_since: Fraction | None = None
+        self.last: tuple[int, Fraction, int] | None = None  # the last kept one
+        self.kept: list[int] = []
+        self.before: set[int] = set()  # frames just before a switch
         self.count = 0
 
-    def add(self, t, frame):
+    def add(self, t: Fraction, frame: int) -> None:
         i = self.count
         self.count += 1
-        if self.prev is not None:
-            if changed(frame, self.prev, self.size) * 100 >= SWITCH_AREA * self.size:
-                if self.last_switch is None or t - self.last_switch > SWITCH_MERGE:
-                    self.before.add(i - 1)
-                self.last_switch = t
+        if (
+            self.prev is not None
+            and changed(frame, self.prev, self.size) * 100 >= SWITCH_AREA * self.size
+        ):
+            if self.last_switch is None or t - self.last_switch > SWITCH_MERGE:
+                self.before.add(i - 1)
+            self.last_switch = t
         self.prev = frame
         self.pending.append((i, t, frame))
         while self.pending[0][1] + HOLD <= t:
             self._decide(*self.pending.popleft())
 
-    def finish(self):
+    def finish(self) -> tuple[list[int], set[int]]:
         """The kept frames' indices, and which of them come just before a switch."""
         while self.pending:
             last = self.pending[0][0] == self.count - 1
@@ -202,7 +216,7 @@ class Picker:
                 self.kept.append(self.count - 1)
         return self.kept, self.before & set(self.kept)
 
-    def _decide(self, i, t, frame):
+    def _decide(self, i: int, t: Fraction, frame: int) -> None:
         holds = all(
             changed(frame, f, self.size) < self.busy
             for _, u, f in self.pending
@@ -212,39 +226,59 @@ class Picker:
             self.busy_since = None
         elif self.busy_since is None:
             self.busy_since = t
+        busy_since = self.busy_since
         if self.last is None:
-            return self._keep(i, t, frame)
+            self._keep(i, t, frame)
+            return
         gap = t - self.last[1]
         if i in self.before:
             if gap >= _EPS:
                 self._keep(i, t, frame)
-            return None
+            return
         if changed(frame, self.last[2], self.size) < self.state:
-            return None
+            return
         if holds:
             if gap >= MIN_GAP:
                 self._keep(i, t, frame)
-        elif gap >= MOTION_STEP and t - self.busy_since >= SWITCH_LONGEST:
+        elif (
+            busy_since is not None
+            and gap >= MOTION_STEP
+            and t - busy_since >= SWITCH_LONGEST
+        ):
             self._keep(i, t, frame)
 
-    def _keep(self, i, t, frame):
+    def _keep(self, i: int, t: Fraction, frame: int) -> None:
         self.kept.append(i)
         self.last = (i, t, frame)
 
 
-def label(t):
+def label(t: float | Fraction) -> str:
     return f"{t:06.3f}s"
 
 
 BEFORE_SWITCH = "before switch"
 
 
-def tile_label(index, count, t, before_switch=False):
+def tile_label(
+    index: int, count: int, t: float | Fraction, *, before_switch: bool = False
+) -> str:
     """A tile's label: its place among all the sheets' tiles (so the sheets
     need no legend, and a missing one shows), its time, and whether the
     screen switches right after it (the pointer shows what was clicked)."""
-    parts = [f"{index}/{count}", label(t)] + ([BEFORE_SWITCH] if before_switch else [])
+    parts = [f"{index}/{count}", label(t), *([BEFORE_SWITCH] if before_switch else [])]
     return " · ".join(parts)
+
+
+class _Grid(NamedTuple):
+    cols: int
+    rows: int
+    scale: float
+    tile_w: int
+    tile_h: int
+    cell_w: int
+    cell_h: int
+    width: int
+    height: int
 
 
 class Layout:
@@ -259,38 +293,57 @@ class Layout:
     strip = math.ceil(LABEL_PX * 1.5)
     gap = GAP_PX
     # "300/300 · 60.000s · before switch" in a monospace font, with room
-    label_w = math.ceil(LABEL_PX * 0.62 * (len(tile_label(300, 300, 60, True)) + 1))
+    label_w = math.ceil(
+        LABEL_PX * 0.62 * (len(tile_label(300, 300, 60, before_switch=True)) + 1)
+    )
 
-    def __init__(self, count, w, h, max_edge=SHEET_MAX_EDGE):
-        best = None
+    def __init__(
+        self, count: int, w: int, h: int, max_edge: int = SHEET_MAX_EDGE
+    ) -> None:
+        best: tuple[tuple[float, float, int], _Grid] | None = None
         for cols in range(1, count + 1):
             rows = math.ceil(count / cols)
             room_w = (max_edge - (cols + 1) * self.gap) // cols
             room_h = (max_edge - (rows + 1) * self.gap) // rows - self.strip
-            if room_w < self.label_w or room_h < 3:
+            if room_w < self.label_w or room_h <= _OUTLINE:
                 continue
-            self._grid(cols, rows, min(1.0, (room_w - 2) / w, (room_h - 2) / h), w, h)
+            scale = min(_NO_SCALE, (room_w - _OUTLINE) / w, (room_h - _OUTLINE) / h)
+            grid = self._grid(cols, rows, scale, w, h)
             key = (
-                -self.scale,
-                abs(math.log(self.width / self.height)),
+                -grid.scale,
+                abs(math.log(grid.width / grid.height)),
                 cols * rows - count,
             )
             if best is None or key < best[0]:
-                best = (key, cols, rows, self.scale)
-        self._grid(*(best[1:] if best else (1, count, 0.0)), w, h)
+                best = (key, grid)
+        grid = best[1] if best is not None else self._grid(1, count, 0.0, w, h)
+        self.cols, self.rows, self.scale = grid.cols, grid.rows, grid.scale
+        self.tile_w, self.tile_h = grid.tile_w, grid.tile_h
+        self.cell_w, self.cell_h = grid.cell_w, grid.cell_h
+        self.width, self.height = grid.width, grid.height
 
-    def _grid(self, cols, rows, scale, w, h):
-        self.cols, self.rows, self.scale = cols, rows, scale
+    def _grid(self, cols: int, rows: int, scale: float, w: int, h: int) -> _Grid:
         # At least 1 px, and never past the room: floor, not round
-        self.tile_w = max(1, math.floor(w * scale))
-        self.tile_h = max(1, math.floor(h * scale))
-        self.cell_w = max(self.tile_w + 2, self.label_w)
-        self.cell_h = self.tile_h + 2 + self.strip
-        self.width = cols * self.cell_w + (cols + 1) * self.gap
-        self.height = rows * self.cell_h + (rows + 1) * self.gap
+        tile_w = max(1, math.floor(w * scale))
+        tile_h = max(1, math.floor(h * scale))
+        cell_w = max(tile_w + _OUTLINE, self.label_w)
+        cell_h = tile_h + _OUTLINE + self.strip
+        return _Grid(
+            cols,
+            rows,
+            scale,
+            tile_w,
+            tile_h,
+            cell_w,
+            cell_h,
+            cols * cell_w + (cols + 1) * self.gap,
+            rows * cell_h + (rows + 1) * self.gap,
+        )
 
 
-def split(count, w, h, min_scale, max_edge=SHEET_MAX_EDGE):
+def split(
+    count: int, w: int, h: int, min_scale: float, max_edge: int = SHEET_MAX_EDGE
+) -> list[int]:
     """How many of count frames of w x h go on each sheet: as few sheets as
     keep the tiles at min_scale or bigger (one frame a sheet at the least),
     the frames spread evenly, earlier sheets taking the odd ones."""
@@ -303,47 +356,56 @@ def split(count, w, h, min_scale, max_edge=SHEET_MAX_EDGE):
     return []
 
 
-def sheet_names(n):
+def sheet_names(n: int) -> list[str]:
     """The file names of n sheets."""
     if n == 1:
         return [SHEET]
-    stem, ext = os.path.splitext(SHEET)
+    stem, ext = Path(SHEET).stem, Path(SHEET).suffix
     return [f"{stem}-{i}{ext}" for i in range(1, n + 1)]
 
 
-def frame_name(index, t):
+def frame_name(index: int, t: Fraction) -> str:
     """frames/ file name: 1-based index and time, e.g. 0001-00.000s.png."""
     return f"{index:04d}-{label(t)}.png"
 
 
-def _clean(folder, gif=True, sheets=True):
+def _clean(folder: Path, *, gif: bool = True, sheets: bool = True) -> None:
     """Remove what an earlier run left: the GIF, the sheets and frames/."""
-    stem, ext = os.path.splitext(SHEET)
-    for name in os.listdir(folder):
-        if (gif and name in (GIF, _PALETTE)) or (
+    stem, ext = Path(SHEET).stem, Path(SHEET).suffix
+    for entry in folder.iterdir():
+        name = entry.name
+        if (gif and name in {GIF, _PALETTE}) or (
             sheets
             and (name == SHEET or (name.startswith(stem + "-") and name.endswith(ext)))
         ):
-            pathlib.Path(os.path.join(folder, name)).unlink()
+            entry.unlink()
     if sheets:
-        shutil.rmtree(os.path.join(folder, FRAMES), ignore_errors=True)
+        shutil.rmtree(folder / FRAMES, ignore_errors=True)
 
 
-def process(folder, scale=1, colors=None):
+def absolute(folder: str) -> Path:
+    """folder as an absolute, normalised path (os.path.abspath, which pathlib
+    has no twin of: resolve() also follows symlinks)."""
+    return Path(os.path.normpath(Path(folder).absolute()))
+
+
+def process(
+    folder: str, scale: float = 1, colors: dict[str, str] | None = None
+) -> Result:
     """make_gif(), then make_sheets(); returns make_sheets()'s result."""
     make_gif(folder)
     return make_sheets(folder, scale, colors)
 
 
-def make_gif(folder):
+def make_gif(folder: str) -> str:
     """Turn folder/raw.mkv into folder/recording.gif (every frame, exact
     duplicates merged). Returns its path. Raises ProcessError."""
-    folder = os.path.abspath(folder)
-    raw = _raw(folder)
-    _clean(folder, sheets=False)
+    where = absolute(folder)
+    raw = _raw(where)
+    _clean(where, sheets=False)
     t0, end = _span(raw)
-    palette = os.path.join(folder, _PALETTE)
-    gif = os.path.join(folder, GIF)
+    palette = where / _PALETTE
+    gif = str(where / GIF)
     try:
         _ffmpeg(
             [
@@ -356,7 +418,7 @@ def make_gif(folder):
                 "1",
                 "-update",
                 "1",
-                palette,
+                str(palette),
             ],
             "making the GIF's palette",
         )
@@ -365,7 +427,7 @@ def make_gif(folder):
                 "-i",
                 raw,
                 "-i",
-                palette,
+                str(palette),
                 "-filter_complex",
                 f"[0:v]{EXACT}[g];[g][1:v]paletteuse=dither={DITHER}:diff_mode=rectangle",
                 "-fps_mode",
@@ -378,31 +440,32 @@ def make_gif(folder):
             "writing the GIF",
         )
     finally:
-        if pathlib.Path(palette).exists():
-            pathlib.Path(palette).unlink()
+        if palette.exists():
+            palette.unlink()
     set_duration(gif, end - t0)
     return gif
 
 
-def make_sheets(folder, scale=1, colors=None):
+def make_sheets(
+    folder: str, scale: float = 1, colors: dict[str, str] | None = None
+) -> Result:
     """Turn folder/raw.mkv, recorded on an output of this scale, into the
     sheets' frames (see Picker) and the sheets, then delete raw.mkv. Returns
-    {"distinct": n, "frames": [(name, time)], "sheets": [path]}. Raises
-    ProcessError; raw.mkv is kept then."""
-    folder = os.path.abspath(folder)
-    raw = _raw(folder)
+    a Result. Raises ProcessError; raw.mkv is kept then."""
+    where = absolute(folder)
+    raw = _raw(where)
     colors = colors or theme.colors()
-    _clean(folder, gif=False)
+    _clean(where, gif=False)
     t0 = _span(raw)[0]
     w, h = _size(raw)
 
     # 1: the frames that differ, streamed to the Picker at a quarter size
-    times, kept, before = _analyse(raw, w, h, scale)
-    times = [t - t0 for t in times]
+    stamps, kept, before = _analyse(raw, w, h, scale)
+    times = [t - t0 for t in stamps]
 
     # 2: the kept frames
-    frames = os.path.join(folder, FRAMES)
-    pathlib.Path(frames).mkdir(parents=True)
+    frames = where / FRAMES
+    frames.mkdir(parents=True)
     select = "+".join(f"eq(n,{i})" for i in kept)
     _ffmpeg(
         [
@@ -415,113 +478,145 @@ def make_sheets(folder, scale=1, colors=None):
             *_BITEXACT,
             "-start_number",
             "1",
-            os.path.join(frames, "%04d.png"),
+            str(frames / "%04d.png"),
         ],
         "writing the frames",
     )
-    names, tiles = [], []
+    names: list[tuple[str, Fraction]] = []
+    tiles: list[tuple[str, str]] = []
     for n, i in enumerate(kept, 1):
         name = frame_name(n, times[i])
-        pathlib.Path(os.path.join(frames, f"{n:04d}.png")).rename(
-            os.path.join(frames, name)
-        )
+        (frames / f"{n:04d}.png").rename(frames / name)
         names.append((name, times[i]))
-        tiles.append((name, tile_label(n, len(kept), times[i], i in before)))
+        tiles.append(
+            (name, tile_label(n, len(kept), times[i], before_switch=i in before))
+        )
 
     # 3: the sheets
-    counts = split(len(names), w, h, min(1.0, MIN_TEXT_SCALE / scale))
-    sheets, first = [], 0
-    for name, count in zip(sheet_names(len(counts)), counts):
-        sheets.append(os.path.join(folder, name))
+    counts = split(len(names), w, h, min(_NO_SCALE, MIN_TEXT_SCALE / scale))
+    sheets: list[str] = []
+    first = 0
+    for name, count in zip(sheet_names(len(counts)), counts, strict=True):
+        sheets.append(str(where / name))
         sheet(frames, tiles[first : first + count], (w, h), sheets[-1], colors)
         first += count
-    pathlib.Path(raw).unlink()
-    return {
-        "distinct": len(times),
-        "frames": [(n, float(t)) for n, t in names],
-        "sheets": sheets,
-    }
+    Path(raw).unlink()
+    return Result(len(times), [(n, float(t)) for n, t in names], sheets)
 
 
-def _raw(folder):
-    raw = os.path.join(folder, RAW)
-    if not pathlib.Path(raw).is_file():
+def _raw(folder: Path) -> str:
+    raw = folder / RAW
+    if not raw.is_file():
         raise ProcessError(f"{raw} is missing")
-    return raw
+    return str(raw)
 
 
-def _analyse(raw, w, h, scale):
+def _start_analysis(
+    raw: str, quarter: tuple[int, int], times_w: int, err: IO[bytes]
+) -> subprocess.Popen[bytes]:
+    """ffmpeg sending the distinct frames, gray at quarter size, on stdout
+    and their framemd5 listing on times_w."""
+    qw, qh = quarter
+    return subprocess.Popen(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            raw,
+            "-filter_complex",
+            f"[0:v]{SIMILAR},split[s][q];[q]scale={qw}:{qh}:flags=area,format=gray[g]",
+            "-map",
+            "[s]",
+            "-fps_mode",
+            "passthrough",
+            "-flush_packets",
+            "1",
+            "-f",
+            "framemd5",
+            f"pipe:{times_w}",
+            "-map",
+            "[g]",
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=err,
+        pass_fds=(times_w,),
+    )
+
+
+# Each reader ends its queue with None even when it fails, so _analyse()
+# never waits for a reader that is gone
+
+
+def _read_times(fd: int, times: queue.SimpleQueue[Fraction | None]) -> None:
+    """The framemd5 listing's frame times, in seconds."""
+    tb: Fraction | None = None
+    try:
+        with os.fdopen(fd) as f:
+            for line in f:
+                found = framemd5_tb(line)
+                if isinstance(found, Fraction):
+                    tb = found
+                    continue
+                pts = framemd5_pts(line)
+                if isinstance(found, ParseError) or isinstance(pts, ParseError):
+                    break
+                if pts is not None and tb is not None:
+                    times.put(pts * tb)
+    finally:
+        times.put(None)
+
+
+def _read_frames(stdout: IO[bytes], size: int, frames: queue.Queue[int | None]) -> None:
+    """The quarter-size frames, quantised, as ints (see changed())."""
+    try:
+        while len(buf := stdout.read(size)) == size:
+            frames.put(int.from_bytes(buf.translate(_QUANTISE), "big"))
+    finally:
+        frames.put(None)
+
+
+def _analyse(
+    raw: str, w: int, h: int, scale: float
+) -> tuple[list[Fraction], list[int], set[int]]:
     """One decode, streamed to the Picker: the distinct frames at a quarter
     size on stdout and their times (a framemd5 listing) on a second pipe,
     each drained by its own thread so ffmpeg never waits on either.
     Returns (times, kept indices, those just before a switch)."""
-    qw, qh = -(-w // 4), -(-h // 4)
+    qw, qh = -(-w // _QUARTER), -(-h // _QUARTER)
     size = qw * qh
     picker = Picker(size, scale)
     times_r, times_w = os.pipe()
     with tempfile.TemporaryFile() as err:
         try:
-            proc = subprocess.Popen(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-nostdin",
-                    "-v",
-                    "error",
-                    "-i",
-                    raw,
-                    "-filter_complex",
-                    f"[0:v]{SIMILAR},split[s][q];[q]scale={qw}:{qh}:flags=area,format=gray[g]",
-                    "-map",
-                    "[s]",
-                    "-fps_mode",
-                    "passthrough",
-                    "-flush_packets",
-                    "1",
-                    "-f",
-                    "framemd5",
-                    f"pipe:{times_w}",
-                    "-map",
-                    "[g]",
-                    "-fps_mode",
-                    "passthrough",
-                    "-f",
-                    "rawvideo",
-                    "pipe:1",
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=err,
-                pass_fds=(times_w,),
-            )
+            proc = _start_analysis(raw, (qw, qh), times_w, err)
         except OSError as e:
             os.close(times_r)
             raise ProcessError(f"ffmpeg: {e}") from None
         finally:
             os.close(times_w)
-        times, frames = queue.SimpleQueue(), queue.Queue(maxsize=32)
-
-        def read_times():
-            tb = None
-            with pathlib.Path(times_r).open() as f:
-                for line in f:
-                    if line.startswith("#tb 0:"):
-                        tb = Fraction(line.split(":", 1)[1].strip())
-                    elif line.strip() and not line.startswith("#"):
-                        times.put(int(line.split(",")[2]) * tb)
-            times.put(None)
-
-        def read_frames():
-            while len(buf := proc.stdout.read(size)) == size:
-                frames.put(int.from_bytes(buf.translate(_QUANTISE), "big"))
-            frames.put(None)
-
+        stdout = proc.stdout
+        if stdout is None:  # never: stdout is a pipe
+            raise RuntimeError("ffmpeg has no stdout pipe")
+        times: queue.SimpleQueue[Fraction | None] = queue.SimpleQueue()
+        frames: queue.Queue[int | None] = queue.Queue(maxsize=_FRAME_QUEUE)
         readers = [
-            threading.Thread(target=f, daemon=True) for f in (read_times, read_frames)
+            threading.Thread(target=_read_times, args=(times_r, times), daemon=True),
+            threading.Thread(
+                target=_read_frames, args=(stdout, size, frames), daemon=True
+            ),
         ]
         for r in readers:
             r.start()
-        stamps = []
+        stamps: list[Fraction] = []
         while (frame := frames.get()) is not None:
             t = times.get()
             if t is None:  # the times ran out: let ffmpeg finish
@@ -533,18 +628,26 @@ def _analyse(raw, w, h, scale):
         proc.wait()
         for r in readers:
             r.join()
-        proc.stdout.close()
+        stdout.close()
         if proc.returncode:
             err.seek(0)
-            tail = err.read().decode(errors="replace").strip().splitlines()[-3:]
-            raise ProcessError("reading the recording failed: " + " / ".join(tail))
+            tail = err.read().decode(errors="replace").strip().splitlines()
+            raise ProcessError(
+                "reading the recording failed: " + " / ".join(tail[-_STDERR_LINES:])
+            )
     if not stamps:
         raise ProcessError("the recording has no frames")
     kept, before = picker.finish()
     return stamps, kept, before
 
 
-def sheet(frames, tiles, size, path, colors):
+def sheet(
+    frames: Path,
+    tiles: list[tuple[str, str]],
+    size: tuple[int, int],
+    path: str,
+    colors: dict[str, str],
+) -> None:
     """Tile frames/<name> for each (name, label) in tiles, each w x h (size),
     into the sheet at path: each shrunk by the Layout's scale (area average),
     outlined (a recording of a themed app has the sheet's background) and
@@ -556,9 +659,10 @@ def sheet(frames, tiles, size, path, colors):
         if (lay.tile_w, lay.tile_h) != tuple(size)
         else ""
     )
-    inputs, chains = [], []
+    inputs: list[str] = []
+    chains: list[str] = []
     for k, (name, text) in enumerate(tiles):
-        inputs += ["-i", os.path.join(frames, name)]
+        inputs += ["-i", str(frames / name)]
         chains.append(
             f"[{k}:v]format=rgb24,{shrink}pad=iw+2:ih+2:1:1:color={line},"
             f"pad={lay.cell_w}:{lay.cell_h}:0:{lay.strip}:color={base},"
@@ -586,7 +690,7 @@ def sheet(frames, tiles, size, path, colors):
     )
 
 
-def _size(path):
+def _size(path: str) -> tuple[int, int]:
     r = subprocess.run(
         [
             "ffprobe",
@@ -600,39 +704,51 @@ def _size(path):
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
-    try:
-        w, h = map(int, r.stdout.strip().split(","))
-    except ValueError:
-        raise ProcessError(f"cannot read {path}") from None
-    return w, h
+    size = parse_size(r.stdout)
+    if isinstance(size, ParseError):
+        raise ProcessError(f"cannot read {path}")
+    return size
 
 
-def _delay_offsets(data):
+_GIF87, _GIF89 = b"GIF87a", b"GIF89a"
+_SCREEN_PACKED = 10  # the logical screen descriptor's packed byte
+_SCREEN_END = 13  # header and logical screen descriptor
+_HAS_TABLE = 0x80  # a packed byte's colour table flag
+_TABLE_SIZE = 7  # a packed byte's colour table size bits
+_TRAILER, _EXTENSION, _IMAGE = 0x3B, 0x21, 0x2C
+_GRAPHIC_CONTROL = 0xF9  # the extension label of a frame's delay
+_MAX_DELAY = 0xFFFF  # cs, a delay's 16 bits
+_WITH_SCALE = 2  # main's arguments: DIR and SCALE
+
+
+def _delay_offsets(data: bytes | bytearray) -> list[int | None]:
     """Offsets of each image's delay field (in its Graphic Control Extension)."""
-    if data[:6] not in (b"GIF87a", b"GIF89a"):
+    if not data.startswith((_GIF87, _GIF89)):
         raise ProcessError("not a GIF")
-    p = 13
-    if data[10] & 0x80:
-        p += 3 << ((data[10] & 7) + 1)
-    delays, pending = [], None
+    p = _SCREEN_END
+    if data[_SCREEN_PACKED] & _HAS_TABLE:
+        p += 3 << ((data[_SCREEN_PACKED] & _TABLE_SIZE) + 1)
+    delays: list[int | None] = []
+    pending: int | None = None
     while p < len(data):
         b = data[p]
         p += 1
-        if b == 0x3B:  # trailer
+        if b == _TRAILER:
             return delays
-        if b == 0x21:  # extension: label, then sub-blocks
-            if data[p] == 0xF9:
+        if b == _EXTENSION:  # label, then sub-blocks
+            if data[p] == _GRAPHIC_CONTROL:
                 pending = p + 3  # label, size 4, packed byte, then the delay
             p += 1
             while data[p]:
                 p += data[p] + 1
             p += 1
-        elif b == 0x2C:  # image descriptor, local colour table, LZW data
+        elif b == _IMAGE:  # image descriptor, local colour table, LZW data
             packed = data[p + 8]
             p += 9
-            if packed & 0x80:
-                p += 3 << ((packed & 7) + 1)
+            if packed & _HAS_TABLE:
+                p += 3 << ((packed & _TABLE_SIZE) + 1)
             p += 1
             while data[p]:
                 p += data[p] + 1
@@ -644,38 +760,47 @@ def _delay_offsets(data):
     raise ProcessError("truncated GIF")
 
 
-def set_duration(path, seconds):
+def set_duration(path: str, seconds: Fraction) -> None:
     """Give the GIF's last frame the rest of the recording. ffmpeg gives it
     one frame's time, so a still end (exact duplicates, dropped) would be
     cut short; its delays otherwise add up to the recording without drift."""
-    with pathlib.Path(path).open("r+b") as f:
+    with Path(path).open("r+b") as f:
         data = bytearray(f.read())
         offsets = _delay_offsets(data)
-        if not offsets or offsets[-1] is None:
+        end = offsets[-1] if offsets else None
+        if end is None:
             return
-        before = sum(int.from_bytes(data[o : o + 2], "little") for o in offsets[:-1])
+        before = sum(
+            int.from_bytes(data[o : o + 2], "little")
+            for o in offsets[:-1]
+            if o is not None
+        )
         last = round(Fraction(seconds) * 100) - before
         if last < 1:
             return
-        data[offsets[-1] : offsets[-1] + 2] = min(last, 0xFFFF).to_bytes(2, "little")
+        data[end : end + 2] = min(last, _MAX_DELAY).to_bytes(2, "little")
         f.seek(0)
         f.write(data)
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     try:
-        scale = float(argv[1]) if len(argv) == 2 else 1
+        scale = float(argv[1]) if len(argv) == _WITH_SCALE else 1
     except ValueError:
         scale = 0
-    if len(argv) not in (1, 2) or argv[0] in ("-h", "--help") or not scale > 0:
-        print(__doc__.strip(), file=sys.stderr)
+    if (
+        len(argv) not in {1, _WITH_SCALE}
+        or argv[0] in {"-h", "--help"}
+        or not scale > 0
+    ):
+        print((__doc__ or "").strip(), file=sys.stderr)
         return 2
     try:
         process(argv[0], scale)
     except (ProcessError, OSError) as e:
         print(f"capture: {e}", file=sys.stderr)
         return 2
-    print(os.path.abspath(argv[0]))
+    print(absolute(argv[0]))
     return 0
 
 

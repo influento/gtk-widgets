@@ -11,17 +11,26 @@ preview shows those same pixels.
 import math
 import struct
 
+type Size = tuple[int, int]
+type Rect = tuple[int, int, int, int]  # x, y, w, h
+
 # A logical coordinate times the scale can land a hair below the pixel edge
 # it stands for (x = 10 at 1.3 gives 12.999999999999998 or 13.000000000000002)
 _EPS = 1e-6
 
 
-def pixel_at(pos, scale):
+def pixel_at(pos: float, scale: float) -> int:
     """The physical pixel under logical coordinate pos."""
     return math.floor(pos * scale + _EPS)
 
 
-def selection(start, end, scale, surface_size, buffer_size):
+def selection(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    scale: float,
+    surface_size: tuple[float, float],
+    buffer_size: Size,
+) -> Rect:
     """The physical rectangle (x, y, w, h) between two logical points.
 
     Points outside the surface (a drag carried onto another output) are
@@ -29,7 +38,7 @@ def selection(start, end, scale, surface_size, buffer_size):
     the frame's physical size. The strip a fractional scale leaves past the
     logical edge (the last physical column of a 3840 px output at 1.3 shows
     no surface) is out of reach, like on screen."""
-    rect = []
+    rect: list[tuple[int, int]] = []
     for axis in (0, 1):
         # The pixel under the last logical position before the edge
         last = min(
@@ -42,12 +51,13 @@ def selection(start, end, scale, surface_size, buffer_size):
     return x, y, w, h
 
 
-def _f32(x):
+def _f32(x: float) -> float:
     """x rounded to a C float."""
-    return struct.unpack("=f", struct.pack("=f", x))[0]
+    (f,) = struct.unpack("=f", struct.pack("=f", x))
+    return f
 
 
-def _device(v, scale):
+def _device(v: float, scale: float) -> int:
     """Where wlroots' scene puts logical coordinate v on the output
     (scale_box(): the int times the float scale in single precision, C
     round(), halves away from zero)."""
@@ -55,7 +65,7 @@ def _device(v, scale):
     return math.floor(abs(p) + 0.5) * (1 if p >= 0 else -1)
 
 
-def placed(rect, scale, buffer_size):
+def placed(rect: Rect, scale: float, buffer_size: Size) -> Rect | None:
     """The physical pixels a logical rectangle (x, y, w, h) of the layout
     (a window, output-local) is drawn on, clipped to the buffer: both edges
     are rounded, so neighbours share no pixel and leave no gap. None when
@@ -67,20 +77,26 @@ def placed(rect, scale, buffer_size):
     return (x0, y0, x1 - x0, y1 - y0) if x1 > x0 and y1 > y0 else None
 
 
-def to_logical(rect, scale):
+def to_logical(rect: Rect, scale: float) -> tuple[float, float, float, float]:
     """A physical rectangle in logical coordinates (fractional), for drawing."""
-    return tuple(v / scale for v in rect)
+    x, y, w, h = rect
+    return x / scale, y / scale, w / scale, h / scale
 
 
-def loupe_place(pointer, size, surface, gap):
+def loupe_place(
+    pointer: tuple[float, float],
+    size: tuple[float, float],
+    surface: tuple[float, float],
+    gap: float,
+) -> tuple[float, float]:
     """Top-left (logical) of a box of size (w, h) beside pointer: gap below
     and right of it, on the other side of the pointer on an axis where it
     would leave the surface, then kept inside it. It never covers the
     pointer unless the surface is too small to hold it anywhere else."""
-    place = []
-    for p, s, total in zip(pointer, size, surface):
+    place: list[float] = []
+    for p, s, total in zip(pointer, size, surface, strict=True):
         v = p + gap
         if v + s > total:
             v = p - gap - s
         place.append(min(max(v, 0), max(total - s, 0)))
-    return tuple(place)
+    return place[0], place[1]
