@@ -8,4 +8,5 @@ __pycache__/
 !.claude/rules/
 !.claude/skills/
 !.claude/stack.conf
+!.claude/agents/
 .venv

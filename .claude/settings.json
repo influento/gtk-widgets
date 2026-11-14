@@ -9,6 +9,15 @@
             "timeout": 600
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workbench-review",
+            "timeout": 1800
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -46,7 +55,13 @@
       "Bash(python -m pip *)",
       "Bash(python3 -m pip *)",
       "Bash(pipx *)",
-      "Bash(uvx *)"
+      "Bash(uvx *)",
+      "Edit(/.claude/rules/workbench.md)",
+      "Edit(/.claude/agents/wb-reviewer.md)",
+      "Edit(/.claude/agents/wb-demo.md)",
+      "Edit(/.claude/agents/wb-judge.md)",
+      "Edit(/.claude/agents/wb-worker.md)",
+      "Edit(/.claude/hooks/workbench-review)"
     ],
     "ask": [
       "Edit(/.claude/settings.json)",
@@ -62,5 +77,6 @@
       "Bash(stack rm *)",
       "Bash(stack update *)"
     ]
-  }
+  },
+  "autoMemoryDirectory": "~/dev/infra/gtk-widgets/.claude/memory"
 }
