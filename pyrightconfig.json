@@ -1,0 +1,14 @@
+{
+  "extends": "py-gate/pyright.gate.json",
+  "include": [
+    "src",
+    "tests"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "exclude": [
+    "repos/**",
+    "workbench/**",
+    ".worktrees/**"
+  ]
+}

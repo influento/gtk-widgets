@@ -1,0 +1,63 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash py-gate/scripts/stop-hook.sh",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workshop-guard"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(uv sync --locked)",
+      "Bash(bash py-gate/scripts/gate.sh)",
+      "Bash(bash py-gate/scripts/gate.sh --local)",
+      "Bash(bash py-gate/scripts/gate.sh --fix)",
+      "Bash(uv run pytest:*)"
+    ],
+    "deny": [
+      "Bash(uv add *)",
+      "Bash(uv remove *)",
+      "Bash(uv pip *)",
+      "Bash(uv tool *)",
+      "Bash(uv -* add *)",
+      "Bash(uv -* remove *)",
+      "Bash(uv -* pip *)",
+      "Bash(uv -* tool *)",
+      "Bash(uv * --with*)",
+      "Bash(pip *)",
+      "Bash(pip3 *)",
+      "Bash(python -m pip *)",
+      "Bash(python3 -m pip *)",
+      "Bash(pipx *)",
+      "Bash(uvx *)"
+    ],
+    "ask": [
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/hooks/workshop-guard)",
+      "Edit(/.claude/workshop.conf)",
+      "Edit(/ruff.toml)",
+      "Edit(/pyrightconfig.json)",
+      "Edit(/pytest.toml)",
+      "Edit(/py-gate/**)",
+      "Edit(/pyproject.toml)",
+      "Edit(/uv.lock)"
+    ]
+  }
+}

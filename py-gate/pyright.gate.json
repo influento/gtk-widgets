@@ -1,0 +1,11 @@
+{
+  "typeCheckingMode": "all",
+  "enableTypeIgnoreComments": false,
+  "reportUnusedCallResult": "none",
+  "reportAny": "none",
+  "reportUnannotatedClassAttribute": "none",
+  "reportImplicitStringConcatenation": "none",
+  "reportMissingSuperCall": "none",
+  "reportCallInDefaultInitializer": "none",
+  "reportMissingModuleSource": "none"
+}

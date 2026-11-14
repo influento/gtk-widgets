@@ -1,0 +1,29 @@
+# py-gate's lint rules, extended by the project's ruff.toml. Why each rule is
+# off: ecosystems/python/gate/CLAUDE.md, "Rules". A rule that is wrong for a project
+# goes into that project's ruff.toml, after the extend.
+line-length = 88
+extend-exclude = ["py-gate"]
+
+[lint]
+select = ["ALL"]
+preview = true
+explicit-preview-rules = true
+ignore = [
+  # the formatter's conflict list (docs.astral.sh/ruff/formatter/#conflicting-lint-rules)
+  "W191", "E111", "E114", "E117", "D206", "D300", "Q000", "Q001", "Q002", "Q003", "Q004",
+  "COM812", "COM819", "ISC002", "E501",
+  # fire on correct code
+  "D", "CPY001", "TRY003", "EM101", "EM102", "T201", "TRY004", "N818", "PLR2004",
+  "PLR0911", "TC001", "TC002", "TC003", "C901", "RUF029", "PLW0717", "ASYNC109",
+  "PLR0913",
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "S105", "S106", "S107", "S311", "PLR0917", "INP001"]
+
+[lint.flake8-tidy-imports.banned-api]
+"typing.cast".msg = "cast hides a type error. Narrow with isinstance, or parse outside data with the project's schema library"
+"typing_extensions.cast".msg = "cast hides a type error. Narrow with isinstance, or parse outside data with the project's schema library"
+"typing.no_type_check".msg = "no_type_check turns the type checker off for the function. Fix the types"
+"unittest.mock.patch".msg = "patching a module hides how the code gets its dependency. Pass the dependency in, or test through the public entry point"
+"unittest.mock.patch.object".msg = "patching a module hides how the code gets its dependency. Pass the dependency in, or test through the public entry point"

@@ -1,0 +1,3 @@
+# The project's ruff config. py-gate's rules come from the extend; a change
+# for this project goes below it.
+extend = "py-gate/ruff.gate.toml"

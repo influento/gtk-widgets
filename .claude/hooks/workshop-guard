@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# PreToolUse hook for Bash, copied into a project by guard. A shell command
+# that can write a path of an Edit(...) rule in permissions.deny or .ask, or
+# cds into a guarded directory, gets the answer the edit tools get: deny or
+# ask. Settings rules alone let a redirect such as `> tsconfig.json` through
+# in auto mode (../../AGENTS.md, "Guarded files"). The hook judges each
+# pipeline of the command alone: one that names the path passes when every
+# part of it is a known read (cat, grep, git diff, ...) and no redirect goes
+# into the path. When a cd or a variable can carry the path from one
+# pipeline into the next, the whole command must read, with no redirect
+# into a file. A path that a known checker gets as its config (CONFIG_FLAGS)
+# is not counted: the checker only reads it. A command that builds the path
+# at run time is not seen.
+set -euo pipefail
+exec python3 -c "$(cat <<'PY'
+import json, os, re, shlex, sys
+
+cmd = json.load(sys.stdin).get("tool_input", {}).get("command", "")
+try:
+    with open(os.path.join(os.environ.get("CLAUDE_PROJECT_DIR", "."), ".claude/settings.json")) as fh:
+        perms = json.load(fh).get("permissions", {})
+except (OSError, ValueError):
+    sys.exit(0)
+
+READ = {"cat", "head", "tail", "less", "wc", "ls", "grep", "rg", "diff", "cmp", "stat", "file",
+        "tree", "jq", "realpath", "readlink", "basename", "dirname", "echo", "printf", "test",
+        "[", "true", ":", "cd", "pwd", "cut", "tr", "nl", "uniq", "column", "od", "xxd",
+        "md5sum", "sha256sum", "read", "mapfile", "readarray", "for", "select"}
+GIT_READ = {"diff", "log", "show", "status", "blame", "grep", "ls-files", "ls-tree", "rev-parse",
+            "cat-file", "merge-base", "describe", "shortlog", "add", "commit"}
+FIND_WRITE = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+# A checker reads the file that one of these flags names and never writes it.
+# A new gate adds its own checkers here.
+CONFIG_FLAGS = {
+    "tsc": {"-p", "--project"},
+    "vitest": {"-c", "--config"},
+    "eslint": {"-c", "--config"},
+    "ruff": {"--config"},
+    "basedpyright": {"-p", "--project"},
+    "pytest": {"-c", "--config-file"},
+    "lint-imports": {"--config"},
+}
+# uv run's own flags that take a value, before the command it runs.
+UV_RUN_VALUE = {"--with", "--with-editable", "--with-requirements", "--python", "-p", "--group", "--extra",
+                "--package", "--directory", "--project", "--env-file", "--index", "--default-index"}
+RUNNERS = {"npx", "bunx", "yarn"}
+SHELLS = {"bash", "sh"}
+# Shell words before a part's command: they run nothing.
+KEYWORDS = {"if", "then", "elif", "else", "fi", "while", "until", "do", "done", "!", "{", "}"}
+# The commands that bind a variable from their input.
+READERS = {"read", "mapfile", "readarray"}
+# The flag that gives each interpreter an inline script, and the calls in
+# which that script only reads a path.
+INLINE = {"node": {"-e", "-p", "--eval", "--print"}, "python3": {"-c"}, "python": {"-c"}}
+READ_CALL = (r"(?:(?<![\w.$])require|\breadFileSync|(?<![\w.$])open)\(\s*(['\"`])[^'\"`\n]*?(?:{})[^'\"`\n]*\1"
+             r"\s*(?:,\s*(['\"])(?:utf-?8|r|rb)\2\s*)?\)")
+# The commit message form `"$(cat <<'X' ... X)"` only feeds text to cat.
+# Bash ends the text at its first X line, so the text holds none, and the
+# first X line must close the `$(`; what follows it is commands.
+MESSAGE = re.compile(r"\$\(cat <<-?'(\w+)'\n(?:(?![ \t]*\1[ \t]*\n)[^\n]*\n)*[ \t]*\1\s*\)")
+
+def split(words):
+    # A part's leading keywords and assignments, and its command.
+    i = 0
+    while i < len(words) and (words[i] in KEYWORDS or re.match(r"^\w+=", words[i])):
+        i += 1
+    return words[:i], words[i:]
+
+def reads(words):
+    if not words:
+        return True
+    name, args = words[0], words[1:]
+    if name in READ:
+        return True
+    if name == "sort":
+        return not any(a.startswith(("-o", "--output")) for a in args)
+    if name == "find":
+        return not FIND_WRITE.intersection(args)
+    if name == "sed":
+        script = [a for a in args if not a.startswith("-")][:1]
+        return "-n" in args and not any(a.startswith(("-i", "--in-place")) for a in args) \
+            and bool(script) and re.fullmatch(r"[\d,$]+p", script[0]) is not None
+    if name == "git":
+        while args and args[0].startswith("-"):
+            args = args[2:] if args[0] in ("-C", "-c") else args[1:]
+        return bool(args) and args[0] in GIT_READ and not any(a.startswith("--output") for a in args)
+    return False
+
+def unread(words):
+    # The words of a command that can name a path it writes: all but the
+    # value of a checker's config flag.
+    i = 0
+    if words[:1] and words[0] in RUNNERS:
+        i = 1
+    elif words[:2] == ["pnpm", "exec"]:
+        i = 2
+    elif words[:2] == ["uv", "run"]:
+        i = 2
+        while i < len(words) and words[i].startswith("-"):
+            i += 2 if words[i] in UV_RUN_VALUE else 1
+    if words[:1] and words[0] in SHELLS and len(words) > 1 and not words[1].startswith(("-", "+")):
+        # A guarded script that a shell runs: its path is read, not written
+        # (py-gate's `bash py-gate/scripts/gate.sh`). Its arguments still
+        # count. With any shell option the word after it may be a script
+        # text (-ec) or an argument (-s), so every word counts.
+        return words[:1] + words[2:]
+    name = words[i] if i < len(words) else ""
+    if name.startswith(("node_modules/.bin/", "./node_modules/.bin/")):
+        name = os.path.basename(name)
+    flags = CONFIG_FLAGS.get(name)
+    if not flags:
+        return words
+    out, rest = words[:i + 1], iter(words[i + 1:])
+    for w in rest:
+        if w == "--":
+            out += [w, *rest]
+        elif w in flags:
+            next(rest, None)
+        elif not (w.startswith("--") and "=" in w and w.split("=", 1)[0] in flags):
+            out.append(w)
+    return out
+
+def parse(cmd):
+    # The pipelines of the command, each a list of parts (words, files the
+    # part redirects into, files it reads by redirect), and the commit
+    # messages. None when the hook cannot read the command.
+    msgs = []
+    def keep(m):
+        msgs.append(m.group(0))
+        return "__MSG%d__" % (len(msgs) - 1)
+    cmd = MESSAGE.sub(keep, cmd)
+    if any(s in cmd for s in ("<<", "$(", "`", "<(", ">(")):
+        return None
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>\n")
+    lex.whitespace = " \t\r"
+    lex.whitespace_split = True
+    # Bash starts a comment only at the start of a word; shlex at any #, and
+    # drops the rest of the line, a write included.
+    lex.commenters = ""
+    try:
+        tokens = list(lex)
+    except ValueError:
+        return None
+    pipelines, pipe, words, outs, ins, i = [], [], [], [], [], 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t and set(t) <= set(";&|()\n"):
+            pipe.append((words, outs, ins))
+            words, outs, ins = [], [], []
+            if not ("|" in t and "||" not in t):
+                pipelines.append(pipe)
+                pipe = []
+        elif ">" in t and set(t) <= set("<>&|"):
+            target = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if not (t.endswith("&") and target.isdigit()) and target != "/dev/null":
+                outs.append(target)
+            i += 1
+        elif "<" in t and set(t) <= set("<>&"):
+            ins.append(tokens[i + 1] if i + 1 < len(tokens) else "")
+            i += 1
+        else:
+            words.append(t)
+        i += 1
+    pipe.append((words, outs, ins))
+    pipelines.append(pipe)
+    return pipelines, msgs
+
+def writes(path, parsed):
+    # Text the hook cannot read counts whole.
+    if parsed is None:
+        return path in cmd
+    pipelines, msgs = parsed
+    parts = [part for pipe in pipelines for part in pipe]
+    # A word names the path where the path stands whole in it.
+    whole = r"(?<![\w.-])" + re.escape(path) + ("" if path.endswith("/") else r"(?![\w.-])")
+    pat = re.compile(whole)
+
+    def names(w):
+        return bool(pat.search(w)) or any(pat.search(msgs[int(n)]) for n in re.findall(r"__MSG(\d+)__", w))
+
+    def named(part):
+        words, outs, ins = part
+        pre, command = split(words)
+        return any(names(w) for w in pre + unread(command) + outs + ins)
+
+    def inline_reads(command):
+        # Each mention of the path in the script is the argument of a read call.
+        flags = INLINE.get(os.path.basename(command[0]) if command else "")
+        if not flags:
+            return False
+        script, rest, args = None, [], iter(command[1:])
+        for w in args:
+            if script is None and w in flags:
+                script = next(args, "")
+            else:
+                rest.append(w)
+        if script is None or "$" in script or any(names(w) for w in rest):
+            return False
+        spans = [m.span() for m in re.finditer(READ_CALL.format(whole), script)]
+        hits = [m.start() for m in pat.finditer(script)]
+        return bool(hits) and all(any(a <= h < b for a, b in spans) for h in hits)
+
+    def reading(part):
+        command = split(part[0])[1]
+        return reads(command) or inline_reads(command)
+
+    # A cd into a guarded directory, or a variable bound to text that names
+    # the path, carries the path from one pipeline into the next: then the
+    # whole command must read, with no redirect into a file.
+    anywhere = any(named(part) for part in parts)
+    carried = path.endswith("/") and re.search(r"\bcd\s+[\"']?(\./)?" + re.escape(path.rstrip("/")) + r"(/|[\"'\s;&|)]|$)", cmd)
+    for words, _, _ in parts:
+        pre, command = split(words)
+        carried = carried or any(names(w.partition("=")[2]) for w in pre if "=" in w) \
+            or (command[:1] in (["for"], ["select"]) and any(names(w) for w in command[3:])) \
+            or (anywhere and command[:1] and (command[0] in READERS or command[0] == "printf" and "-v" in command))
+    if carried:
+        return not all(reading(part) and not part[1] for part in parts)
+    return any(any(named(part) for part in pipe)
+               and not all(reading(part) and not any(names(t) for t in part[1]) for part in pipe)
+               for pipe in pipelines)
+
+parsed = parse(cmd)
+for decision in ("deny", "ask"):
+    for rule in perms.get(decision, []):
+        if not (rule.startswith("Edit(/") and rule.endswith(")")):
+            continue
+        path = rule[6:-1].removesuffix("**")
+        if path and writes(path, parsed):
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision,
+                "permissionDecisionReason": path + " is guarded: only the user decides a change to it. "
+                "To only read it, use cat, jq or git show, or run the tool without naming the file."}}))
+            sys.exit(0)
+PY
+)"

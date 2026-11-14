@@ -1,4 +1,10 @@
 themes/current.json
 __pycache__/
 .arc-system-prompt.md
-.claude
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/workshop.conf
+!.claude/rules/
+!.claude/skills/
+.venv

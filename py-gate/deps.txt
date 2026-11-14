@@ -1,0 +1,9 @@
+# Dependencies the user approved, one name per line. The gate fails on any other in pyproject.toml.
+basedpyright
+deptry
+import-linter
+pytest
+pytest-asyncio
+pytest-randomly
+pytest-timeout
+ruff
