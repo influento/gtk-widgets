@@ -8,7 +8,22 @@ ignore = [
   "S607",
 ]
 
+# This table replaces py-gate's (ruff does not merge it), so py-gate's entries
+# come first, copied from py-gate/ruff.gate.toml.
+[lint.flake8-tidy-imports.banned-api]
+"typing.cast".msg = "cast hides a type error. Narrow with isinstance, or parse outside data with the project's schema library"
+"typing_extensions.cast".msg = "cast hides a type error. Narrow with isinstance, or parse outside data with the project's schema library"
+"typing.no_type_check".msg = "no_type_check turns the type checker off for the function. Fix the types"
+"unittest.mock.patch".msg = "patching a module hides how the code gets its dependency. Pass the dependency in, or test through the public entry point"
+"unittest.mock.patch.object".msg = "patching a module hides how the code gets its dependency. Pass the dependency in, or test through the public entry point"
+"threading.Thread".msg = "use lib/ui/background.in_background: a bug in a bare thread hangs the popup"
+
 [lint.extend-per-file-ignores]
 # Both restart the process with gtk4-layer-shell in LD_PRELOAD.
 "src/gtk_widgets/lib/ui/__init__.py" = ["S606"]
 "src/gtk_widgets/widgets/launcher/main.py" = ["S606"]
+# in_background itself.
+"src/gtk_widgets/lib/ui/background.py" = ["TID251"]
+# Stdlib only, no GLib loop for in_background: its threads write a clipboard
+# form into a paste request's pipe.
+"src/gtk_widgets/widgets/launcher/selection.py" = ["TID251"]
