@@ -23,12 +23,24 @@ def is_array(value: object) -> TypeIs[list[object]]:
     return isinstance(value, list)
 
 
+def as_array(value: object, path: str) -> list[object] | ParseError:
+    """An array; JSON null or a missing key (read as None) is an empty one."""
+    if value is None:
+        return []
+    return value if is_array(value) else ParseError(f"{path}: not an array")
+
+
 def _is_mapping(value: object) -> TypeIs[Mapping[object, object]]:
     return isinstance(value, Mapping)
 
 
 def as_str(value: object, path: str) -> str | ParseError:
     return value if isinstance(value, str) else ParseError(f"{path}: not a string")
+
+
+def as_str_or_none(value: object, path: str) -> str | ParseError | None:
+    """A string, or JSON null (or a missing key read as None)."""
+    return None if value is None else as_str(value, path)
 
 
 def as_bool(value: object, path: str) -> bool | ParseError:

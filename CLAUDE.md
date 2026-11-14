@@ -175,7 +175,7 @@ gtk-widgets/
 ├── src/gtk_widgets/
 │   ├── __init__.py        # Empty: launcher's CLI imports it
 │   ├── lib/
-│   │   ├── parse.py       # JSON readers (object/array guards, str/bool/int/float) returning ParseError; the theme file's parser (stdlib)
+│   │   ├── parse.py       # JSON readers (object/array guards; str, optional str, bool, int, float, array) returning ParseError; the theme file's parser (stdlib)
 │   │   ├── paths.py       # SRC, module_child(): run one of our modules in a child Python (stdlib)
 │   │   ├── theme.py       # Theme file lookup, colours, @@TOKEN@@ rendering (stdlib, no GTK)
 │   │   ├── wayland.py     # Minimal Wayland wire client (stdlib): ids, dispatch with fds, registry
@@ -216,6 +216,7 @@ gtk-widgets/
 │       │   └── style.css
 │       ├── usb/
 │       │   ├── main.py
+│       │   ├── parse.py       # lsblk's removable USB disks + the busy-state file: models and parsers
 │       │   ├── style.css
 │       │   └── status         # JSON: USB icon, event-driven via udevadm
 │       ├── timer/

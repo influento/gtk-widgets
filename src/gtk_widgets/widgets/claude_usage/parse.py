@@ -11,11 +11,12 @@ from datetime import date, datetime
 
 from gtk_widgets.lib.parse import (
     ParseError,
+    as_array,
     as_bool,
     as_float,
     as_int,
     as_str,
-    is_array,
+    as_str_or_none,
     is_object,
 )
 from gtk_widgets.widgets.claude_usage.usage import UsageError
@@ -27,7 +28,6 @@ LEGACY_WINDOWS = [
 ]
 DEFAULT_SPEND_EXPONENT = 2  # minor units per major: cents
 _EMPTY: Mapping[str, object] = {}  # a missing or null object
-_NONE: list[object] = []  # a missing or null array
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +88,6 @@ class Org:
     plan: str  # what the billing day hangs on: a plan change can move it
 
 
-def _opt_str(value: object, path: str) -> str | ParseError | None:
-    return None if value is None else as_str(value, path)
-
-
 def _opt_bool(value: object, path: str) -> bool | ParseError:
     return False if value is None else as_bool(value, path)
 
@@ -126,7 +122,7 @@ def _display_name(value: object, path: str) -> str | ParseError | None:
         return None
     if not is_object(value):
         return ParseError(f"{path}: not an object")
-    return _opt_str(value.get("display_name"), f"{path}.display_name")
+    return as_str_or_none(value.get("display_name"), f"{path}.display_name")
 
 
 def _labels(kind: str | None, name: str | None) -> tuple[str, str]:
@@ -147,14 +143,14 @@ def _limit(lim: object, path: str) -> Window | ParseError:
         return ParseError(f"{path}.scope: not an object")
     surface = scope.get("surface")
     match (
-        _opt_str(lim.get("kind"), f"{path}.kind"),
+        as_str_or_none(lim.get("kind"), f"{path}.kind"),
         _display_name(scope.get("model"), f"{path}.scope.model"),
         _display_name(surface, f"{path}.scope.surface")
         if is_object(surface)
-        else _opt_str(surface, f"{path}.scope.surface"),
+        else as_str_or_none(surface, f"{path}.scope.surface"),
         as_float(lim.get("percent") or 0, f"{path}.percent"),
         _time(lim.get("resets_at"), f"{path}.resets_at"),
-        _opt_str(lim.get("severity"), f"{path}.severity"),
+        as_str_or_none(lim.get("severity"), f"{path}.severity"),
         _opt_bool(lim.get("is_active"), f"{path}.is_active"),
     ):
         case (
@@ -223,9 +219,9 @@ def parse_usage(data: object) -> Usage | ParseError:
     cached_at = as_float(data.get("_cached_at", 0), "._cached_at")
     if isinstance(cached_at, ParseError):
         return cached_at
-    limits = data.get("limits") or _NONE
-    if not is_array(limits):
-        return ParseError(".limits: not an array")
+    limits = as_array(data.get("limits"), ".limits")
+    if isinstance(limits, ParseError):
+        return limits
     windows: list[Window] = []
     for i, lim in enumerate(limits):
         match _limit(lim, f".limits[{i}]"):
@@ -247,7 +243,7 @@ def _window(value: object, path: str) -> Window | ParseError:
     if not is_object(value):
         return ParseError(f"{path}: not an object")
     match (
-        _opt_str(value.get("kind"), f"{path}.kind"),
+        as_str_or_none(value.get("kind"), f"{path}.kind"),
         as_str(value.get("short"), f"{path}.short"),
         as_str(value.get("label"), f"{path}.label"),
         as_float(value.get("percent"), f"{path}.percent"),
@@ -310,9 +306,9 @@ def parse_report(data: object) -> Report | UsageError | ParseError:
         return ParseError("not an object")
     if "error" in data:
         return UsageError(str(data["error"]))
-    windows_data = data.get("windows") or _NONE
-    if not is_array(windows_data):
-        return ParseError(".windows: not an array")
+    windows_data = as_array(data.get("windows"), ".windows")
+    if isinstance(windows_data, ParseError):
+        return windows_data
     windows: list[Window] = []
     for i, value in enumerate(windows_data):
         match _window(value, f".windows[{i}]"):
@@ -335,8 +331,8 @@ def parse_charge_cache(data: object) -> ChargeCache | ParseError:
         return ParseError("not an object")
     match (
         _date(data.get("next_charge_date") or None, ".next_charge_date"),
-        _opt_str(data.get("org_uuid"), ".org_uuid"),
-        _opt_str(data.get("plan"), ".plan"),
+        as_str_or_none(data.get("org_uuid"), ".org_uuid"),
+        as_str_or_none(data.get("plan"), ".plan"),
     ):
         case (str() | None) as charge_date, (str() | None) as uuid, (
             str() | None
