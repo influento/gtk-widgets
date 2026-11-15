@@ -51,10 +51,9 @@ The user and other sessions run processes on this machine too.
 - What a domain word means lives in `workbench/GLOSSARY.md`. When the meaning
   changes, change the entry.
 - A fact that no commit can make wrong, such as the user, their machine, or
-  how they want work done, lives in agent memory. When it is wrong, delete
-  it. Agent memory is kept in the main checkout, so each change to it shows
-  in the diff there. Never commit a change to it: the user reviews each
-  change and commits or reverts it.
+  how they want work done, lives in `CLAUDE.md` at the project's root. When
+  it is wrong, delete it. When the user corrects how you work, write the
+  correction there at once.
 - An idea lives in `workbench/BACKLOG.md`, as one entry. When the idea
   becomes an item or is dropped, delete the entry.
 - Work in progress lives in its open item until the item is archived.
@@ -135,6 +134,11 @@ before the change. This rule also holds when you fix a review finding. If
 you cannot keep that behaviour, stop and ask the user. If the user accepts
 that behaviour as it is after the change, agree a step for it with the
 user.
+
+When you fix a review finding or a fault that the user points out,
+search the code for other places with the same fault. A place outside
+the item's change is a behaviour that was already wrong before the
+change.
 
 In the item's session of a bug or a feature, you can find a behaviour
 that was already wrong before the change. If that behaviour is outside the

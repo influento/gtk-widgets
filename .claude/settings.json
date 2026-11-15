@@ -78,5 +78,5 @@
       "Bash(stack update *)"
     ]
   },
-  "autoMemoryDirectory": "~/dev/infra/gtk-widgets/.claude/memory"
+  "autoMemoryEnabled": false
 }

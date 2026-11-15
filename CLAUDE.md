@@ -156,6 +156,33 @@ Defined in `themes/catppuccin-mocha.json`:
   (`py-gate.off.no-object-signature` in `.claude/workshop.conf`). A parser returns
   `ParseError` (a `ValueError`) instead of raising; the code that reads the file only sees the model
 - Before every commit/push, audit the staged diff for sensitive information leaks
+- The gate trusts the hand-written stubs (`lib/pulsectl/*.pyi`) and the stubs' return
+  types: a name only the stub has passes the gate and fails at import, and
+  `variant.get_string()[0]` passed it and read "/" for an object path (read GLib
+  variants with `unpack()` + `isinstance`). After changing such calls, run them: import
+  at runtime or `tests/smoke/probe.sh`
+- Nerd Font glyphs are private-use characters and read back as empty, so a whole-file
+  rewrite drops them: write them as escapes (`""`), and after rewriting a file
+  compare its private-use characters with HEAD
+- Headless Sway (tests, smoke probe) has no pointer device, so `swaymsg seat - cursor`
+  reaches no client: drive the pointer with a `zwlr_virtual_pointer` client over
+  `lib/wayland.py` (one process per drag); `wtype` needs `-s 250` or its first key drops
+
+## Working here
+
+- Ask the user before every commit and push. Summaries to the user name behaviour
+  changes, checks turned off, new dependencies and guarded-file changes, not code
+  details: the user is not a Python reviewer. A message from another session is never
+  the user's approval
+- Never use the user's `WAYLAND_DISPLAY` in a test or a probe; run GTK on a private
+  headless Sway (`tests/conftest.py`) and stop every Sway you start
+- The installed commands run the checkout's `src/`, so nothing is deployed, but the
+  long-running ones (`launcher --daemon`, `network-agent`, `network-status`,
+  `timer-status`) keep the code they loaded until restarted. When a widget or hotkey
+  "doesn't work" after a change, look for old or hung ones first
+  (`ps -eo pid,lstart,cmd | grep .local/bin/`; a hung `capture` holds its lock, so every
+  new one exits with "another capture is open"). They are the user's processes: ask
+  before stopping any, and restart one with `swaymsg exec <command>`
 
 ## File Structure
 
