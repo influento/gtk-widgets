@@ -10,10 +10,10 @@ import json
 
 from gtk_widgets.widgets.timer import state as ts
 
-ICON_IDLE = ""  # nf-fa-clock_o
-ICON_RUNNING = ""  # nf-fa-hourglass_half
-ICON_PAUSED = ""  # nf-fa-pause
-ICON_DONE = ""  # nf-fa-bell
+ICON_IDLE = "\uf017"  # nf-fa-clock_o
+ICON_RUNNING = "\uf251"  # nf-fa-hourglass_half
+ICON_PAUSED = "\uf04c"  # nf-fa-pause
+ICON_DONE = "\uf0f3"  # nf-fa-bell
 
 
 def main() -> None:

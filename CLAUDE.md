@@ -169,7 +169,7 @@ Defined in `themes/catppuccin-mocha.json`:
   variants with `unpack()` + `isinstance`). After changing such calls, run them: import
   at runtime or `tests/smoke/probe.sh`
 - Nerd Font glyphs are private-use characters and read back as empty, so a whole-file
-  rewrite drops them: write them as escapes (`""`), and after rewriting a file
+  rewrite drops them: write them as escapes (`"\uf002"`), and after rewriting a file
   compare its private-use characters with HEAD
 - Headless Sway (tests, smoke probe) has no pointer device, so `swaymsg seat - cursor`
   reaches no client: drive the pointer with a `zwlr_virtual_pointer` client over
