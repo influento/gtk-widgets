@@ -17,3 +17,10 @@
   line: the result ("Connected", "Pairing failed", a bug line) goes to the old,
   removed label and nobody sees it. Found in gap 5 (types), left as it was
   (2026-11-14).
+- **translate: a closed popup leaves its claude request running.** Closed by
+  the hotkey (`widget-toggle`'s SIGTERM) or by Esc while it works, ezpick's
+  `claude -p` request keeps running to its end (up to its 30 s timeout), its
+  parent now pid 1, and spends tokens on an answer nobody sees. Seen on a
+  headless Sway with a fake `claude`; left out of
+  b-a-popup-closed-by-its-hotkey-leaves-its-child-proc-261116-1503 by the
+  user, "since its unfinished widget" (2026-11-16).
