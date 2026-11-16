@@ -4,9 +4,10 @@
 # cds into a guarded directory, gets the answer the edit tools get: deny or
 # ask. Settings rules alone let a redirect such as `> tsconfig.json` through
 # in auto mode (../../AGENTS.md, "Guarded files"). The hook judges each
-# pipeline of the command alone: one that names the path passes when every
-# part of it is a known read (cat, grep, git diff, ...) and no redirect goes
-# into the path. When a cd or a variable can carry the path from one
+# pipeline of the command alone: one that names the path passes when the
+# part that first names it and every part after it are known reads (cat,
+# grep, git diff, ...) and no redirect goes into the path, since a pipe
+# carries data only forward. When a cd or a variable can carry the path from one
 # pipeline into the next, the whole command must read, with no redirect
 # into a file. A $( ) is judged as a command of its own, a heredoc's text as
 # the input of its command. A path that a known checker gets as its config (CONFIG_FLAGS)
@@ -23,9 +24,9 @@ try:
 except (OSError, ValueError):
     sys.exit(0)
 
-READ = {"cat", "head", "tail", "less", "wc", "ls", "grep", "rg", "diff", "cmp", "stat", "file",
-        "tree", "jq", "realpath", "readlink", "basename", "dirname", "echo", "printf", "test",
-        "[", "true", ":", "cd", "pwd", "cut", "tr", "nl", "uniq", "column", "od", "xxd",
+READ = {"cat", "head", "tail", "less", "wc", "ls", "grep", "diff", "cmp", "stat", "file",
+        "jq", "realpath", "readlink", "basename", "dirname", "echo", "printf", "test",
+        "[", "true", ":", "cd", "pwd", "cut", "tr", "nl", "column", "od",
         "md5sum", "sha256sum", "read", "mapfile", "readarray", "for", "select"}
 GIT_READ = {"diff", "log", "show", "status", "blame", "grep", "ls-files", "ls-tree", "rev-parse",
             "cat-file", "merge-base", "describe", "shortlog", "check-ignore", "add", "commit"}
@@ -40,12 +41,22 @@ CONFIG_FLAGS = {
     "basedpyright": {"-p", "--project"},
     "pytest": {"-c", "--config-file"},
     "lint-imports": {"--config"},
+    "golangci-lint": {"-c", "--config"},
 }
 # uv run's own flags that take a value, before the command it runs.
 UV_RUN_VALUE = {"--with", "--with-editable", "--with-requirements", "--python", "-p", "--group", "--extra",
                 "--package", "--directory", "--project", "--env-file", "--index", "--default-index"}
 RUNNERS = {"npx", "bunx", "yarn"}
-SHELLS = {"bash", "sh"}
+# The interpreters that run a script file named as their first word.
+SCRIPT_RUNNERS = {"bash", "sh", "python", "python3"}
+# uv run's flags that change nothing in what the interpreter runs.
+UV_RUN_PLAIN = {"--locked", "--exact", "--frozen", "--offline", "--no-sync", "--quiet", "-q"}
+# The builtins that change the shell's variables, functions, aliases, command
+# hash, options or traps, or run text in it.
+SHELL_STATE = {"source", ".", "eval", "export", "declare", "typeset", "local", "readonly", "unset",
+               "hash", "alias", "unalias", "enable", "builtin", "set", "shopt", "read", "mapfile", "readarray",
+               "getopts", "integer", "float", "autoload", "unfunction", "unhash", "disable", "setopt",
+               "unsetopt", "emulate", "zmodload", "zparseopts", "vared", "rehash", "functions", "trap"}
 # Shell words before a part's command: they run nothing.
 KEYWORDS = {"if", "then", "elif", "else", "fi", "while", "until", "do", "done", "!", "{", "}", "time"}
 # timeout's flags that take a value, before its duration and the command.
@@ -57,6 +68,27 @@ READERS = {"read", "mapfile", "readarray"}
 INLINE = {"node": {"-e", "-p", "--eval", "--print"}, "python3": {"-c"}, "python": {"-c"}}
 READ_CALL = (r"(?:(?<![\w.$])require|\breadFileSync|(?<![\w.$])open)\(\s*(['\"`])[^'\"`\n]*?(?:{})[^'\"`\n]*\1"
              r"\s*(?:,\s*(['\"])(?:utf-?8|r|rb)\2\s*)?\)")
+# A function definition, `name() {`, zsh's `a b () {`, or `function a b {`:
+# the names it gives.
+FUNC_DEF = re.compile(r"(?:^|[;&|\n{(]|\b(?:then|do|else))[ \t]*(?:function((?:[ \t]+[^\s(){};&|]+)+)"
+                      r"|((?:[^\s(){};&|=$]+[ \t]+)*[^\s(){};&|=$]+)[ \t]*\([ \t]*\))")
+# The names the hook trusts before a script.
+TRUSTED = {"bash", "sh", "python", "python3", "uv", "timeout"}
+# The variables that only change how a read shows its output.
+DISPLAY = re.compile(r"LC_\w+|LANG|LANGUAGE|TZ|NO_COLOR|TERM|COLUMNS")
+# The variables an export may set without changing what a program runs.
+SAFE_ENV = re.compile(DISPLAY.pattern + r"|GIT_(?:AUTHOR|COMMITTER)_(?:NAME|EMAIL|DATE)")
+# set's arguments that only change how errors end the command.
+SET_SAFE = re.compile(r"[-+][euxv]*o?|pipefail|errexit|nounset|xtrace|verbose")
+# An assignment: its name, and its subscript if it sets an element.
+ASSIGN = re.compile(r"^(\w+)(\[[^\]]*\])?\+?=")
+# The variables of bash and zsh that change which program a name runs, or
+# what runs first, beside those the environment holds.
+LOOKUP = r"(?:PATH|path|commands|functions|aliases|galiases|saliases|options|fpath|FPATH|module_path" \
+         r"|MODULE_PATH|dis_\w+|BASH_\w+|ENV|PYTHON\w*)"
+# Shell text that sets one: a loop's variable, or an expansion that assigns
+# (${PATH:=}, zsh's ${(P)name::=}).
+SHELL_TEXT = re.compile(r"\b(?:for|select)[ \t]+" + LOOKUP + r"\b|\$\{[^}\s'\"]*=")
 HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'(\w+)'|\"(\w+)\"|\\?(\w+))")
 
 def split(words):
@@ -82,6 +114,15 @@ def reads(words):
         return True
     if name == "sort":
         return not any(a.startswith(("-o", "--output")) for a in args)
+    if name in ("uniq", "xxd"):
+        # Their second file is the output. An option's value counts as a
+        # file too: a false ask, never a missed write.
+        return len([a for a in args if not a.startswith("-")]) < 2
+    if name == "tree":
+        return not any(a.startswith("-o") for a in args)
+    if name == "rg":
+        # --pre runs a program on each file.
+        return not any(a.startswith("--pre") for a in args)
     if name == "find":
         return not FIND_WRITE.intersection(args)
     if name == "sed":
@@ -90,13 +131,66 @@ def reads(words):
             and bool(script) and re.fullmatch(r"[\d,$]+p", script[0]) is not None
     if name == "git":
         while args and args[0].startswith("-"):
-            args = args[2:] if args[0] in ("-C", "-c") else args[1:]
-        return bool(args) and args[0] in GIT_READ and not any(a.startswith("--output") for a in args)
+            # A config set before the subcommand can make git run any
+            # program (core.fsmonitor, diff.external, a filter, include.path).
+            if args[0].startswith(("-c", "--config-env")):
+                return False
+            args = args[2:] if args[0] == "-C" else args[1:]
+        # git grep -O runs a program on each file it finds.
+        return bool(args) and args[0] in GIT_READ and not any(a.startswith("--output") for a in args) \
+            and not (args[0] == "grep" and any(a.startswith(("-O", "--open-files-in-pager")) for a in args))
     return False
 
-def unread(words):
+def script_run(words):
+    # Where the script word is when an interpreter runs a script file by its
+    # plain name (`bash py-gate/scripts/gate.sh`, `uv run --locked python
+    # py-gate/check.py`), else None. With any option the word after it may be
+    # a script text (-ec, -c), an argument (-s, -) or a module (-m). npx,
+    # yarn, bunx and pnpm exec resolve the project's own bins, which can be
+    # any program by that name, and uv run's other flags can set its
+    # environment (--env-file) or add packages (--with).
+    i = 0
+    if words[:2] == ["uv", "run"]:
+        i = 2
+        while i < len(words) and words[i] in UV_RUN_PLAIN:
+            i += 1
+    if i + 1 < len(words) and words[i] in SCRIPT_RUNNERS and not words[i + 1].startswith(("-", "+")):
+        return i + 1
+    return None
+
+def changes_shell(part):
+    # A part that changes the shell itself, and so which program a name runs
+    # or what a program reads first: a variable set alone that a program or
+    # the shell can see (one the environment holds, one of LOOKUP, an
+    # element of an array); a builtin that sets variables, aliases, the
+    # command hash or options, or runs text in the shell. Not set's error
+    # options, nor an export of SAFE_ENV. Any other program runs in a process
+    # of its own and cannot change the shell. parse finds the rest in the
+    # shell's text: a loop or an expansion that sets a variable
+    # (SHELL_TEXT), and function definitions, whose () the parts lose.
+    pre, command = split(part[0])
+    if command and not ASSIGN.match(command[0]):
+        head, args = command[0], command[1:]
+        if head == "set":
+            return not all(SET_SAFE.fullmatch(a) for a in args)
+        if head == "export":
+            return not all((m := ASSIGN.match(a)) and not m.group(2) and SAFE_ENV.fullmatch(m.group(1)) for a in args)
+        return head in SHELL_STATE or (head in ("printf", "print") and "-v" in command)
+    sets = [m for w in pre + command[:1] if (m := ASSIGN.match(w))]
+    return any(m.group(2) or m.group(1) in os.environ or re.fullmatch(LOOKUP, m.group(1)) for m in sets)
+
+def sets_for_script(part):
+    # A variable set for an interpreter that runs a script: PYTHONPATH,
+    # BASH_ENV and the like run code first.
+    pre, command = split(part[0])
+    return any(ASSIGN.match(w) for w in pre) and script_run(command) is not None
+
+def unread(words, scripts):
     # The words of a command that can name a path it writes: all but the
-    # value of a checker's config flag.
+    # value of a checker's config flag, and, when scripts, the script that
+    # an interpreter runs.
+    if scripts and (k := script_run(words)) is not None:
+        return words[:k] + words[k + 1:]
     i = 0
     if words[:1] and words[0] in RUNNERS:
         i = 1
@@ -106,12 +200,6 @@ def unread(words):
         i = 2
         while i < len(words) and words[i].startswith("-"):
             i += 2 if words[i] in UV_RUN_VALUE else 1
-    if words[:1] and words[0] in SHELLS and len(words) > 1 and not words[1].startswith(("-", "+")):
-        # A guarded script that a shell runs: its path is read, not written
-        # (py-gate's `bash py-gate/scripts/gate.sh`). Its arguments still
-        # count. With any shell option the word after it may be a script
-        # text (-ec) or an argument (-s), so every word counts.
-        return words[:1] + words[2:]
     name = words[i] if i < len(words) else ""
     if name == "cp":
         return words[:i + 1] + cp_target(words[i + 1:])
@@ -291,14 +379,22 @@ def parse(cmd):
         if found is None:
             return None
         pipelines += found
-    return pipelines, texts
+    # The names that a function definition in the shell's text, not in a
+    # heredoc's, gives: the parts lose its ().
+    shell = "\n".join((got[0], *subs))
+    defined = {name for m in FUNC_DEF.finditer(shell) for name in (m.group(1) or m.group(2)).split()}
+    return pipelines, texts, defined, SHELL_TEXT.search(shell) is not None
 
 def writes(path, parsed):
     # Text the hook cannot read counts whole.
     if parsed is None:
         return path in cmd
-    pipelines, texts = parsed
+    pipelines, texts, defined, shell_text = parsed
     parts = [part for pipe in pipelines for part in pipe]
+    # A guarded script that an interpreter runs is read, not written, unless
+    # a part of the command changes the shell. Its arguments still count.
+    shell_changed = bool(defined & TRUSTED) or shell_text or any(changes_shell(part) for part in parts)
+    scripts = not shell_changed and not any(sets_for_script(part) for part in parts)
     # A word names the path where the path stands whole in it.
     whole = r"(?<![\w.-])" + re.escape(path) + ("" if path.endswith("/") else r"(?![\w.-])")
     pat = re.compile(whole)
@@ -310,7 +406,8 @@ def writes(path, parsed):
     def named(part):
         words, outs, ins = part
         pre, command = split(words)
-        return any(names(w) for w in pre + unread(command) + outs + ins)
+        own = command if defined & set(command) else unread(command, scripts)
+        return any(names(w) for w in pre + own + outs + ins)
 
     def inline_reads(command):
         # Each mention of the path in the script is the argument of a read call.
@@ -330,8 +427,14 @@ def writes(path, parsed):
         return bool(hits) and all(any(a <= h < b for a, b in spans) for h in hits)
 
     def reading(part):
-        command = split(part[0])[1]
-        return reads(command) or inline_reads(command)
+        # A function of the command's name runs its body instead. A part
+        # of the command that changes the shell, or a variable set for the
+        # read beyond the display ones, can make it run a program (git's
+        # GIT_EXTERNAL_DIFF, rg's RIPGREP_CONFIG_PATH, less's LESSOPEN).
+        pre, command = split(part[0])
+        if shell_changed or command and any((m := ASSIGN.match(w)) and not DISPLAY.fullmatch(m.group(1)) for w in pre):
+            return False
+        return not (command[:1] and command[0] in defined) and (reads(command) or inline_reads(command))
 
     # A cd into a guarded directory, or a variable bound to text that names
     # the path, carries the path from one pipeline into the next: then the
@@ -345,9 +448,13 @@ def writes(path, parsed):
             or (anywhere and command[:1] and (command[0] in READERS or command[0] == "printf" and "-v" in command))
     if carried:
         return not all(reading(part) and not part[1] for part in parts)
-    return any(any(named(part) for part in pipe)
-               and not all(reading(part) and not any(names(t) for t in part[1]) for part in pipe)
-               for pipe in pipelines)
+    # A pipe carries data only forward: the part that first names the path
+    # and every part after it must read, with no redirect into the path.
+    def pipe_writes(pipe):
+        first = next((k for k, part in enumerate(pipe) if named(part)), None)
+        return first is not None and not all(reading(part) and not any(names(t) for t in part[1])
+                                             for part in pipe[first:])
+    return any(pipe_writes(pipe) for pipe in pipelines)
 
 parsed = parse(cmd)
 for decision in ("deny", "ask"):
