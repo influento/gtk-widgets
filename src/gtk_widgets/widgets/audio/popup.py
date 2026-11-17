@@ -11,7 +11,6 @@ import contextlib
 import json
 import math
 import os
-import signal
 import subprocess
 import threading
 import time
@@ -1654,15 +1653,8 @@ class AudioPopup(WidgetPopup):
 
         last = self._state.tab
         self._switch_tab(last if last in TAB_KEYS else "playback", save=False)
-        # widget-toggle closes the popup with SIGTERM: quit cleanly so do_shutdown
-        # stops a test recording's parec/pacat
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._on_sigterm)
         self._connect()
         return self._container
-
-    def _on_sigterm(self) -> bool:
-        self.quit()
-        return GLib.SOURCE_REMOVE
 
     def _show_bug(self, msg: str) -> bool:
         """A worker thread's bug, on the line under the header."""

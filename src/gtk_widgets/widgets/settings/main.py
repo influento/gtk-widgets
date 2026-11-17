@@ -3,7 +3,6 @@
 CPU power level."""
 
 import json
-import signal
 import subprocess
 import threading
 from collections.abc import Callable
@@ -204,9 +203,6 @@ class SettingsPopup(WidgetPopup):
         container.append(self._brightness_box)
 
         self._load_brightness_async()
-        # widget-toggle closes the popup with SIGTERM: quit cleanly so do_shutdown
-        # writes a brightness value still on its way
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._on_sigterm)
 
         # --- Night Light (file read is fast, keep sync) ---
         container.append(Gtk.Separator())
@@ -280,10 +276,6 @@ class SettingsPopup(WidgetPopup):
 
     def _show_epp_bug(self, msg: str) -> bool:
         self._show_epp(epp.EppFailed(msg))
-        return GLib.SOURCE_REMOVE
-
-    def _on_sigterm(self) -> bool:
-        self.quit()
         return GLib.SOURCE_REMOVE
 
     def _load_brightness_async(self) -> None:

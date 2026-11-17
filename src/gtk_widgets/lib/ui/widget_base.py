@@ -1,6 +1,7 @@
 """Shared base class for GTK4 layer-shell popup widgets."""
 
 import math
+import signal
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -307,7 +308,7 @@ class _Pin:
 
 
 class WidgetPopup(Gtk.Application):
-    """Base GTK4 popup with layer-shell overlay, backdrop dismiss, and Esc/q close."""
+    """Base GTK4 popup with layer-shell overlay, backdrop dismiss, and Esc/q/SIGTERM close."""
 
     CSS = (
         ""  # optional override; by default style.css beside the subclass module is used
@@ -337,6 +338,11 @@ class WidgetPopup(Gtk.Application):
     def do_activate(self) -> None:
         if self.get_windows():
             return  # re-activated by a second launch; the popup is already up
+        # widget-toggle closes the popup with SIGTERM: quit as Esc does, so
+        # do_shutdown stops the widget's children and flushes its writes
+        _ = GLib.unix_signal_add(
+            GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._on_sigterm
+        )
         install_css(render_css(BASE_CSS) + self._widget_css())
         win, overlay = popup_window(self, self.quit, self._on_key)
         self._unshown = (win, overlay, self.build_ui())
@@ -344,6 +350,10 @@ class WidgetPopup(Gtk.Application):
             self.show_ui()
         else:
             GLib.timeout_add(self.SHOW_TIMEOUT_MS, self.show_ui)
+
+    def _on_sigterm(self) -> bool:
+        self.quit()
+        return GLib.SOURCE_REMOVE
 
     def show_ui(self) -> bool:
         """Present the popup built by build_ui(); later calls do nothing."""

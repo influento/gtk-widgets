@@ -19,7 +19,8 @@ The code is one package, `src/gtk_widgets/`. Each widget is a subpackage
 - `status` (bash) or `status.py` (optional) — outputs JSON for status bars or CLI use
 
 All widgets share a common base class (`lib/ui/widget_base.py`) that handles layer-shell
-setup, transparent backdrop, Esc/q dismiss, and CSS loading with theme token replacement.
+setup, transparent backdrop, Esc/q dismiss, the SIGTERM close of `widget-toggle` (a quit like
+Esc, so a widget's `do_shutdown` runs), and CSS loading with theme token replacement.
 
 ### Commands and imports
 
