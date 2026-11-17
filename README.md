@@ -7,7 +7,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | Widget         | Description                                                |
 | -------------- | ---------------------------------------------------------- |
 | `calendar`     | GTK4 calendar                                              |
-| `display`      | Display settings: scale, brightness, night light; `display-brightness` CLI for keybinds |
+| `settings`     | Quick settings: display (scale, brightness, night light; `display-brightness` CLI for keybinds) and CPU power level (EPP, root helper via polkit; `settings-epp restore` sets the stored pick again at startup) |
 | `claude-usage` | Claude subscription usage with progress bars               |
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect   |
 | `power`        | Power menu: lock, sleep, reboot, shut down                 |
@@ -48,9 +48,10 @@ This puts into `~/.local/bin/` (the commands run on the system `python3`, from t
 - `<widget>-<tool>` — extra CLI entry points (e.g., `display-brightness up|down|set|get`)
 
 The commands are listed in `pyproject.toml` under `[project.scripts]`; run `./install.sh`
-again after a change to that list.
+again after a change to that list; it removes the launchers and status links of commands
+the list no longer has.
 
-The root helpers (`usb-helper`, `proxy-helper`) and their polkit rules are copied to
+The root helpers (`usb-helper`, `proxy-helper`, `epp-helper`) and their polkit rules are copied to
 `/usr/lib/gtk-widgets/` and `/etc/polkit-1/rules.d/` with `sudo` (only when they changed),
 and the Proxy rules unit to `/etc/systemd/system/gtk-widgets-proxy.service` (never enabled:
 it starts when Proxy rules is picked in the popup).
@@ -65,7 +66,7 @@ The popup is toggled via `widget-toggle <name>` on click.
 | `calendar`     | `calendar-status`     | 60       | `widget-toggle calendar`     |
 | `bluetooth`    | `bluetooth-status`    | 5        | `widget-toggle bluetooth`    |
 | `claude-usage` | `claude-usage-status` | 600      | `widget-toggle claude-usage` |
-| `display`      | `display-status`      | once     | `widget-toggle display`      |
+| `settings`     | `settings-status`     | once     | `widget-toggle settings`     |
 | `power`        | `power-status`        | once     | `widget-toggle power`        |
 | `usb`          | `usb-status`          | 3        | `widget-toggle usb`          |
 | `timer`        | `timer-status`        | 1        | `widget-toggle timer`        |

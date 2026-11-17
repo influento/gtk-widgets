@@ -1,0 +1,40 @@
+#!/usr/bin/python3 -I
+"""Privileged CPU power level helper for gtk-widgets.
+
+Intended to be run ONLY via pkexec, authorised by the bundled polkit rule
+(50-gtk-widgets-epp.rules), which permits exactly this root-owned binary.
+
+Usage: epp-helper LEVEL
+Writes LEVEL to every CPU's energy_performance_preference (intel_pstate and
+amd-pstate-epp in active mode). LEVEL must be one of four fixed names and the
+files are found by a fixed glob, so the caller picks only which of the four.
+"""
+
+import glob
+import sys
+
+LEVELS = ("performance", "balance_performance", "balance_power", "power")
+EPP_FILES = "/sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference"
+
+
+def main(argv):
+    if len(argv) != 1 or argv[0] not in LEVELS:
+        print(f"usage: epp-helper {'|'.join(LEVELS)}", file=sys.stderr)
+        return 2
+    paths = sorted(glob.glob(EPP_FILES))
+    if not paths:
+        print("epp-helper: this CPU has no energy performance preference", file=sys.stderr)
+        return 1
+    for path in paths:
+        try:
+            with open(path, "w") as f:
+                f.write(argv[0])
+        except OSError as e:
+            # EBUSY: the kernel takes only "performance" under the performance governor
+            print(f"epp-helper: {path}: {e.strerror}", file=sys.stderr)
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Status output for display widget.
+# Status output for the settings widget.
 # JSON: { "text": "icon", "tooltip": "...", "class": "..." }
 
-echo '{"text": "󰹑", "tooltip": "Display settings"}'
+echo '{"text": "󰹑", "tooltip": "Settings"}'

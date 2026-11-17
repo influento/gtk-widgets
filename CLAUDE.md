@@ -36,7 +36,7 @@ setup, transparent backdrop, Esc/q dismiss, and CSS loading with theme token rep
 - The stdlib paths never import `gi` (it costs ~40 ms; pathlib ~8 ms stays out of `gtk_widgets/__init__.py` too): `gtk_widgets/__init__.py`,
   `lib/` outside `ui/`, launcher's CLI (`main.py`, `protocol.py`) and `clipboard.py`/
   `selection.py`, capture's grab (`main.py` up to `load_gtk()`), the Python status scripts
-  but network's, and `display-brightness`. Their GTK modules sit in a `ui/` subpackage
+  but network's, `display-brightness` and `settings-epp`. Their GTK modules sit in a `ui/` subpackage
 
 ### Theming
 
@@ -73,14 +73,14 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
   `place_popup()` places the container without presenting, for an app that builds its
   window once and shows/hides it (`launcher`)
 - Widgets with a `status` script (bash or Python) output JSON (`text`, `tooltip`, `class`) for status bars
-- Extra CLI entry points are named `<widget>-<name>` in `[project.scripts]` (e.g. `display-brightness`, bound to XF86MonBrightness keys in dotfiles)
+- Extra CLI entry points are named `<widget>-<name>` in `[project.scripts]` (e.g. `settings-epp`); `display-brightness` (settings) keeps the name dotfiles binds to the XF86MonBrightness keys
 
 ### Current widgets
 
 | Widget         | Description                                                       |
 | -------------- | ----------------------------------------------------------------- |
 | `calendar`     | GTK4 calendar                                                     |
-| `display`      | Display settings: scale, brightness, night light temp; `display-brightness` CLI for keybinds |
+| `settings`     | Quick settings: display (scale, brightness, night light temp; `display-brightness` CLI for keybinds) and CPU power level (EPP: the four levels intel_pstate and amd-pstate-epp take, set through `epp-helper` via polkit; the pick goes to `~/.local/state/dotfiles/epp`, and dotfiles runs `settings-epp restore` at sway startup) |
 | `claude-usage` | Claude usage: 5h session, weekly all-models, weekly per-model, next charge date |
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect          |
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
@@ -199,13 +199,15 @@ gtk-widgets/
 ├── CLAUDE.md
 ├── README.md
 ├── pyproject.toml         # [project.scripts]: the installed commands
-├── install.sh             # Writes command launchers + links bash status scripts into ~/.local/bin; installs root helpers, polkit rules, proxy unit (sudo)
+├── install.sh             # Writes command launchers + links bash status scripts into ~/.local/bin (removes those of commands gone); installs root helpers, polkit rules, proxy unit (sudo)
 ├── widget-toggle          # Generic toggle for GTK4 popups (flock-based)
 ├── polkit/
 │   ├── usb-helper         # Root helper for USB format/write, installed to /usr/lib/gtk-widgets/
 │   ├── 50-gtk-widgets-usb.rules  # Polkit rule that authorises only that helper
 │   ├── proxy-helper       # Root helper: validates a Proxy rules request, builds the sing-box config, starts/stops the unit
 │   ├── 50-gtk-widgets-proxy.rules  # Polkit rule that authorises only that helper
+│   ├── epp-helper         # Root helper: writes one of four EPP levels to every CPU
+│   ├── 50-gtk-widgets-epp.rules  # Polkit rule that authorises only that helper
 │   └── gtk-widgets-proxy.service   # sing-box unit (User=sing-box), installed to /etc/systemd/system/, never enabled
 ├── udev/                  # Device access rules (QuadCast S lights: uaccess), installed to /etc/udev/rules.d/
 ├── modules/               # v4l2loopback options + load at boot for webcam-effects, installed to /etc/modprobe.d/ and /etc/modules-load.d/
@@ -240,12 +242,14 @@ gtk-widgets/
 │       │   ├── api.py         # GET api.anthropic.com paths with Claude Code's OAuth token, errors as UsageError
 │       │   ├── style.css
 │       │   └── status.py      # JSON: usage percentages, reset times
-│       ├── display/
+│       ├── settings/
 │       │   ├── main.py
 │       │   ├── brightness.py  # Backend (backlight/DDC on a cached bus) + CLI: display-brightness up|down|set|get
+│       │   ├── epp.py         # CPU power level: read, set via epp-helper, the stored pick; CLI: settings-epp restore (stdlib)
+│       │   ├── state.py       # ~/.local/state/dotfiles/ and the whole-file write (stdlib)
 │       │   ├── parse.py       # swaymsg's output list -> the active output's scale
 │       │   ├── style.css
-│       │   └── status         # JSON: display icon
+│       │   └── status         # JSON: settings icon
 │       ├── power/
 │       │   ├── main.py
 │       │   ├── style.css
@@ -490,7 +494,7 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
   picker: the picker's click covers them, and it previews what it takes), selection
   handles (the user: Esc and redo is enough; the magnifier makes the first drag exact)
 
-### display — notes
+### settings — notes
 
 - ddcutil scans every I2C bus on each call (~3.2 s here); `--bus N` takes ~0.07 s. The bus
   of the first display `ddcutil detect` lists (ddcutil's own default) is cached in

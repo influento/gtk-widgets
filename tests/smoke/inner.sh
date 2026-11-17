@@ -60,7 +60,7 @@ run_for() {
 }
 
 say "## popups: direct run (4 s), screenshot, then widget-toggle on/off"
-for w in audio bluetooth calendar claude-usage display network power timer translate usb; do
+for w in audio bluetooth calendar claude-usage network power settings timer translate usb; do
   log="${logs}/${w}.log"
   timeout -s TERM 4 "${HOME}/.local/bin/${w}" > "${log}" 2>&1 < /dev/null &
   tpid=$!
@@ -89,7 +89,7 @@ for w in audio bluetooth calendar claude-usage display network power timer trans
 done
 
 say "## status scripts (first line must be JSON)"
-for s in bluetooth calendar claude-usage display network power timer usb; do
+for s in bluetooth calendar claude-usage network power settings timer usb; do
   log="${logs}/${s}-status.log"
   line="$(timeout 6 "${s}-status" 2> "${log}" | head -1 || true)"
   if python3 -c 'import json,sys; json.loads(sys.argv[1])' "${line}" 2>/dev/null && clean "${log}"; then
@@ -103,6 +103,7 @@ run_for claude-usage-status-json 20 "0" claude-usage-status --json
 
 say "## other commands"
 run_for display-brightness-get 20 "0 1" display-brightness get
+run_for settings-epp-restore 10 "0" settings-epp restore
 run_for launcher-clipboard 10 "0" launcher-clipboard
 run_for network-agent 3 "124" network-agent
 run_for launcher-dmenu 3 "124" bash -c 'printf "alpha\nbeta\n" | launcher --dmenu --prompt probe'

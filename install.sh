@@ -36,7 +36,9 @@ echo "  widget-toggle"
 # Commands: a launcher per [project.scripts] entry in pyproject.toml. Each runs
 # on the system python3 with this checkout's src/ on its path (no venv needed)
 src_dir="$REPO_DIR/src"
+declare -A clis=()
 while read -r cli module func; do
+  clis["$cli"]=1
   tmp="$(mktemp "$BIN_DIR/.$cli.XXXXXX")"
   cat > "$tmp" <<EOF
 #!/usr/bin/env python3
@@ -58,6 +60,24 @@ for cli, target in scripts.items():
     print(cli, module, func)
 ' "$REPO_DIR/pyproject.toml")
 
+# Entries of commands this checkout no longer has (renamed, removed, moved):
+# a dead link into it, or a launcher it wrote for a command not listed now
+is_stale() {
+  local f="$1"
+  if [[ -L "$f" ]]; then
+    [[ ! -e "$f" && "$(readlink "$f")" == "$REPO_DIR"/* ]]
+  else
+    [[ -f "$f" && -z "${clis[$(basename "$f")]:-}" ]] \
+      && grep -qxF "sys.path.insert(0, \"$src_dir\")" "$f"
+  fi
+}
+for f in "$BIN_DIR"/*; do
+  if is_stale "$f"; then
+    rm -f "$f"
+    echo "  removed: $(basename "$f")"
+  fi
+done
+
 # The bash status scripts, as <widget>-status
 for status in "$src_dir"/gtk_widgets/widgets/*/status; do
   name="$(basename "$(dirname "$status")")-status"
@@ -67,7 +87,7 @@ done
 
 # Privileged helpers + polkit rules (requires sudo). Each rule authorises only
 # its helper, so install the helpers root-owned at a fixed path.
-for helper in usb-helper proxy-helper; do
+for helper in usb-helper proxy-helper epp-helper; do
   helper_src="$REPO_DIR/polkit/$helper"
   helper_dst="/usr/lib/gtk-widgets/$helper"
   if [[ -f "$helper_src" ]]; then

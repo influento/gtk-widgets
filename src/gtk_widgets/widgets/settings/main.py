@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Display settings popup — scale, brightness, night light temperature."""
+"""Settings popup — display (scale, brightness, night light temperature) and
+CPU power level."""
 
-import contextlib
 import json
-import os
 import signal
 import subprocess
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal, override
 
 from gi.repository import GLib
@@ -18,17 +16,16 @@ from gtk_widgets.lib.parse import ParseError
 from gtk_widgets.lib.ui.background import in_background
 from gtk_widgets.lib.ui.copy_label import copyable
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
-from gtk_widgets.widgets.display import brightness
-from gtk_widgets.widgets.display.parse import parse_active_scale
+from gtk_widgets.widgets.settings import brightness, epp
+from gtk_widgets.widgets.settings.parse import parse_active_scale
+from gtk_widgets.widgets.settings.state import STATE_DIR, write_state
 
-# Runtime state, outside any config checkout: sway includes scale.conf and
-# dotfiles' wlsunset.sh reads temperature at sway startup
-STATE_DIR = Path.home() / ".local/state/dotfiles"
 SCALE_FILE = STATE_DIR / "scale.conf"
 TEMP_FILE = STATE_DIR / "temperature"
 FLUSH_S = 5  # longest wait on close for the last brightness write (a rescan is ~3 s)
 DEFAULT_SCALE = 1.0
 DEFAULT_TEMPERATURE = 4500
+ERROR_WIDTH_CHARS = 54  # about the CPU row's width at the error's font size
 
 type SliderKey = Literal["scale", "brightness", "temperature"]
 
@@ -51,20 +48,6 @@ def get_current_scale() -> float:
             # sway stores scale as a float32: 1.3 reads back 1.2999999523,
             # which the label truncates to 129%
             return round(scale, 1)
-
-
-def write_state(path: Path, text: str) -> None:
-    """Write a state file whole: a reader sees the old text or the new, never
-    an empty or partial file."""
-    path.parent.mkdir(exist_ok=True, parents=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}")
-    try:
-        tmp.write_text(text)
-        tmp.replace(path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
-        raise
 
 
 def apply_scale(scale: float) -> None:
@@ -166,9 +149,15 @@ def percent(v: float) -> str:
     return f"{int(v * 100)}%"
 
 
-class DisplayPopup(WidgetPopup):
+def group_title(text: str) -> Gtk.Label:
+    title = Gtk.Label(label=text)
+    title.add_css_class("group-title")
+    return title
+
+
+class SettingsPopup(WidgetPopup):
     def __init__(self) -> None:
-        super().__init__(application_id="dev.dotfiles.display")
+        super().__init__(application_id="dev.dotfiles.settings")
         self._timeouts: dict[SliderKey, int] = {
             "scale": 0,
             "brightness": 0,
@@ -177,15 +166,14 @@ class DisplayPopup(WidgetPopup):
         # key -> (apply_fn, value) while its debounce runs
         self._pending: dict[SliderKey, tuple[Callable[[float], None], float]] = {}
         self._brightness_writer: LatestWriter | None = None
+        self._epp_buttons: dict[str, Gtk.Button] = {}
+        self._epp_error = copyable(Gtk.Label())
 
     @override
     def build_ui(self) -> Gtk.Widget:
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        container.add_css_class("display-container")
-
-        title = Gtk.Label(label="Display")
-        title.add_css_class("display-title")
-        container.append(title)
+        container.add_css_class("settings-container")
+        container.append(group_title("Display"))
 
         # --- Scale (swaymsg is fast, keep sync) ---
         self._build_slider(
@@ -240,7 +228,59 @@ class DisplayPopup(WidgetPopup):
             get_temperature() / 1000,
         )
 
+        if epp.available():
+            self._build_epp(container)
         return container
+
+    def _build_epp(self, container: Gtk.Box) -> None:
+        container.append(Gtk.Separator())
+        container.append(group_title("CPU"))
+        label = Gtk.Label(label="POWER LEVEL")
+        label.add_css_class("section-label")
+        label.set_halign(Gtk.Align.START)
+        container.append(label)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        for level in epp.LEVELS:
+            button = Gtk.Button(label=level)
+            button.add_css_class("epp-level")
+            button.connect("clicked", self._on_epp_clicked, level)
+            row.append(button)
+            self._epp_buttons[level] = button
+        container.append(row)
+        self._epp_error.add_css_class("display-error")
+        self._epp_error.set_wrap(True)
+        # Else the unwrapped text's width widens the popup on a failure
+        self._epp_error.set_max_width_chars(ERROR_WIDTH_CHARS)
+        self._epp_error.set_xalign(0)
+        self._epp_error.set_visible(False)
+        container.append(self._epp_error)
+        self._show_epp(None)
+
+    def _on_epp_clicked(self, _button: Gtk.Button, level: str) -> None:
+        for button in self._epp_buttons.values():
+            button.set_sensitive(False)
+
+        def worker() -> None:
+            GLib.idle_add(self._show_epp, epp.pick(level))
+
+        in_background(worker, self._show_epp_bug)
+
+    def _show_epp(self, failed: epp.EppFailed | None) -> bool:
+        """Highlight the level the CPUs have now, and the failure if any."""
+        level = epp.current()
+        for name, button in self._epp_buttons.items():
+            button.set_sensitive(True)
+            if name == level:
+                button.add_css_class("active")
+            else:
+                button.remove_css_class("active")
+        self._epp_error.set_text(str(failed) if failed else "")
+        self._epp_error.set_visible(failed is not None)
+        return GLib.SOURCE_REMOVE
+
+    def _show_epp_bug(self, msg: str) -> bool:
+        self._show_epp(epp.EppFailed(msg))
+        return GLib.SOURCE_REMOVE
 
     def _on_sigterm(self) -> bool:
         self.quit()
@@ -351,4 +391,4 @@ class DisplayPopup(WidgetPopup):
 
 
 def main() -> int:
-    return DisplayPopup().run()
+    return SettingsPopup().run()

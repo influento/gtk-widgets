@@ -1,8 +1,8 @@
-.display-container {
+.settings-container {
   padding: 16px 24px;
 }
 
-.display-title {
+.group-title {
   font-size: 14px;
   font-weight: bold;
   color: @@BLUE@@;
@@ -64,4 +64,23 @@ scale marks mark label {
 .display-error {
   font-size: 11px;
   color: @@ERROR@@;
+}
+
+.epp-level {
+  font-size: 11px;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 4px;
+  background: @@SURFACE0@@;
+  color: @@TEXT@@;
+  box-shadow: none;
+}
+
+.epp-level:hover {
+  background: @@SURFACE1@@;
+}
+
+.epp-level.active {
+  background: @@SAPPHIRE@@;
+  color: @@BASE@@;
 }

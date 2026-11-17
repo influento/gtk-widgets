@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guards for the display popup's state files (src/gtk_widgets/widgets/display/main.py).
+# Guards for the display popup's state files (src/gtk_widgets/widgets/settings/main.py).
 # The popup keeps the sway scale and the night light temperature in
 # ~/.local/state/dotfiles/{scale.conf,temperature}: sway includes scale.conf,
 # dotfiles' wlsunset.sh reads temperature at sway startup.
@@ -33,7 +33,7 @@ make_linked_home() {
 cat > "${work}/case.py" <<'EOF'
 import os, resource, sys
 
-from gtk_widgets.widgets.display import main
+from gtk_widgets.widgets.settings import main
 
 case = sys.argv[1]
 home = os.environ["HOME"]
