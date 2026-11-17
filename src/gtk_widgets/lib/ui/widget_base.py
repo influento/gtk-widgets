@@ -1,10 +1,12 @@
 """Shared base class for GTK4 layer-shell popup widgets."""
 
+import math
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, override
 
+import cairo
 from gi.repository import Gdk, GLib, Gtk, Gtk4LayerShell
 
 from gtk_widgets.lib.theme import render_css
@@ -23,6 +25,29 @@ window {
   border: 1px solid @@SURFACE1@@;
   border-radius: 8px;
   font-family: "JetBrainsMono Nerd Font", monospace;
+}
+
+/* WidgetPopup's pin, in a row above the popup's top-right corner */
+.popup-pin {
+  min-width: 20px;
+  min-height: 20px;
+  margin-bottom: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  box-shadow: none;
+  color: @@OVERLAY1@@;
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 14px;
+}
+
+.popup-pin:hover {
+  color: @@TEXT@@;
+}
+
+.popup-pin:checked {
+  color: @@ACCENT@@;
 }
 
 /* lib/copy_label.py flash; outranks a widget's single-class label colour */
@@ -228,6 +253,59 @@ def show_popup(
     win.present()
 
 
+PIN_ROW = 22  # .popup-pin's min-height and margin-bottom
+PIN_GLYPH = "\U000f0931"  # nf-md-pin_outline
+PINNED_GLYPH = "\U000f0403"  # nf-md-pin
+
+
+class _Pin:
+    """Pinned, the window takes clicks only on the popup, so other windows get
+    the rest (no backdrop dismiss), and keys only once it is clicked. It stays
+    full screen: shrinking it showed the old frame at the new place for a frame."""
+
+    def __init__(self, win: Gtk.Window, frame: Gtk.Widget) -> None:
+        self._win, self._frame = win, frame
+        self._paint_id = 0
+        self._box: tuple[int, int, int, int] | None = None
+
+    def set(self, *, pinned: bool) -> None:
+        Gtk4LayerShell.set_keyboard_mode(
+            self._win,
+            Gtk4LayerShell.KeyboardMode.ON_DEMAND
+            if pinned
+            else Gtk4LayerShell.KeyboardMode.EXCLUSIVE,
+        )
+        clock = self._win.get_frame_clock()
+        if clock is None:
+            return
+        if pinned and not self._paint_id:
+            # the popup can change size while pinned: the region follows it
+            self._paint_id = clock.connect("after-paint", self._follow)
+            self._follow(clock)
+        elif not pinned and self._paint_id:
+            clock.disconnect(self._paint_id)
+            self._paint_id, self._box = 0, None
+            surface = self._win.get_surface()
+            if surface is not None:
+                surface.set_input_region(None)
+
+    def _follow(self, _clock: Gdk.FrameClock) -> None:
+        ok, rect = self._frame.compute_bounds(self._win)
+        surface = self._win.get_surface()
+        if not ok or surface is None:
+            return
+        x, y = math.floor(rect.get_x()), math.floor(rect.get_y())
+        box = (
+            x,
+            y,
+            math.ceil(rect.get_x() + rect.get_width()) - x,
+            math.ceil(rect.get_y() + rect.get_height()) - y,
+        )
+        if box != self._box:
+            self._box = box
+            surface.set_input_region(cairo.Region(cairo.RectangleInt(*box)))
+
+
 class WidgetPopup(Gtk.Application):
     """Base GTK4 popup with layer-shell overlay, backdrop dismiss, and Esc/q close."""
 
@@ -272,7 +350,33 @@ class WidgetPopup(Gtk.Application):
         if self._unshown is not None:
             win, overlay, container = self._unshown
             self._unshown = None
-            show_popup(win, overlay, container, self.MARGIN_TOP)
+            pin = Gtk.ToggleButton(
+                label=PIN_GLYPH,
+                halign=Gtk.Align.END,
+                focus_on_click=False,
+                tooltip_text="Pin: stay open while you use other windows",
+            )
+            pin.add_css_class("popup-pin")
+            frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            frame.append(pin)
+            frame.append(container)
+            margin_top = max(self.MARGIN_TOP - PIN_ROW, 0)
+
+            pinning = _Pin(win, frame)
+
+            def on_pin(button: Gtk.ToggleButton) -> None:
+                pinned = button.get_active()
+                button.set_label(PINNED_GLYPH if pinned else PIN_GLYPH)
+                pinning.set(pinned=pinned)
+
+            _ = pin.connect("toggled", on_pin)
+            container.add_css_class("popup")
+            frame.set_halign(Gtk.Align.CENTER)
+            frame.set_valign(Gtk.Align.START)
+            frame.set_margin_top(margin_top)
+            overlay.add_overlay(frame)
+            win.set_child(overlay)
+            win.present()
         return GLib.SOURCE_REMOVE
 
     def build_ui(self) -> Gtk.Widget:

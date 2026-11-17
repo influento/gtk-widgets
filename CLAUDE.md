@@ -58,7 +58,9 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
   `show_ui()` once it is in (the base shows it anyway after 1 s), so the popup opens at its
   final size instead of growing on screen (`network`)
 - `widget-toggle <name>` handles launch/dismiss via `flock` (prevents duplicates)
-- Close via Escape/q key or clicking outside the widget
+- Close via Escape/q key or clicking outside the widget. The pin above a popup's top-right
+  corner (base class, every `WidgetPopup`) keeps it open instead: the full-screen window takes clicks only on
+  the popup (input region), and other windows take clicks and keys until it is unpinned
 - Shared components live in `lib/ui/` beside the base class: `CopyLabel` (`lib/ui/copy_label.py`)
   is a label that copies its text (or a longer copy text) to the clipboard on click;
   `copyable(label, on=...)` gives a plain label the same click-to-copy. Every error line
