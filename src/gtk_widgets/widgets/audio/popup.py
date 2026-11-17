@@ -58,6 +58,9 @@ from gtk_widgets.widgets.audio.recorder import Recorder, RecordState
 from gtk_widgets.widgets.audio.voice import (
     FILTER_NAMES,
     PLUGINS,
+    SOURCE_NAME,
+    UNIT,
+    ApplyMode,
     Control,
     VoiceError,
     value,
@@ -75,6 +78,12 @@ EVENT_ROLE = "sink-input-by-media-role:event"
 METER_DECAY = 0.5  # meter fall per second, in bar lengths
 RECORD_TICK_MS = 250
 VOICE_DEBOUNCE_MS = 400  # quick flips restart the echo canceller once
+VOICE_TICK_MS = 100  # status bar pulse and stage clock
+VOICE_START_TIMEOUT_MS = 5000  # restarted unit without its source by then: failed
+# a restarted echo canceller had adapted after ~4 s of music (measured); it adapts
+# only while the speakers play, so the stage counts speaker sound, not time
+VOICE_ADAPT_MS = 4000
+SPEAKER_SOUND = 10 ** (-50 / 20)  # a speaker peak above -50 dBFS counts as sound
 # (Voice field, label, tooltip): the WebRTC switches that change the sound
 VOICE_OPTIONS = [
     ("gain_control", "Automatic gain", "Evens out how loud your voice is"),
@@ -93,6 +102,11 @@ type Info = (
     | PulseCardInfo
 )
 type MeterKey = tuple[Facility, int]
+# the default output's monitor while the echo canceller adapts; no row has this index
+SPEAKER_METER: MeterKey = ("sink", PA_INVALID)
+# busy: an apply runs; starting: the restarted unit's source is not up yet;
+# adapting: up, counting speaker sound
+type VoiceStage = Literal["idle", "busy", "starting", "adapting"]
 
 EVENT_FACILITIES: tuple[Facility | Literal["server"], ...] = (
     "card",
@@ -837,19 +851,22 @@ class DeviceRow(Gtk.Box):
 
 
 class VoiceSection(Gtk.Box):
-    """Input Devices tab: the echo-cancelled mic (voice.py) and its switches."""
+    """Input Devices tab: the processed mic (voice.py), its settings while on,
+    and how far a change has got."""
 
     def __init__(self, app: AudioPopup, voice: Voice) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.add_css_class("au-row")
         self._app, self._voice = app, voice
+        self._status_timer = 0
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        title = title_label("Echo cancellation")
+        title = title_label("Voice processing")
         title.set_tooltip_text(
-            "Adds an echo-cancelled copy of your default mic and makes it the "
-            "default, so people on a call don't hear themselves from your "
-            "speakers. While on, starring another mic cleans that one instead"
+            "Adds a processed copy of your default mic and makes it the default: "
+            "echo cancellation, so people on a call don't hear themselves from "
+            "your speakers, then the settings below. While on, starring another "
+            "mic processes that one instead"
         )
         header.append(title)
         self._on = self._switch(header, "on")
@@ -858,6 +875,15 @@ class VoiceSection(Gtk.Box):
         self._mic = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self._mic.add_css_class("au-row-subtitle")
         self.append(self._mic)
+
+        self._status_label = Gtk.Label(xalign=0)
+        self._progress = Gtk.ProgressBar(hexpand=True, valign=Gtk.Align.CENTER)
+        self._status = self._status_row()
+        self.append(self._status)
+
+        # the settings, shown while on
+        self._settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.append(self._settings)
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         label = Gtk.Label(label="Noise filter", xalign=0, hexpand=True)
@@ -869,7 +895,7 @@ class VoiceSection(Gtk.Box):
         row.append(label)
         self._filter = Choice[NoiseFilter](self._on_filter)
         row.append(self._filter)
-        self.append(row)
+        self._settings.append(row)
 
         # each plugin's controls, shown while it is the filter
         self._plugin_boxes: dict[NoiseFilter, Gtk.Box] = {}
@@ -879,7 +905,7 @@ class VoiceSection(Gtk.Box):
             for control in plugin.controls:
                 box.append(self._control_row(control))
             self._plugin_boxes[key] = box
-            self.append(box)
+            self._settings.append(box)
 
         self._options: dict[str, Gtk.Switch] = {}
         for key, text, tip in VOICE_OPTIONS:
@@ -888,13 +914,23 @@ class VoiceSection(Gtk.Box):
             label.add_css_class("au-field-label")
             row.append(label)
             self._options[key] = self._switch(row, key)
-            self.append(row)
+            self._settings.append(row)
 
         self._error = copyable(Gtk.Label(wrap=True, xalign=0))
         self._error.add_css_class("au-bug")
         self._error.set_visible(False)
         self.append(self._error)
         self.show_voice(voice)
+
+    def _status_row(self) -> Gtk.Box:
+        row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._status_label.add_css_class("au-field-label")
+        row.append(self._status_label)
+        self._progress.add_css_class("au-voice-progress")
+        self._progress.set_pulse_step(0.15)
+        row.append(self._progress)
+        row.set_visible(False)
+        return row
 
     def _control_row(self, control: Control) -> Gtk.Box:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -936,6 +972,7 @@ class VoiceSection(Gtk.Box):
                 _ = switch.handler_block_by_func(self._on_switch)
                 switch.set_active(active)
                 _ = switch.handler_unblock_by_func(self._on_switch)
+        self._settings.set_visible(voice.on)
         self._filter.set_items(self._filter_items(), voice.noise_filter)
         for key, box in self._plugin_boxes.items():
             box.set_visible(key == voice.noise_filter)
@@ -956,12 +993,37 @@ class VoiceSection(Gtk.Box):
             items.append((key, name, not missing))
         return items
 
+    def show_stage(self, text: str, fraction: float | None) -> None:
+        """fraction None: a stage of unknown length, the bar pulses."""
+        self._stop_pulse()
+        self._status_label.set_text(text)
+        if fraction is None:
+            self._progress.pulse()
+            self._status_timer = GLib.timeout_add(VOICE_TICK_MS, self._pulse)
+        else:
+            self._progress.set_fraction(fraction)
+        self._status.set_visible(True)
+
+    def hide_status(self) -> None:
+        self._stop_pulse()
+        self._status.set_visible(False)
+
+    def _stop_pulse(self) -> None:
+        if self._status_timer:
+            GLib.source_remove(self._status_timer)
+            self._status_timer = 0
+
+    def _pulse(self) -> bool:
+        self._progress.pulse()
+        return GLib.SOURCE_CONTINUE
+
     def show_mic(self, mic: str | None) -> None:
         """mic: the description of the mic it cleans, or would clean once on."""
         if mic is None:
-            self._mic.set_text("No mic to clean")
+            self._mic.set_text("No mic to process")
         else:
-            self._mic.set_text(f"{'Cleans' if self._voice.on else 'Will clean'}: {mic}")
+            verb = "Processes" if self._voice.on else "Will process"
+            self._mic.set_text(f"{verb}: {mic}")
 
     def show_error(self, error: VoiceError | None) -> None:
         self._error.set_text(str(error) if error else "")
@@ -1283,6 +1345,12 @@ class AudioPopup(WidgetPopup):
         )  # on in the last apply: off then stops the unit
         self._voice_timer = 0
         self._voice_pending = self._voice_busy = False
+        # what the running unit was last started or set with; None: unknown or off
+        self._voice_applied: Voice | None = self._voice if self._voice.on else None
+        self._voice_stage: VoiceStage = "idle"
+        self._voice_stage_timer = self._voice_stage_ms = 0
+        self._voice_source_before = PA_INVALID  # its source's index before a restart
+        self._speaker_peak = 0.0  # since the last stage tick
 
     # --- UI ---
 
@@ -1697,6 +1765,7 @@ class AudioPopup(WidgetPopup):
             (i.description for i in self._sources.values() if i.name == mic), mic
         )
         self._voice_section.show_mic(desc)
+        self._voice_check_started()
 
     def _refresh_device_context(self, kind: DeviceKind) -> None:
         default = self._defaults[kind]
@@ -1714,6 +1783,17 @@ class AudioPopup(WidgetPopup):
             self._meter_sync_id = GLib.idle_add(self._sync_meters)
 
     def _wanted_meters(self) -> dict[MeterKey, MeterSpec]:
+        targets = self._row_meters()
+        if self._meters is not None and self._voice_stage == "adapting":
+            sink = next(
+                (i for i in self._sinks.values() if i.name == self._defaults["sink"]),
+                None,
+            )
+            if sink is not None and sink.state != "suspended":
+                targets[SPEAKER_METER] = (sink.monitor_source, None, True)
+        return targets
+
+    def _row_meters(self) -> dict[MeterKey, MeterSpec]:
         """Streams for the rows shown on the visible tab: {(facility, index): spec}.
 
         Like pavucontrol, monitors (outputs, playback, monitor sources) are
@@ -1799,6 +1879,7 @@ class AudioPopup(WidgetPopup):
         dt = now - self._frame_time if self._frame_time else 0.0
         self._frame_time = now
         peaks = self._meters.take_peaks() if self._meters is not None else {}
+        self._speaker_peak = max(self._speaker_peak, peaks.get(SPEAKER_METER, 0.0))
         active = False
         for key in self._meter_targets:
             volume = self._volume_of(key)
@@ -1862,9 +1943,10 @@ class AudioPopup(WidgetPopup):
             voice = replace(voice, mic=self._default_mic())
         if voice.on and voice.mic is None:
             voice = replace(voice, on=False)
-            self._voice_section.show_error(VoiceError("No mic to clean"))
+            self._voice_section.show_error(VoiceError("No mic to process"))
         self._voice = voice
         self._voice_section.show_voice(voice)
+        self._voice_show_busy(self._voice_mode(voice))
         self._refresh_voice()
         if self._voice_timer:
             GLib.source_remove(self._voice_timer)
@@ -1876,40 +1958,68 @@ class AudioPopup(WidgetPopup):
         self._voice_kick()
         return GLib.SOURCE_REMOVE
 
-    def _voice_args(self) -> tuple[Voice, str, bool, bool]:
-        """The newest settings, the mic's description, whether the unit changes,
-        and whether it was turned on or off."""
+    def _voice_mode(self, voice: Voice) -> ApplyMode:
+        if not (voice.on or self._voice_live):
+            return "save"
+        applied = self._voice_applied
+        if (
+            voice.on
+            and self._voice_live
+            and applied is not None
+            and voice.noise_filter != "off"
+            and replace(applied, controls=voice.controls) == voice
+        ):
+            return "live"  # only filter values changed
+        return "restart"
+
+    def _voice_args(self) -> tuple[Voice, str, ApplyMode, bool]:
+        """The newest settings, the mic's description, how to apply them, and
+        whether it was turned on or off."""
         voice = self._voice
-        restart = voice.on or self._voice_live
+        mode = self._voice_mode(voice)
         switched = voice.on != self._voice_live
         self._voice_live = voice.on
         desc = next(
             (i.description for i in self._sources.values() if i.name == voice.mic),
             voice.mic or "",
         )
-        return voice, desc, restart, switched
+        return voice, desc, mode, switched
 
     def _voice_kick(self) -> None:
         """One apply at a time; the newest settings win."""
         if self._voice_busy or not self._voice_pending:
             return
         self._voice_busy, self._voice_pending = True, False
-        voice, desc, restart, switched = self._voice_args()
+        voice, desc, mode, switched = self._voice_args()
+        self._voice_source_before = self._voice_source()
         in_background(
-            partial(self._voice_work, voice, desc, restart=restart, switched=switched),
+            partial(self._voice_work, voice, desc, mode=mode, switched=switched),
             self._show_bug,
         )
 
     def _voice_work(
-        self, voice: Voice, desc: str, *, restart: bool, switched: bool
+        self, voice: Voice, desc: str, *, mode: ApplyMode, switched: bool
     ) -> None:
-        error = apply_voice(voice, desc, restart=restart, switched=switched)
-        GLib.idle_add(self._voice_done, error)
+        result = apply_voice(voice, desc, mode=mode, switched=switched)
+        GLib.idle_add(self._voice_done, voice, result)
 
-    def _voice_done(self, error: VoiceError | None) -> bool:
+    def _voice_done(self, voice: Voice, result: ApplyMode | VoiceError) -> bool:
         self._voice_busy = False
-        self._voice_section.show_error(error)
+        match result:
+            case VoiceError() as error:
+                self._voice_applied = None
+                self._voice_section.show_error(error)
+            case _:
+                self._voice_applied = voice if voice.on else None
+                self._voice_section.show_error(None)
         self._voice_kick()
+        if self._voice_busy or self._voice_pending or self._voice_timer:
+            return GLib.SOURCE_REMOVE  # a newer change is on its way
+        if result == "restart" and voice.on:
+            self._voice_set_stage("starting")
+            self._voice_check_started()
+        else:
+            self._voice_set_stage("idle")
         return GLib.SOURCE_REMOVE
 
     def _flush_voice(self) -> None:
@@ -1919,8 +2029,88 @@ class AudioPopup(WidgetPopup):
             self._voice_timer = 0
             self._voice_pending = True
         if self._voice_pending:
-            voice, desc, restart, switched = self._voice_args()
-            _ = apply_voice(voice, desc, restart=restart, switched=switched)
+            voice, desc, mode, switched = self._voice_args()
+            _ = apply_voice(voice, desc, mode=mode, switched=switched)
+
+    # --- voice processing stages (the status bar) ---
+
+    def _voice_source(self) -> int:
+        return next(
+            (i for i, info in self._sources.items() if info.name == SOURCE_NAME),
+            PA_INVALID,
+        )
+
+    def _voice_show_busy(self, mode: ApplyMode) -> None:
+        if mode == "save":
+            return
+        self._voice_set_stage("busy")
+        if mode == "live":
+            text = "Applying"
+        elif self._voice.on:
+            text = "1/3 Restarting"
+        else:
+            text = "Turning off"
+        self._voice_section.show_stage(text, None)
+
+    def _voice_set_stage(self, stage: VoiceStage) -> None:
+        if self._voice_stage_timer:
+            GLib.source_remove(self._voice_stage_timer)
+            self._voice_stage_timer = 0
+        was_adapting = self._voice_stage == "adapting"
+        self._voice_stage, self._voice_stage_ms = stage, 0
+        self._speaker_peak = 0.0
+        if stage == "idle":
+            self._voice_section.hide_status()
+        elif stage == "starting":
+            self._voice_section.show_stage("2/3 Starting", None)
+        elif stage == "adapting":
+            self._voice_show_adapting(heard=False)
+        if stage in ("starting", "adapting"):
+            self._voice_stage_timer = GLib.timeout_add(
+                VOICE_TICK_MS, self._voice_stage_tick
+            )
+        if was_adapting or stage == "adapting":
+            self._queue_meters()  # the speaker meter runs only while adapting
+
+    def _voice_check_started(self) -> None:
+        """Starting ends when the unit's source is there anew."""
+        if self._voice_stage != "starting":
+            return
+        index = self._voice_source()
+        if index not in (PA_INVALID, self._voice_source_before):
+            self._voice_set_stage("adapting")
+
+    def _voice_show_adapting(self, *, heard: bool) -> None:
+        text = (
+            "3/3 Echo cancel adapting to speaker sound"
+            if heard
+            else "3/3 Echo cancel waiting for speaker sound"
+        )
+        self._voice_section.show_stage(text, self._voice_stage_ms / VOICE_ADAPT_MS)
+
+    def _voice_stage_tick(self) -> bool:
+        if self._voice_stage == "starting":
+            self._voice_stage_ms += VOICE_TICK_MS
+            if self._voice_stage_ms < VOICE_START_TIMEOUT_MS:
+                return GLib.SOURCE_CONTINUE
+            self._voice_stage_timer = 0
+            self._voice_set_stage("idle")
+            self._voice_section.show_error(
+                VoiceError(
+                    f"The processed mic did not appear: journalctl --user -u {UNIT}"
+                )
+            )
+            return GLib.SOURCE_REMOVE
+        heard = self._speaker_peak >= SPEAKER_SOUND
+        self._speaker_peak = 0.0
+        if heard:
+            self._voice_stage_ms += VOICE_TICK_MS
+        if self._voice_stage_ms >= VOICE_ADAPT_MS:
+            self._voice_stage_timer = 0
+            self._voice_set_stage("idle")
+            return GLib.SOURCE_REMOVE
+        self._voice_show_adapting(heard=heard)
+        return GLib.SOURCE_CONTINUE
 
     # --- writes (command connection, main thread) ---
 

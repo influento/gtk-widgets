@@ -16,6 +16,7 @@ import os
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 
 from gtk_widgets.lib.parse import ParseError
 from gtk_widgets.widgets.audio.parse import NoiseFilter, Voice, parse_voice
@@ -26,6 +27,7 @@ CONF_FILE = CONFIG_HOME / "gtk-widgets" / "echo-cancel.conf"
 UNIT = "gtk-widgets-echo-cancel.service"
 UNIT_FILE = CONFIG_HOME / "systemd" / "user" / UNIT
 SOURCE_NAME = "gtk_widgets_echo_cancel"  # node name of the echo-cancelled mic
+FILTER_NODE = f"{SOURCE_NAME}.filter"  # the filter-chain node that takes control values
 PIPEWIRE = "/usr/bin/pipewire"
 SYSTEMCTL_TIMEOUT_S = 15
 LADSPA_DIR = Path("/usr/lib/ladspa")
@@ -274,7 +276,7 @@ def _filter_chain(plugin: Plugin, voice: Voice, description: str) -> str:
         audio.channels = 1
         audio.position = [ MONO ]
         capture.props = {{
-          node.name = "{SOURCE_NAME}.filter"
+          node.name = "{FILTER_NODE}"
           target.object = "{SOURCE_NAME}.unfiltered"
           node.passive = true
           node.dont-fallback = true
@@ -382,15 +384,51 @@ def _default_source(name: str) -> VoiceError | None:
     )
 
 
+# save: the settings file only. live: also the conf, and the filter's control
+# values sent to the running filter (no restart). restart: (re)start the unit
+# with the settings, or stop it when off.
+type ApplyMode = Literal["save", "live", "restart"]
+
+
+def _set_live(voice: Voice) -> VoiceError | None:
+    plugin = PLUGINS.get(voice.noise_filter)
+    if plugin is None:
+        return VoiceError("no filter to set")
+    params = " ".join(
+        f"{_quote(f'filter:{c.port}')} {value(voice, c):g}" for c in plugin.controls
+    )
+    argv = ["pw-cli", "set-param", FILTER_NODE, "Props", f"{{ params = [ {params} ] }}"]
+    try:
+        done = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=SYSTEMCTL_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return VoiceError(f"pw-cli: {e}")
+    # pw-cli exits 0 on a failed command and prints the error
+    output = (done.stdout + done.stderr).strip()
+    if done.returncode or "Error" in output:
+        return VoiceError(output or f"pw-cli: exit {done.returncode}")
+    return None
+
+
 def apply(
-    voice: Voice, description: str, *, restart: bool, switched: bool
-) -> VoiceError | None:
-    """Save the settings; with restart, (re)start the unit with them or stop it.
-    switched: turned on or off, so the default source follows."""
+    voice: Voice, description: str, *, mode: ApplyMode, switched: bool
+) -> ApplyMode | VoiceError:
+    """Apply the settings in mode; a live change the filter refuses restarts the
+    unit instead. switched: turned on or off, so the default source follows.
+    Returns the mode it took."""
     try:
         _ = _write(SETTINGS_FILE, json.dumps(asdict(voice), indent=2) + "\n")
-        if not restart:
-            return None
+        if mode == "save":
+            return mode
+        if mode == "live" and voice.mic is not None:
+            _ = _write(CONF_FILE, conf_text(voice, voice.mic, description))
+            if _set_live(voice) is None:
+                return mode
         plugin = PLUGINS.get(voice.noise_filter)
         if voice.on and plugin and not plugin.file.exists():
             return VoiceError(
@@ -406,7 +444,7 @@ def apply(
     if not (voice.on and voice.mic is not None):
         if switched and voice.mic is not None and (err := _default_source(voice.mic)):
             return err
-        return _systemctl("disable", "--now", UNIT)
+        return _systemctl("disable", "--now", UNIT) or "restart"
     if switched and (err := _default_source(SOURCE_NAME)):
         return err
-    return _systemctl("enable", UNIT) or _systemctl("restart", UNIT)
+    return _systemctl("enable", UNIT) or _systemctl("restart", UNIT) or "restart"

@@ -364,3 +364,17 @@ switch.au-switch:checked > slider {
 switch.au-switch image {
   color: transparent;
 }
+
+progressbar.au-voice-progress trough {
+  background-color: @@SURFACE1@@;
+  border: none;
+  border-radius: 3px;
+  min-height: 4px;
+}
+
+progressbar.au-voice-progress progress {
+  background-color: @@BLUE@@;
+  border: none;
+  border-radius: 3px;
+  min-height: 4px;
+}
