@@ -16,7 +16,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Literal, override
@@ -46,9 +46,24 @@ from gtk_widgets.widgets.audio.meters import (
     Meters,
     MeterSpec,
 )
-from gtk_widgets.widgets.audio.parse import State, parse_state
+from gtk_widgets.widgets.audio.parse import (
+    NOISE_FILTERS,
+    NoiseFilter,
+    State,
+    Voice,
+    parse_state,
+)
 from gtk_widgets.widgets.audio.parts import APP_ID, ICON, error_box, popup_frame
 from gtk_widgets.widgets.audio.recorder import Recorder, RecordState
+from gtk_widgets.widgets.audio.voice import (
+    FILTER_NAMES,
+    PLUGINS,
+    Control,
+    VoiceError,
+    value,
+)
+from gtk_widgets.widgets.audio.voice import apply as apply_voice
+from gtk_widgets.widgets.audio.voice import load as load_voice
 
 PA_INVALID = 2**32 - 1
 VOLUME_UI_MAX = 153  # PA_VOLUME_UI_MAX (+11 dB) in percent
@@ -59,6 +74,12 @@ LATENCY_RANGE_MS = 2000
 EVENT_ROLE = "sink-input-by-media-role:event"
 METER_DECAY = 0.5  # meter fall per second, in bar lengths
 RECORD_TICK_MS = 250
+VOICE_DEBOUNCE_MS = 400  # quick flips restart the echo canceller once
+# (Voice field, label, tooltip): the WebRTC switches that change the sound
+VOICE_OPTIONS = [
+    ("gain_control", "Automatic gain", "Evens out how loud your voice is"),
+    ("high_pass_filter", "Low-cut filter", "Cuts rumble: desk thumps, traffic"),
+]
 
 type DeviceKind = Literal["sink", "source"]
 type StreamKind = Literal["sink_input", "source_output"]
@@ -630,6 +651,12 @@ class VolumeControl(Gtk.Box):
         btn.set_label(ICON["lock"] if btn.get_active() else ICON["unlock"])
 
 
+def is_hardware_mic(info: PulseSourceInfo) -> bool:
+    # pipewire-pulse sets PA_SINK_HARDWARE on every node, null sinks
+    # included; a device API (alsa, bluez5, ...) marks real hardware.
+    return "device.api" in info.proplist and info.monitor_of_sink == PA_INVALID
+
+
 def title_label(text: str, css_class: str = "au-row-title") -> Gtk.Label:
     label = Gtk.Label(label=text, xalign=0, hexpand=True)
     label.set_ellipsize(Pango.EllipsizeMode.END)
@@ -807,6 +834,152 @@ class DeviceRow(Gtk.Box):
             "no-monitors": not monitor,
             "monitors": monitor,
         }[flt]
+
+
+class VoiceSection(Gtk.Box):
+    """Input Devices tab: the echo-cancelled mic (voice.py) and its switches."""
+
+    def __init__(self, app: AudioPopup, voice: Voice) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.add_css_class("au-row")
+        self._app, self._voice = app, voice
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title = title_label("Echo cancellation")
+        title.set_tooltip_text(
+            "Adds an echo-cancelled copy of your default mic and makes it the "
+            "default, so people on a call don't hear themselves from your "
+            "speakers. While on, starring another mic cleans that one instead"
+        )
+        header.append(title)
+        self._on = self._switch(header, "on")
+        self.append(header)
+
+        self._mic = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self._mic.add_css_class("au-row-subtitle")
+        self.append(self._mic)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label = Gtk.Label(label="Noise filter", xalign=0, hexpand=True)
+        label.set_tooltip_text(
+            "Neural filters that keep your voice and remove the rest, keyboard "
+            "and mouse clicks too"
+        )
+        label.add_css_class("au-field-label")
+        row.append(label)
+        self._filter = Choice[NoiseFilter](self._on_filter)
+        row.append(self._filter)
+        self.append(row)
+
+        # each plugin's controls, shown while it is the filter
+        self._plugin_boxes: dict[NoiseFilter, Gtk.Box] = {}
+        self._scales: dict[str, tuple[Control, Gtk.Scale, Gtk.Label]] = {}
+        for key, plugin in PLUGINS.items():
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            for control in plugin.controls:
+                box.append(self._control_row(control))
+            self._plugin_boxes[key] = box
+            self.append(box)
+
+        self._options: dict[str, Gtk.Switch] = {}
+        for key, text, tip in VOICE_OPTIONS:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            label = Gtk.Label(label=text, xalign=0, hexpand=True, tooltip_text=tip)
+            label.add_css_class("au-field-label")
+            row.append(label)
+            self._options[key] = self._switch(row, key)
+            self.append(row)
+
+        self._error = copyable(Gtk.Label(wrap=True, xalign=0))
+        self._error.add_css_class("au-bug")
+        self._error.set_visible(False)
+        self.append(self._error)
+        self.show_voice(voice)
+
+    def _control_row(self, control: Control) -> Gtk.Box:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label = Gtk.Label(
+            label=control.label, xalign=0, hexpand=True, tooltip_text=control.tip
+        )
+        label.add_css_class("au-field-label")
+        row.append(label)
+        scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, control.low, control.high, control.step
+        )
+        scale.set_draw_value(False)
+        scale.set_size_request(160, -1)
+        pass_wheel(scale)
+        _ = scale.connect("value-changed", self._on_scale, control)
+        row.append(scale)
+        shown = Gtk.Label(xalign=1, width_chars=7)
+        shown.add_css_class("au-pct")
+        row.append(shown)
+        self._scales[control.key] = (control, scale, shown)
+        return row
+
+    @staticmethod
+    def _text(control: Control, number: float) -> str:
+        return f"{round(number, 3):g} {control.unit}".strip()
+
+    def _switch(self, row: Gtk.Box, key: str) -> Gtk.Switch:
+        switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        switch.add_css_class("au-switch")
+        _ = switch.connect("notify::active", self._on_switch, key)
+        row.append(switch)
+        return switch
+
+    def show_voice(self, voice: Voice) -> None:
+        self._voice = voice
+        for key, switch in [("on", self._on), *self._options.items()]:
+            active = bool(getattr(voice, key))
+            if switch.get_active() != active:
+                _ = switch.handler_block_by_func(self._on_switch)
+                switch.set_active(active)
+                _ = switch.handler_unblock_by_func(self._on_switch)
+        self._filter.set_items(self._filter_items(), voice.noise_filter)
+        for key, box in self._plugin_boxes.items():
+            box.set_visible(key == voice.noise_filter)
+        for control, scale, shown in self._scales.values():
+            number = value(voice, control)
+            shown.set_text(self._text(control, number))
+            if scale.get_value() != number:
+                _ = scale.handler_block_by_func(self._on_scale)
+                scale.set_value(number)
+                _ = scale.handler_unblock_by_func(self._on_scale)
+
+    def _filter_items(self) -> list[tuple[NoiseFilter, str, bool]]:
+        items: list[tuple[NoiseFilter, str, bool]] = []
+        for key in NOISE_FILTERS:
+            plugin = PLUGINS.get(key)
+            missing = plugin is not None and not plugin.file.exists()
+            name = FILTER_NAMES[key] + (" (not installed)" if missing else "")
+            items.append((key, name, not missing))
+        return items
+
+    def show_mic(self, mic: str | None) -> None:
+        """mic: the description of the mic it cleans, or would clean once on."""
+        if mic is None:
+            self._mic.set_text("No mic to clean")
+        else:
+            self._mic.set_text(f"{'Cleans' if self._voice.on else 'Will clean'}: {mic}")
+
+    def show_error(self, error: VoiceError | None) -> None:
+        self._error.set_text(str(error) if error else "")
+        self._error.set_visible(error is not None)
+
+    def _on_switch(
+        self, switch: Gtk.Switch, _pspec: GObject.ParamSpec, key: str
+    ) -> None:
+        self._app.set_voice(replace(self._voice, **{key: switch.get_active()}))
+
+    def _on_filter(self, noise_filter: NoiseFilter) -> None:
+        self._app.set_voice(replace(self._voice, noise_filter=noise_filter))
+
+    def _on_scale(self, scale: Gtk.Scale, control: Control) -> None:
+        number = round(scale.get_value() / control.step) * control.step
+        self._scales[control.key][2].set_text(self._text(control, number))
+        controls = {**self._voice.controls, control.key: number}
+        self._app.set_voice(replace(self._voice, controls=controls))
 
 
 class StreamRow(Gtk.Box):
@@ -1104,6 +1277,12 @@ class AudioPopup(WidgetPopup):
         self._frame_time = 0.0
         self._recorder = Recorder(self._on_record_change, self._show_bug)
         self._record_tick_id = 0
+        self._voice = load_voice()
+        self._voice_live = (
+            self._voice.on
+        )  # on in the last apply: off then stops the unit
+        self._voice_timer = 0
+        self._voice_pending = self._voice_busy = False
 
     # --- UI ---
 
@@ -1146,6 +1325,9 @@ class AudioPopup(WidgetPopup):
         self._offline.set_visible(False)
         self._container.append(self._offline)
         self._container.append(self._stack)
+
+        self._voice_section = VoiceSection(self, self._voice)
+        self._tabs["inputs"].page.prepend(self._voice_section)
 
         self._event_row = EventSoundsRow(self)
         self._event_row.set_visible(False)
@@ -1495,6 +1677,8 @@ class AudioPopup(WidgetPopup):
         if facility in ("sink", "source"):
             kind: DeviceKind = "sink" if facility == "sink" else "source"
             self._refresh_device_context(kind)
+            if kind == "source":
+                self._refresh_voice()
             streams: StreamKind = "sink_input" if kind == "sink" else "source_output"
             devices = self._devices(kind)
             for row in self._rows(streams).values():
@@ -1506,6 +1690,13 @@ class AudioPopup(WidgetPopup):
             self._refresh_device_context("sink")
             self._refresh_device_context("source")
         self._tab_for(facility).refilter()
+
+    def _refresh_voice(self) -> None:
+        mic = self._voice.mic if self._voice.on else self._default_mic()
+        desc = next(
+            (i.description for i in self._sources.values() if i.name == mic), mic
+        )
+        self._voice_section.show_mic(desc)
 
     def _refresh_device_context(self, kind: DeviceKind) -> None:
         default = self._defaults[kind]
@@ -1655,6 +1846,82 @@ class AudioPopup(WidgetPopup):
             )
         return GLib.SOURCE_CONTINUE
 
+    # --- voice processing ---
+
+    def _default_mic(self) -> str | None:
+        """The default source when it is a hardware mic, else the mic it cleaned
+        last, else the first one."""
+        mics = [i.name for _, i in sorted(self._sources.items()) if is_hardware_mic(i)]
+        for name in (self._defaults["source"], self._voice.mic):
+            if name in mics:
+                return name
+        return mics[0] if mics else None
+
+    def set_voice(self, voice: Voice) -> None:
+        if voice.on and not self._voice.on:
+            voice = replace(voice, mic=self._default_mic())
+        if voice.on and voice.mic is None:
+            voice = replace(voice, on=False)
+            self._voice_section.show_error(VoiceError("No mic to clean"))
+        self._voice = voice
+        self._voice_section.show_voice(voice)
+        self._refresh_voice()
+        if self._voice_timer:
+            GLib.source_remove(self._voice_timer)
+        self._voice_timer = GLib.timeout_add(VOICE_DEBOUNCE_MS, self._voice_due)
+
+    def _voice_due(self) -> bool:
+        self._voice_timer = 0
+        self._voice_pending = True
+        self._voice_kick()
+        return GLib.SOURCE_REMOVE
+
+    def _voice_args(self) -> tuple[Voice, str, bool, bool]:
+        """The newest settings, the mic's description, whether the unit changes,
+        and whether it was turned on or off."""
+        voice = self._voice
+        restart = voice.on or self._voice_live
+        switched = voice.on != self._voice_live
+        self._voice_live = voice.on
+        desc = next(
+            (i.description for i in self._sources.values() if i.name == voice.mic),
+            voice.mic or "",
+        )
+        return voice, desc, restart, switched
+
+    def _voice_kick(self) -> None:
+        """One apply at a time; the newest settings win."""
+        if self._voice_busy or not self._voice_pending:
+            return
+        self._voice_busy, self._voice_pending = True, False
+        voice, desc, restart, switched = self._voice_args()
+        in_background(
+            partial(self._voice_work, voice, desc, restart=restart, switched=switched),
+            self._show_bug,
+        )
+
+    def _voice_work(
+        self, voice: Voice, desc: str, *, restart: bool, switched: bool
+    ) -> None:
+        error = apply_voice(voice, desc, restart=restart, switched=switched)
+        GLib.idle_add(self._voice_done, error)
+
+    def _voice_done(self, error: VoiceError | None) -> bool:
+        self._voice_busy = False
+        self._voice_section.show_error(error)
+        self._voice_kick()
+        return GLib.SOURCE_REMOVE
+
+    def _flush_voice(self) -> None:
+        """On close: a change still in its debounce is applied now."""
+        if self._voice_timer:
+            GLib.source_remove(self._voice_timer)
+            self._voice_timer = 0
+            self._voice_pending = True
+        if self._voice_pending:
+            voice, desc, restart, switched = self._voice_args()
+            _ = apply_voice(voice, desc, restart=restart, switched=switched)
+
     # --- writes (command connection, main thread) ---
 
     def _act(
@@ -1687,6 +1954,17 @@ class AudioPopup(WidgetPopup):
         self._act(lambda p: MUTE[facility](p, index, mute))
 
     def set_default_device(self, kind: DeviceKind, name: str) -> None:
+        if (
+            kind == "source"
+            and self._voice.on
+            and any(
+                i.name == name and is_hardware_mic(i) for i in self._sources.values()
+            )
+        ):
+            # the echo-cancelled copy stays the default and cleans the starred mic
+            if name != self._voice.mic:
+                self.set_voice(replace(self._voice, mic=name))
+            return
         self._act(lambda p: DEFAULT_SET[kind](p, name))
 
     def set_port(
@@ -1756,6 +2034,7 @@ class AudioPopup(WidgetPopup):
         if self._meters:
             self._meters.stop()
         self._recorder.cancel()
+        self._flush_voice()
         if self._cmd:
             self._cmd.close()
         Gtk.Application.do_shutdown(self)

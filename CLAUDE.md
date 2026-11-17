@@ -87,7 +87,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `translate`    | ezpick text tool (`dev.dotfiles.ezpick`): translate, fix English, dictionary via `claude` CLI |
 | `usb`          | USB device manager: list, mount/unmount (click path to copy), fix partition type for Mac/Windows, format, write ISO with progress (root helper via polkit) |
 | `timer`        | Timer + stopwatch with session-scoped state, alarm on expiry      |
-| `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording |
+| `audio`        | pavucontrol replacement via vendored pulsectl: playback/recording streams, output/input devices, card profiles, peak meters, input test recording, voice processing on the Input tab (an echo-cancelled copy of the default mic becomes the default while on; a star on another mic then cleans that one; noise filter RNNoise / DeepFilterNet with every plugin control, as a LADSPA filter-chain after the echo canceller; WebRTC switches; `voice.py`) |
 | `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab] [--action LABEL] [--delete CMD]` (stdin lines, prints the pick byte-exact, Esc = exit 1; `--action` adds a LABEL button that exits 10: the clipboard picker's Clear; `--delete` gives rows a cross, and Ctrl+d deletes the selected one: the row goes in place and the CLI runs CMD with its line on stdin, the instance sending `del <index>` before the pick). A dmenu line may carry options after a NUL, rofi-style (`options.py`: kind, thumbnail, preview files, detail, count, search words): rows with them get a 64x46 thumbnail or a kind icon (56 px rows for images, 34 px for the rest), and Right with the caret at the end of the filter opens a preview pane beside the list, the popup growing to the output less 40 px a side (Left at the caret's start closes it; Ctrl+l/Ctrl+h open/close it wherever the caret is; every show starts compact). The pane shows the image, a playing GIF (ffmpeg at the pane's pixel size, never GdkPixbuf: it would decode every frame), one of several files (Ctrl+Left/Right), a file type's icon or the row's whole text as is (64 KiB at most). `launcher-clipboard` (`clipboard.py`, stdlib) turns `cliphist list` into such rows: image data (named by cliphist, or sniffed: WebP, AVIF, HEIC, JXL) and text (cliphist's list joins its lines and cuts it at 100 characters) decoded once into `~/.cache/launcher/clipboard/<id>.<ext>` (0700, files 0600) and pruned with the history, file links (several in one entry: a recording's sheets), plain paths, missing files, binary, text; `launcher-clipboard --restore ID` (the pick) and `--offer ID` (a fresh copy, from dotfiles' `cliphist-store`) put image data and file links up in several forms at once over data-control (`selection.py`): bytes, file, path, so Telegram/Obsidian paste the picture or animated GIF and a terminal the path. The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
 | `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
 | `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; before a drag the window under the pointer gets the frame (the shade stays until a drag; the frame is pulled inside at the output's edges) and a click (moved < 3 px) takes it (sway GET_TREE read with the frames: content without border/title bar, topmost first) or, over the bar/wallpaper, the whole output (region and gif alike); Z (by keycode, so also in the ru layout) toggles a magnifier while picking (loupe of 13x13 physical px, pixel position and colour; off at start); `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes). `capture gif [--dir DIR] [--copy]`: same picker, then wf-recorder (lossless RGB, 30 fps, 60 s cap) with a click-through indicator outside the region; a second `capture gif` stops it (pid file + SIGUSR1), `--cancel` discards it (SIGUSR2); the indicator goes at once; ffmpeg makes `DIR/recording-STAMP/` = `recording.gif` first (every frame, exact duplicates merged; `--copy` copies it right away), then `sheet.png` (frames showing a new state, no cap, tiled under `N/M · time · before switch` labels, for AI; `sheet-N.png` when they need several) and `frames/`; `--copy` then copies the sheets in one list (on top); a notification when done or failed |
@@ -258,7 +258,8 @@ gtk-widgets/
 │       │   ├── main.py        # Entry: the popup, or a "libpulse not found" popup when libpulse.so.0 won't load
 │       │   ├── popup.py       # pulsectl: event thread + main-thread command connection, rows updated in place
 │       │   ├── parts.py       # App id, glyphs, frame and error box shared by both popups
-│       │   ├── parse.py       # State dataclass (last tab, meters on) + the state file's parser
+│       │   ├── parse.py       # State dataclass (last tab, meters on) + the state file's parser; Voice settings + parser
+│       │   ├── voice.py       # Voice processing: settings file -> echo-cancel pipewire conf + user unit, systemctl (stdlib)
 │       │   ├── meters.py      # Peak meter streams on their own connection + thread (visible tab only)
 │       │   ├── recorder.py    # Input test recording: parec into memory (30 s cap), pacat playback, discard
 │       │   └── style.css
@@ -470,6 +471,23 @@ dropdown override), **Fix English** (corrected text plus a list of changes) and
 - The popup's brightness writes run on a `LatestWriter` thread (newest value wins), never on
   the GTK main thread; a change still in its debounce and the writer's last value are
   flushed on close (Esc, backdrop, or widget-toggle's SIGTERM)
+
+### audio — voice processing notes
+
+- WebRTC in `webrtc-audio-processing-1` takes on/off switches only (no strengths);
+  `webrtc.voice_detection` is left out: it marks speech and changes no sound
+- Measured 2026-11-17 (the user's QuadCast S as placed for calls, speech through the speakers):
+  the raw mic took the speakers at −56..−62 dB, the echo-cancelled one −101..−106 dB after
+  it adapted (~4 s; again after the mic moves or the volume changes). A stream-restored
+  volume (`pw-play` was at 40%) once made a test 24 dB quiet: play test audio with
+  `paplay --volume=65536`
+- Noise filters, measured 2026-11-17 on one typing + speech take (echo-cancelled input,
+  5 ms frames, typing p99): input −56 dB, WebRTC −60, DeepFilterNet at its plugin
+  defaults −66 (silent at our defaults, see `PLUGINS`), RNNoise −88;
+  voice level the same in all. CPU per mono stream: RNNoise ~1% of a core, DeepFilterNet
+  ~10%. The user preferred RNNoise by ear and dropped WebRTC's as useless. A neural
+  filter gates: moments it takes for no speech come out silent, so soft speech or laughs
+  can be cut (its threshold slider)
 
 ### audio — deferred features
 
