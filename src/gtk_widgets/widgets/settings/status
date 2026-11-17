@@ -4,4 +4,4 @@ set -euo pipefail
 # Status output for the settings widget.
 # JSON: { "text": "icon", "tooltip": "...", "class": "..." }
 
-echo '{"text": "󰹑", "tooltip": "Settings"}'
+echo '{"text": "󰒓", "tooltip": "Settings"}'
