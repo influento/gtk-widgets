@@ -37,6 +37,7 @@ from gtk_widgets.lib.pulsectl import (
     PulseSourceOutputInfo,
     PulseVolumeInfo,
 )
+from gtk_widgets.lib.pulsectl import _pulsectl as c
 from gtk_widgets.lib.ui.background import in_background
 from gtk_widgets.lib.ui.copy_label import CopyLabel, copyable
 from gtk_widgets.lib.ui.widget_base import Gdk, Gtk, VScroller, WidgetPopup, pass_wheel
@@ -79,6 +80,8 @@ from gtk_widgets.widgets.audio.voice import apply as apply_voice
 from gtk_widgets.widgets.audio.voice import load as load_voice
 
 PA_INVALID = 2**32 - 1
+# a command on a connection the server dropped raises libpulse's CallError
+PULSE_ERRORS = (pulsectl.PulseError, c.pa.CallError)
 VOLUME_UI_MAX = 153  # PA_VOLUME_UI_MAX (+11 dB) in percent
 SCROLL_STEP = 5  # percent per Page Up/Down on a slider
 DRAG_GRACE = 0.2  # seconds volume events stay ignored after a drag
@@ -1784,7 +1787,7 @@ class AudioPopup(WidgetPopup):
             return None
         try:
             return fn(cmd)
-        except pulsectl.PulseError:
+        except PULSE_ERRORS:
             if not cmd.connected:
                 self._on_disconnected()
             return None
@@ -1892,7 +1895,7 @@ class AudioPopup(WidgetPopup):
             return INFO[facility](cmd, index)
         except pulsectl.PulseIndexError:
             return None
-        except pulsectl.PulseError:
+        except PULSE_ERRORS:
             if not cmd.connected:
                 self._on_disconnected()
             return None
@@ -2327,7 +2330,7 @@ class AudioPopup(WidgetPopup):
         if self._connected and cmd is not None:
             try:
                 call(cmd)
-            except pulsectl.PulseError:
+            except PULSE_ERRORS:
                 if not cmd.connected:
                     self._on_disconnected()
             else:

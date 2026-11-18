@@ -18,8 +18,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
+from gtk_widgets.lib.files import replace_text
 from gtk_widgets.lib.parse import ParseError
 from gtk_widgets.widgets.audio.parse import NoiseFilter, Voice, parse_voice
+from gtk_widgets.widgets.audio.units import COMMAND_TIMEOUT_S, run, systemctl
 
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 SETTINGS_FILE = CONFIG_HOME / "gtk-widgets" / "audio-voice.json"
@@ -29,7 +31,6 @@ UNIT_FILE = CONFIG_HOME / "systemd" / "user" / UNIT
 SOURCE_NAME = "gtk_widgets_echo_cancel"  # node name of the echo-cancelled mic
 FILTER_NODE = f"{SOURCE_NAME}.filter"  # the filter-chain node that takes control values
 PIPEWIRE = "/usr/bin/pipewire"
-SYSTEMCTL_TIMEOUT_S = 15
 LADSPA_DIR = Path("/usr/lib/ladspa")
 
 
@@ -341,40 +342,14 @@ context.modules = [
 """
 
 
-def _write(path: Path, text: str) -> bool:
-    """Write text atomically; False when the file already held it."""
-    try:
-        if path.read_text() == text:
-            return False
-    except OSError:
-        pass
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    _ = tmp.write_text(text)
-    _ = tmp.replace(path)
-    return True
-
-
 def _run(*argv: str) -> VoiceError | None:
-    try:
-        done = subprocess.run(
-            list(argv),
-            capture_output=True,
-            text=True,
-            timeout=SYSTEMCTL_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return VoiceError(f"{' '.join(argv)}: {e}")
-    if done.returncode:
-        return VoiceError(
-            done.stderr.strip() or f"{' '.join(argv)}: exit {done.returncode}"
-        )
-    return None
+    error = run(*argv)
+    return VoiceError(error) if error else None
 
 
 def _systemctl(*args: str) -> VoiceError | None:
-    return _run("systemctl", "--user", *args)
+    error = systemctl(*args)
+    return VoiceError(error) if error else None
 
 
 def _default_source(name: str) -> VoiceError | None:
@@ -403,7 +378,7 @@ def _set_live(voice: Voice) -> VoiceError | None:
             argv,
             capture_output=True,
             text=True,
-            timeout=SYSTEMCTL_TIMEOUT_S,
+            timeout=COMMAND_TIMEOUT_S,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -422,11 +397,11 @@ def apply(
     unit instead. switched: turned on or off, so the default source follows.
     Returns the mode it took."""
     try:
-        _ = _write(SETTINGS_FILE, json.dumps(asdict(voice), indent=2) + "\n")
+        _ = replace_text(SETTINGS_FILE, json.dumps(asdict(voice), indent=2) + "\n")
         if mode == "save":
             return mode
         if mode == "live" and voice.mic is not None:
-            _ = _write(CONF_FILE, conf_text(voice, voice.mic, description))
+            _ = replace_text(CONF_FILE, conf_text(voice, voice.mic, description))
             if _set_live(voice) is None:
                 return mode
         plugin = PLUGINS.get(voice.noise_filter)
@@ -435,8 +410,8 @@ def apply(
                 f"{plugin.name} is not installed: sudo pacman -S {plugin.package}"
             )
         if voice.on and voice.mic is not None:
-            _ = _write(CONF_FILE, conf_text(voice, voice.mic, description))
-        unit_changed = _write(UNIT_FILE, UNIT_TEXT)
+            _ = replace_text(CONF_FILE, conf_text(voice, voice.mic, description))
+        unit_changed = replace_text(UNIT_FILE, UNIT_TEXT)
     except OSError as e:
         return VoiceError(str(e))
     if unit_changed and (err := _systemctl("daemon-reload")):

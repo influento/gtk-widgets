@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
+from gtk_widgets.lib.files import replace_text
 from gtk_widgets.lib.parse import ParseError
 from gtk_widgets.widgets.timer.parse import Mode, State, parse_state
 
@@ -45,10 +46,7 @@ def load() -> State:
 
 
 def save(state: State) -> None:
-    tmp = STATE_PATH.with_name(f"{STATE_PATH.name}.tmp")
-    with tmp.open("w") as f:
-        json.dump(asdict(state), f)
-    tmp.replace(STATE_PATH)
+    _ = replace_text(STATE_PATH, json.dumps(asdict(state)))
 
 
 def elapsed(state: State, now: float | None = None) -> float:

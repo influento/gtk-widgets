@@ -14,20 +14,19 @@ import hashlib
 import json
 import math
 import os
-import subprocess
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from gtk_widgets.lib.files import replace_text
 from gtk_widgets.lib.parse import ParseError
 from gtk_widgets.widgets.audio.parse import PERCENT, Lights, parse_lights
+from gtk_widgets.widgets.audio.units import systemctl
 
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 SETTINGS_FILE = CONFIG_HOME / "gtk-widgets" / "audio-lights.json"
 UNIT = "gtk-widgets-mic-lights.service"
 UNIT_FILE = CONFIG_HOME / "systemd" / "user" / UNIT
 DAEMON = "audio-lights"  # lightsd.py; install.sh writes its launcher
-SYSTEMCTL_TIMEOUT_S = 15
 
 VENDOR, PRODUCT = 0x0951, 0x171F  # the mic's lights controller (its audio is 171d)
 USB_DEVICES = Path("/sys/bus/usb/devices")
@@ -216,40 +215,9 @@ def load() -> Lights:
             return lights
 
 
-def _write(path: Path, text: str) -> bool:
-    """Write text atomically; False when the file already held it."""
-    try:
-        if path.read_text() == text:
-            return False
-    except OSError:
-        pass
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # a temp file of its own: the popup's main thread and its background
-    # switch can save at once
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        _ = f.write(text)
-    _ = Path(tmp).replace(path)
-    return True
-
-
 def _systemctl(*args: str) -> LightsError | None:
-    argv = ["systemctl", "--user", *args]
-    try:
-        done = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=SYSTEMCTL_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return LightsError(f"{' '.join(argv)}: {e}")
-    if done.returncode:
-        return LightsError(
-            done.stderr.strip() or f"{' '.join(argv)}: exit {done.returncode}"
-        )
-    return None
+    error = systemctl(*args)
+    return LightsError(error) if error else None
 
 
 def apply(lights: Lights, *, switched: bool) -> LightsError | None:
@@ -258,10 +226,10 @@ def apply(lights: Lights, *, switched: bool) -> LightsError | None:
     stops. Only then does it run systemctl, which the popup does off the main
     thread."""
     try:
-        _ = _write(SETTINGS_FILE, json.dumps(asdict(lights), indent=2) + "\n")
+        _ = replace_text(SETTINGS_FILE, json.dumps(asdict(lights), indent=2) + "\n")
         if not switched:
             return None
-        unit_changed = _write(UNIT_FILE, UNIT_TEXT)
+        unit_changed = replace_text(UNIT_FILE, UNIT_TEXT)
     except OSError as e:
         return LightsError(str(e))
     if unit_changed and (err := _systemctl("daemon-reload")):
