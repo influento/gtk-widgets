@@ -17,12 +17,17 @@ from gtk_widgets.widgets.webcam.parse import (
 )
 
 LINK_SUFFIX = ".url"
-# Video only (one URL, no merge), H.264 first (the cheapest to decode), at
-# most 720p and 30 fps: the engine scales to 720p and keeps 30 fps anyway
-STREAM_FORMAT = (
-    "bv*[height<=720][fps<=30][vcodec^=avc1]/bv*[height<=720][vcodec^=avc1]"
-    "/bv*[height<=720]/b[height<=720]/bv*/b"
-)
+# One stream of any codec and container (to stdout nothing can be merged),
+# video only where the site has it. The sort only ranks, so a site that
+# gives no heights still plays: up to 720p and 30 fps (the engine scales to
+# 720p and keeps 30 fps anyway), SDR, then H.264, the cheapest to decode
+STREAM_FORMAT = "bv*/b*"
+STREAM_SORT = "res:720,fps:30,hdr:sdr,vcodec:h264"
+# A copy on disk is made after any failed pipe (no network, a live stream):
+# no live streams, bounded in size
+COPY_LIMITS = ("--max-filesize", "500M", "--match-filter", "!is_live")
+# The user's yt-dlp config (output path, SponsorBlock, merging) is not ours
+YT_DLP = ["yt-dlp", "--ignore-config", "--quiet", "--no-warnings", "--no-playlist"]
 RESOLVE_TIMEOUT_S = 60
 THUMBNAILS_DIR = Path.home() / ".cache/gtk-widgets/webcam/thumbnails"
 THUMBNAIL_WIDTH = 384  # the popup shows it at 96 logical px
@@ -45,17 +50,18 @@ def load_link(path: Path) -> str | ParseError:
             return link
 
 
-def download_argv(link: str) -> list[str]:
-    """yt-dlp writing the video to stdout, for ffmpeg to read."""
+def download_argv(link: str, output: str, *extra: str) -> list[str]:
+    """yt-dlp writing the video to `output`: "-" for stdout, or a file
+    name template."""
     return [
-        "yt-dlp",
-        "--quiet",
-        "--no-warnings",
-        "--no-playlist",
+        *YT_DLP,
         "--format",
         STREAM_FORMAT,
+        "--format-sort",
+        STREAM_SORT,
         "--output",
-        "-",
+        output,
+        *extra,
         link,
     ]
 
@@ -122,14 +128,7 @@ def _yt_dlp(args: list[str]) -> bytes | LinkError:
     or times out."""
     try:
         done = subprocess.run(
-            [
-                "yt-dlp",
-                "--quiet",
-                "--no-warnings",
-                "--no-playlist",
-                "--skip-download",
-                *args,
-            ],
+            [*YT_DLP, "--skip-download", *args],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=RESOLVE_TIMEOUT_S,

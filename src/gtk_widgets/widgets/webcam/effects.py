@@ -13,9 +13,11 @@ import contextlib
 import fcntl
 import hashlib
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -47,6 +49,8 @@ ALPHA_ONE = 256  # the matte in integer steps: 256 = person
 MODEL_URL = "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx"
 MODEL_SHA256 = "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828"
 MODEL_FILE = Path.home() / ".cache/gtk-widgets/webcam/rvm_mobilenetv3_fp32.onnx"
+DOWNLOAD_NAME = "video.%(ext)s"
+PARTIAL_SUFFIXES = {".part", ".ytdl"}  # yt-dlp's files while it downloads
 SETTINGS_CHECK_S = 0.5
 FFMPEG_EXIT_S = 2
 BLUR_SHRINK = 4  # of the model's half-size frame: blurred at 160x90
@@ -55,6 +59,12 @@ BLUR_PASSES = 3
 BLUR_EVERY = 2
 LINK_RETRY_S = 5.0
 LINK_RETRY_MAX_S = 60.0
+
+
+def _downloads() -> Path:
+    """Copies of links that cannot play from a pipe, one folder per player,
+    deleted when it stops (and at start, after a crash)."""
+    return Path.home() / ".cache/gtk-widgets/webcam/downloads"
 
 
 class EngineError(RuntimeError):
@@ -320,15 +330,49 @@ class Animation:
                 return False
             case link:
                 pass
-        download = self._spawn(links.download_argv(link))
+        download = self._spawn(links.download_argv(link, "-"))
         if download is None or download.stdout is None:
             return False
         played = self._read(["-i", "-"], stdin=download.stdout)
         download.stdout.close()
         self._reap()
         if not played and not self._closed.is_set():
+            # An MP4 with its index at the end (no faststart) gives no frame
+            # from a pipe, however short: play a downloaded copy
+            played = self._play_copy(link)
+        if not played and not self._closed.is_set():
             print(f"background link not played: {link}", file=sys.stderr, flush=True)
         return played
+
+    def _play_copy(self, link: str) -> bool:
+        """Download the link to a file and loop it until close() or an
+        error; whether it showed a frame. The file goes when it stops."""
+        try:
+            _downloads().mkdir(parents=True, exist_ok=True)
+            folder = Path(tempfile.mkdtemp(dir=_downloads()))
+        except OSError as e:
+            print(f"background link: {e}", file=sys.stderr, flush=True)
+            return False
+        try:
+            download = self._spawn(
+                links.download_argv(
+                    link, str(folder / DOWNLOAD_NAME), *links.COPY_LIMITS
+                )
+            )
+            if download is None or download.stdout is None:
+                return False
+            _ = download.stdout.read()  # nothing (--quiet): until yt-dlp ends
+            download.stdout.close()
+            done = download.wait() == 0
+            self._reap()
+            files = [p for p in folder.iterdir() if p.suffix not in PARTIAL_SUFFIXES]
+            if not done or len(files) != 1:
+                return False
+            played = self._read(["-stream_loop", "-1", "-i", str(files[0])])
+            self._reap()
+            return played
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def _read(self, source: list[str], stdin: IO[bytes] | None = None) -> bool:
         """ffmpeg's frames into latest() until it ends; whether there was one."""
@@ -645,6 +689,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     os.ftruncate(fd, 0)
     _ = os.write(fd, str(os.getpid()).encode())
+    shutil.rmtree(_downloads(), ignore_errors=True)  # a crashed run's copies
 
     stop = [False]
 

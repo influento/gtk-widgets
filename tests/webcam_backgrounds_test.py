@@ -86,6 +86,92 @@ def no_yt_dlp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(bin_dir))
 
 
+@pytest.fixture
+def unstreamable_clip(tmp_path: Path) -> Path:
+    """A 1 s MP4 with its index at the end: ffmpeg gets no frame of it
+    from a pipe."""
+    path = tmp_path / "late.mp4"
+    _ = subprocess.run(
+        [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=30:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-b:v",
+            "4M",
+            str(path),
+        ],
+        check=True,
+    )
+    return path
+
+
+@pytest.fixture
+def yt_dlp_downloading(
+    tmp_path: Path, unstreamable_clip: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """A yt-dlp on PATH that serves the unstreamable clip to stdout or to
+    the --output file; returns the file each run appends its arguments to.
+    HOME is tmp_path, so copies go under it."""
+    runs = tmp_path / "args.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _script(
+        bin_dir / "yt-dlp",
+        f"""echo "$*" >> '{runs}'
+out=-
+while (($#)); do
+  if [[ $1 == --output ]]; then out=$2; fi
+  shift
+done
+if [[ $out == - ]]; then cat '{unstreamable_clip}'
+else cp '{unstreamable_clip}' "${{out//%(ext)s/mp4}}"; fi""",
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return runs
+
+
+def test_link_that_cannot_stream_plays_from_a_downloaded_copy(
+    tmp_path: Path, yt_dlp_downloading: Path
+) -> None:
+    link = tmp_path / "clip.url"
+    _ = link.write_text(f"{LINK}\n")
+    downloads = tmp_path / ".cache/gtk-widgets/webcam/downloads"
+    player = Animation(str(link))
+    try:
+        assert _wait_for(lambda: player.latest() is not None), (
+            yt_dlp_downloading.read_text() if yt_dlp_downloading.exists() else ""
+        )
+        assert any(downloads.iterdir())
+    finally:
+        player.close()
+    assert _wait_for(lambda: not any(downloads.iterdir())), list(downloads.rglob("*"))
+
+
+def test_yt_dlp_never_reads_the_users_config(
+    tmp_path: Path, yt_dlp_downloading: Path
+) -> None:
+    link = tmp_path / "clip.url"
+    _ = link.write_text(f"{LINK}\n")
+    player = Animation(str(link))
+    try:
+        assert _wait_for(lambda: player.latest() is not None)
+    finally:
+        player.close()
+    _ = links.add_link(LINK, tmp_path / "backgrounds")
+    runs = yt_dlp_downloading.read_text().splitlines()
+    assert len(runs) >= 3, runs  # stream, copy, the popup's check
+    assert all("--ignore-config" in run.split() for run in runs), runs
+
+
 def _runs(log: Path) -> int:
     return len(log.read_text().split()) if log.exists() else 0
 
