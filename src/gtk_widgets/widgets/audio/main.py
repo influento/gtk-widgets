@@ -4,7 +4,8 @@
 from typing import override
 
 from gtk_widgets.lib.ui.widget_base import Gtk, WidgetPopup
-from gtk_widgets.widgets.audio.parts import APP_ID, error_box, popup_frame
+from gtk_widgets.widgets.audio.appid import APP_ID
+from gtk_widgets.widgets.audio.parts import error_box, popup_frame
 
 try:
     from gtk_widgets.widgets.audio import popup

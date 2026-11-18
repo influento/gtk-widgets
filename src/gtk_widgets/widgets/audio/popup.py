@@ -40,6 +40,13 @@ from gtk_widgets.lib.pulsectl import (
 from gtk_widgets.lib.ui.background import in_background
 from gtk_widgets.lib.ui.copy_label import CopyLabel, copyable
 from gtk_widgets.lib.ui.widget_base import Gdk, Gtk, VScroller, WidgetPopup, pass_wheel
+from gtk_widgets.widgets.audio.appid import APP_ID
+from gtk_widgets.widgets.audio.lights import COLOURS as LIGHT_COLOURS
+from gtk_widgets.widgets.audio.lights import OFF as LIGHT_OFF
+from gtk_widgets.widgets.audio.lights import LightsError
+from gtk_widgets.widgets.audio.lights import apply as apply_lights
+from gtk_widgets.widgets.audio.lights import load as load_lights
+from gtk_widgets.widgets.audio.lights import present as lights_present
 from gtk_widgets.widgets.audio.meters import (
     METER_RATE,
     MIXER_APP_IDS,
@@ -48,12 +55,15 @@ from gtk_widgets.widgets.audio.meters import (
 )
 from gtk_widgets.widgets.audio.parse import (
     NOISE_FILTERS,
+    PERCENT,
+    Effect,
+    Lights,
     NoiseFilter,
     State,
     Voice,
     parse_state,
 )
-from gtk_widgets.widgets.audio.parts import APP_ID, ICON, error_box, popup_frame
+from gtk_widgets.widgets.audio.parts import ICON, error_box, popup_frame
 from gtk_widgets.widgets.audio.recorder import Recorder, RecordState
 from gtk_widgets.widgets.audio.voice import (
     FILTER_NAMES,
@@ -79,6 +89,8 @@ METER_DECAY = 0.5  # meter fall per second, in bar lengths
 RECORD_TICK_MS = 250
 VOICE_DEBOUNCE_MS = 400  # quick flips restart the echo canceller once
 VOICE_TICK_MS = 100  # status bar pulse
+SLIDER_STEP = 5  # percent per step of the mic lights' sliders
+LIGHT_SLIDER_WIDTH = 200  # px, with the value beside it
 VOICE_START_TIMEOUT_MS = 5000  # restarted unit without its source by then: failed
 # (Voice field, label, tooltip): the WebRTC switches that change the sound
 VOICE_OPTIONS = [
@@ -1033,6 +1045,249 @@ class VoiceSection(Gtk.Box):
         self._app.set_voice(replace(self._voice, controls=controls))
 
 
+# effect -> (name, what it does)
+LIGHT_EFFECTS: dict[Effect, tuple[str, str]] = {
+    "solid": ("Solid", "One colour per part"),
+    "pulse": ("Pulse", "Fades in and out, the next colour each time"),
+    "cycle": ("Cycle", "Both parts blend round the colours (one colour: the rainbow)"),
+    "wave": ("Wave", "Like Cycle, the top following the bottom"),
+    "blink": ("Blink", "On and off (one colour) or switching between the colours"),
+    "lightning": ("Lightning", "Random flashes in the colours, each part on its own"),
+    "voice": ("Voice level", "The part colours, brighter the louder you speak"),
+}
+# which rows each effect shows
+PART_EFFECTS: tuple[Effect, ...] = ("solid", "voice")
+type SwatchKey = Literal["top", "bottom", "colour0", "colour1", "colour2"]
+SWATCH_ROWS: list[tuple[SwatchKey, str]] = [
+    ("top", "Top"),
+    ("bottom", "Bottom"),
+    ("colour0", "Colour 1"),
+    ("colour1", "Colour 2"),
+    ("colour2", "Colour 3"),
+]
+
+
+class LightsSection(Gtk.Box):
+    """Input Devices tab: the QuadCast S lights (lights.py), shown while the mic
+    is plugged in or the lights are on. A change only saves the file (the
+    daemon follows it); the switch starts or stops the unit."""
+
+    def __init__(self, on_bug: Callable[[str], bool | None]) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.add_css_class("au-row")
+        self._on_bug, self._lights = on_bug, load_lights()
+        self._busy, self._pending = False, False
+        self._install_swatch_css()
+        self.append(self._header())
+        self._settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.append(self._settings)
+        self._effect = Choice[Effect](self._on_effect)
+        self._effect.set_tooltip_text(LIGHT_EFFECTS[self._lights.effect][1])
+        self._settings.append(self._row("Effect", self._effect))
+        self._swatches: dict[
+            SwatchKey, tuple[Gtk.Box, list[tuple[str, Gtk.Button]]]
+        ] = {}
+        for key, text in SWATCH_ROWS:
+            self._settings.append(self._swatch_row(key, text))
+        self._speed = self._slider(self._on_speed)
+        self._speed_row = self._row("Speed", self._speed)
+        self._settings.append(self._speed_row)
+        self._brightness = self._slider(self._on_brightness)
+        self._settings.append(self._row("Brightness", self._brightness))
+        self._error = copyable(Gtk.Label(wrap=True, xalign=0))
+        self._error.add_css_class("au-bug")
+        self._error.set_visible(False)
+        self.append(self._error)
+        self._show()
+        self.set_visible(lights_present() or self._lights.on)
+
+    def _header(self) -> Gtk.Box:
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title = title_label("Mic lights")
+        title.set_tooltip_text(
+            "HyperX QuadCast S (two parts, one colour each): your effect while on "
+            "(also after a login), the mic's own rainbow while off"
+        )
+        header.append(title)
+        self._on = Gtk.Switch(valign=Gtk.Align.CENTER, active=self._lights.on)
+        self._on.add_css_class("au-switch")
+        _ = self._on.connect("notify::active", self._on_switch)
+        header.append(self._on)
+        return header
+
+    @staticmethod
+    def _row(text: str, control: Gtk.Widget) -> Gtk.Box:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label = Gtk.Label(label=text, xalign=0, hexpand=True)
+        label.add_css_class("au-field-label")
+        row.append(label)
+        row.append(control)
+        return row
+
+    @staticmethod
+    def _slider(on_change: Callable[[Gtk.Scale], None]) -> Gtk.Scale:
+        scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, 0, PERCENT, SLIDER_STEP
+        )
+        scale.set_draw_value(True)
+        scale.set_value_pos(Gtk.PositionType.RIGHT)
+        scale.set_size_request(LIGHT_SLIDER_WIDTH, -1)
+        pass_wheel(scale)
+        _ = scale.connect("value-changed", on_change)
+        return scale
+
+    @staticmethod
+    def _install_swatch_css() -> None:
+        css = "".join(
+            f".au-swatch-{n} {{ background: {colour}; }}"
+            for n, (_, colour) in enumerate(LIGHT_COLOURS)
+        )
+        provider = Gtk.CssProvider()
+        provider.load_from_string(css)
+        display = Gdk.Display.get_default()
+        if display is not None:
+            Gtk.StyleContext.add_provider_for_display(
+                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+
+    def _swatch_row(self, key: SwatchKey, text: str) -> Gtk.Box:
+        """A colour per swatch; the second and third effect colours also
+        offer none (fewer colours)."""
+        swatches = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        buttons: list[tuple[str, Gtk.Button]] = []
+        choices = [(n, name, colour) for n, (name, colour) in enumerate(LIGHT_COLOURS)]
+        if key in ("colour1", "colour2"):
+            choices.append((-1, "None", ""))
+        for n, name, colour in choices:
+            btn = Gtk.Button(tooltip_text=name, valign=Gtk.Align.CENTER)
+            btn.add_css_class("au-swatch")
+            btn.add_css_class("au-swatch-none" if n < 0 else f"au-swatch-{n}")
+            if colour == LIGHT_OFF:
+                btn.add_css_class("au-swatch-off")
+            _ = btn.connect("clicked", self._on_swatch, key, colour)
+            swatches.append(btn)
+            buttons.append((colour, btn))
+        if key == "colour0":  # lines up with the rows below, which have None
+            spacer = Gtk.Button(
+                opacity=0, can_target=False, focusable=False, valign=Gtk.Align.CENTER
+            )
+            spacer.add_css_class("au-swatch")
+            swatches.append(spacer)
+        row = self._row(text, swatches)
+        self._swatches[key] = (row, buttons)
+        return row
+
+    def _chosen(self, key: SwatchKey) -> str:
+        match key:
+            case "top" | "bottom":
+                return getattr(self._lights, key)
+            case _:
+                n = int(key.removeprefix("colour"))
+                colours = self._lights.colours
+                return colours[n] if n < len(colours) else ""
+
+    def _shown(self, key: SwatchKey) -> bool:
+        effect, colours = self._lights.effect, self._lights.colours
+        match key:
+            case "top" | "bottom":
+                return effect in PART_EFFECTS
+            case _:
+                n = int(key.removeprefix("colour"))
+                return effect not in PART_EFFECTS and n <= len(colours)
+
+    def _show(self) -> None:
+        lights = self._lights
+        self._settings.set_visible(lights.on)
+        items: list[tuple[Effect, str, bool]] = [
+            (key, name, True) for key, (name, _) in LIGHT_EFFECTS.items()
+        ]
+        self._effect.set_items(items, lights.effect)
+        self._effect.set_tooltip_text(LIGHT_EFFECTS[lights.effect][1])
+        for key, (row, buttons) in self._swatches.items():
+            row.set_visible(self._shown(key))
+            chosen = self._chosen(key)
+            for colour, btn in buttons:
+                if colour == chosen:
+                    btn.add_css_class("au-swatch-chosen")
+                else:
+                    btn.remove_css_class("au-swatch-chosen")
+        self._speed_row.set_visible(lights.effect not in PART_EFFECTS)
+        for scale, number in (
+            (self._speed, lights.speed),
+            (self._brightness, lights.brightness),
+        ):
+            if scale.get_value() != number:
+                _ = scale.handler_block_by_func(
+                    self._on_speed if scale is self._speed else self._on_brightness
+                )
+                scale.set_value(number)
+                _ = scale.handler_unblock_by_func(
+                    self._on_speed if scale is self._speed else self._on_brightness
+                )
+
+    def _set(self, lights: Lights, *, switched: bool) -> None:
+        self._lights = lights
+        self._show()
+        if not switched:
+            self._show_error(apply_lights(lights, switched=False))
+            return
+        self._pending = True
+        self._kick()
+
+    def _kick(self) -> None:
+        """One unit change at a time; the newest settings win."""
+        if self._busy or not self._pending:
+            return
+        self._busy, self._pending = True, False
+        lights = self._lights
+        in_background(partial(self._work, lights), self._on_bug)
+
+    def _work(self, lights: Lights) -> None:
+        GLib.idle_add(self._done, apply_lights(lights, switched=True))
+
+    def _done(self, error: LightsError | None) -> bool:
+        self._busy = False
+        self._show_error(error)
+        self._kick()
+        return GLib.SOURCE_REMOVE
+
+    def _show_error(self, error: LightsError | None) -> None:
+        self._error.set_text(str(error) if error else "")
+        self._error.set_visible(error is not None)
+
+    def _on_switch(self, switch: Gtk.Switch, _pspec: GObject.ParamSpec) -> None:
+        self._set(replace(self._lights, on=switch.get_active()), switched=True)
+
+    def _on_effect(self, effect: Effect) -> None:
+        self._set(replace(self._lights, effect=effect), switched=False)
+
+    def _on_swatch(self, _btn: Gtk.Button, key: SwatchKey, colour: str) -> None:
+        match key:
+            case "top" | "bottom":
+                lights = replace(self._lights, **{key: colour})
+            case _:
+                n = int(key.removeprefix("colour"))
+                colours = list(self._lights.colours)
+                if not colour:
+                    del colours[n:]
+                elif n < len(colours):
+                    colours[n] = colour
+                else:
+                    colours.append(colour)
+                lights = replace(self._lights, colours=colours)
+        self._set(lights, switched=False)
+
+    def _on_speed(self, scale: Gtk.Scale) -> None:
+        speed = round(scale.get_value() / SLIDER_STEP) * SLIDER_STEP
+        if speed != self._lights.speed:
+            self._set(replace(self._lights, speed=speed), switched=False)
+
+    def _on_brightness(self, scale: Gtk.Scale) -> None:
+        brightness = round(scale.get_value() / SLIDER_STEP) * SLIDER_STEP
+        if brightness != self._lights.brightness:
+            self._set(replace(self._lights, brightness=brightness), switched=False)
+
+
 class StreamRow(Gtk.Box):
     """Sink input or source output: app, media name, volume, device to move to."""
 
@@ -1384,6 +1639,9 @@ class AudioPopup(WidgetPopup):
 
         self._voice_section = VoiceSection(self, self._voice)
         self._tabs["inputs"].page.prepend(self._voice_section)
+        self._tabs["inputs"].page.insert_child_after(
+            LightsSection(self._show_bug), self._voice_section
+        )
 
         self._event_row = EventSoundsRow(self)
         self._event_row.set_visible(False)

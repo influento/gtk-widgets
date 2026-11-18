@@ -3,8 +3,6 @@
 from gtk_widgets.lib.ui.copy_label import copyable
 from gtk_widgets.lib.ui.widget_base import Gtk
 
-APP_ID = "dev.dotfiles.audio"  # also application.id of its meter and test streams
-
 ICON = {
     "speaker": "\U000f057e",  # nf-md-volume_high
     "speaker_mute": "\U000f0581",  # nf-md-volume_off

@@ -20,7 +20,7 @@ from typing import Literal
 from gi.repository import GLib
 
 from gtk_widgets.lib.ui.background import in_background
-from gtk_widgets.widgets.audio.parts import APP_ID
+from gtk_widgets.widgets.audio.appid import APP_ID
 
 MAX_SECONDS = 30
 RATE, CHANNELS, SAMPLE_BYTES = 48000, 2, 2  # s16le stereo: ~5.5 MB for 30 s

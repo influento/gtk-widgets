@@ -378,3 +378,32 @@ progressbar.au-voice-progress progress {
   border-radius: 3px;
   min-height: 4px;
 }
+
+/* Mic lights swatches (their colours come from lights.py at runtime) */
+button.au-swatch {
+  min-width: 16px;
+  min-height: 16px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 9px;
+  box-shadow: none;
+  background-image: none;
+}
+
+button.au-swatch-off {
+  border-color: @@SURFACE2@@;
+}
+
+button.au-swatch-chosen {
+  border-color: @@TEXT@@;
+}
+
+button.au-swatch-none {
+  background: transparent;
+  border-style: dashed;
+  border-color: @@SURFACE2@@;
+}
+
+button.au-swatch-none.au-swatch-chosen {
+  border-color: @@TEXT@@;
+}

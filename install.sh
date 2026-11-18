@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Install gtk-widgets: launchers for the commands, the bash status scripts and
 # widget-toggle into ~/.local/bin;
-# install the root helpers, their polkit rules and the Proxy rules unit (sudo)
+# install the root helpers, their polkit rules, the Proxy rules unit and the
+# udev rules (sudo)
 # Usage: install.sh [--theme <name>]   (default: catppuccin-mocha)
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -112,5 +113,16 @@ elif ! lsmod | grep -q '^v4l2loopback'; then
   sudo modprobe v4l2loopback
   echo "  module: v4l2loopback loaded"
 fi
+
+# udev rules: device access for the user at the seat (QuadCast S lights)
+for udev_src in "$REPO_DIR"/udev/*.rules; do
+  udev_dst="/etc/udev/rules.d/$(basename "$udev_src")"
+  if [[ ! -f "$udev_dst" ]] || ! diff -q "$udev_src" "$udev_dst" &>/dev/null; then
+    sudo install -m 0644 -o root -g root "$udev_src" "$udev_dst"
+    sudo udevadm control --reload
+    sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=0951 --attr-match=idProduct=171f
+    echo "  udev: $(basename "$udev_src")"
+  fi
+done
 
 echo "done"

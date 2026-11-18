@@ -20,7 +20,7 @@ from gi.repository import GLib
 from gtk_widgets.lib import pulsectl
 from gtk_widgets.lib.pulsectl import _pulsectl as c
 from gtk_widgets.lib.ui.background import in_background
-from gtk_widgets.widgets.audio.parts import APP_ID
+from gtk_widgets.widgets.audio.appid import APP_ID
 
 METER_RATE = 30  # peaks per second per stream
 MIN_PEAK = 1e-6  # 1% of a meter on its cubic scale; silence is not sent to GTK

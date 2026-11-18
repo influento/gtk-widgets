@@ -14,7 +14,7 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 | `translate`    | ezpick text tool: translate, fix English, dictionary (via `claude` CLI) |
 | `usb`          | USB device manager: list, mount/unmount, Mac/Windows type fix, format, write ISO (root helper via polkit) |
 | `timer`        | Timer + stopwatch with alarm on expiry                     |
-| `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events) |
+| `audio`        | pavucontrol replacement: streams, devices, ports, profiles, peak meters (live via pulse events), HyperX QuadCast S lights |
 | `launcher`     | App launcher (drun) and dmenu picker, a wofi replacement: resident instance, ranked fuzzy search with usage history, ЙЦУКЕН keys map to Latin |
 | `network`      | nm-applet replacement via libnm: Wi-Fi/wired, mutually exclusive VPN and Proxy sections (WireGuard/VPN profile chips, or Proxy rules: per-app SOCKS5 routing through sing-box; clicking the active chip turns it off), hidden and Enterprise (PEAP/TTLS) networks, hotspot, connection list, WireGuard import/export, per-profile Edit page (Wi-Fi/Ethernet/WireGuard); `network-agent` for notifications + password prompts |
 | `capture`      | Screenshots and short screen recordings at the output's own pixels: freezes every output, drag a region, saved without any resampling at fractional scales; `gif` records it as a GIF plus a contact sheet for AI |
@@ -24,7 +24,8 @@ GTK4 popup widgets for Sway (Wayland), themed with Catppuccin Mocha.
 Requires Python 3, GTK4, and [gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell).
 `audio` also needs `libpulse` and a PulseAudio-compatible server such as `pipewire-pulse`;
 its Python bindings ([pulsectl](https://github.com/mk-fg/python-pulse-control)) are vendored
-in `src/gtk_widgets/lib/pulsectl/`.
+in `src/gtk_widgets/lib/pulsectl/`. Its mic lights (HyperX QuadCast S) need `libusb` and the
+udev rule `install.sh` installs.
 `network` needs NetworkManager's `libnm` (GObject introspection data, `NM-1.0.typelib`) and
 `notify-send` for `network-agent`'s notifications. It doesn't use `nm-connection-editor`:
 settings the Edit page doesn't cover aren't editable from the widget. The Edit page shows

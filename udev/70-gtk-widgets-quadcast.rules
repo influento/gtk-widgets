@@ -1,0 +1,3 @@
+# HyperX QuadCast S lights controller: the user at the seat may open it (libusb),
+# so the mic's colours need no root process. 70: uaccess must come before 73-seat-late.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0951", ATTR{idProduct}=="171f", TAG+="uaccess"

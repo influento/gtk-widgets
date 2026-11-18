@@ -16,6 +16,7 @@ dependencies = [
 # <widget>-status.
 [project.scripts]
 audio = "gtk_widgets.widgets.audio.main:main"
+audio-lights = "gtk_widgets.widgets.audio.lightsd:main"
 bluetooth = "gtk_widgets.widgets.bluetooth.main:main"
 calendar = "gtk_widgets.widgets.calendar.main:main"
 capture = "gtk_widgets.widgets.capture.main:main"
