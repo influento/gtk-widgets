@@ -24,7 +24,6 @@ from gtk_widgets.widgets.webcam.preview import HEIGHT, WIDTH, Preview
 BACKGROUNDS_DIR = Path.home() / "pictures/webcam"
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 ANIMATED_SUFFIXES = {".gif", ".mp4", ".webm", ".mkv", ".mov", links.LINK_SUFFIX}
-PREVIEW_SCALE = 0.6  # of the preview's frame size
 CONTROLS_HEIGHT = 560
 SET_DELAY_MS = 40  # a slider drag writes at most this often
 SAVE_DELAY_MS = 400
@@ -199,9 +198,9 @@ class WebcamPopup(WidgetPopup):
         overlay = Gtk.Overlay()
         overlay.add_css_class("preview")
         self._picture = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True)
-        self._picture.set_size_request(
-            int(WIDTH * PREVIEW_SCALE), int(HEIGHT * PREVIEW_SCALE)
-        )
+        # The frames' own size from the start: the popup opens at its final
+        # size instead of growing when the first frame comes
+        self._picture.set_size_request(WIDTH, HEIGHT)
         overlay.set_child(self._picture)
         self._preview_note = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER)
         self._preview_note.add_css_class("preview-note")
@@ -209,7 +208,12 @@ class WebcamPopup(WidgetPopup):
         self._preview_note.set_halign(Gtk.Align.CENTER)
         overlay.add_overlay(self._preview_note)
         box.append(overlay)
-        self._preview = Preview(self._picture, self._on_preview_end, self._show_error)
+        self._preview = Preview(
+            self._picture,
+            on_frame=lambda: self._preview_note.set_text(""),
+            on_end=self._on_preview_end,
+            on_bug=self._show_error,
+        )
 
     def _start_preview(self) -> bool:
         self._retry_source = 0
@@ -220,11 +224,11 @@ class WebcamPopup(WidgetPopup):
             if loop is None:
                 self._preview_note.set_text("Effects on, no loopback device")
                 return GLib.SOURCE_REMOVE
-            self._preview_note.set_text("")
             self._preview.start(loop, camera=False)
         else:
-            self._preview_note.set_text("")
             self._preview.start(self._device, camera=True)
+        if self._picture.get_paintable() is None:
+            self._preview_note.set_text("Starting the camera\u2026")
         return GLib.SOURCE_REMOVE
 
     def _on_preview_end(self, message: str) -> None:

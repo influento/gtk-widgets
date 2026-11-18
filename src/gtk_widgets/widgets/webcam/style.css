@@ -45,6 +45,14 @@
   border-radius: 6px;
 }
 
+.preview picture {
+  transition: opacity 300ms ease-out;
+}
+
+.preview picture.waiting {
+  opacity: 0;
+}
+
 .preview-note {
   font-size: 12px;
   color: @@SUBTEXT0@@;

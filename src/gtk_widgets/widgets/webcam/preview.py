@@ -16,6 +16,7 @@ from gtk_widgets.widgets.webcam import links
 WIDTH, HEIGHT = 640, 360
 FPS = 15
 FRAME_BYTES = WIDTH * HEIGHT * 3
+WAITING = "waiting"  # css class: the picture is hidden until the first frame
 
 
 def _ffmpeg(device: Path, *, camera: bool) -> list[str]:
@@ -54,19 +55,25 @@ def _ffmpeg(device: Path, *, camera: bool) -> list[str]:
 
 
 class Preview:
-    """Frames from one device into `picture` until stop(); on_end(message)
-    runs on the main thread when ffmpeg stops by itself."""
+    """Frames from one device into `picture` until stop(); on_frame() runs
+    on the main thread at a start's first frame, on_end(message) when ffmpeg
+    stops by itself. An empty picture fades the first frame in (style.css);
+    one that shows a frame keeps it until the next device's first."""
 
     def __init__(
         self,
         picture: Gtk.Picture,
+        *,
+        on_frame: Callable[[], None],
         on_end: Callable[[str], None],
         on_bug: Callable[[str], bool | None],
     ) -> None:
         self._picture = picture
+        self._on_frame = on_frame
         self._on_end = on_end
         self._on_bug = on_bug
         self._proc: subprocess.Popen[bytes] | None = None
+        self._started = False
 
     def start(self, device: Path, *, camera: bool) -> None:
         self.stop()
@@ -77,6 +84,9 @@ class Preview:
             stderr=subprocess.PIPE,
         )
         self._proc = proc
+        self._started = False
+        if self._picture.get_paintable() is None:
+            self._picture.add_css_class(WAITING)
         in_background(lambda: self._read(proc), self._on_bug)
         in_background(lambda: self._watch(proc), self._on_bug)
 
@@ -118,6 +128,10 @@ class Preview:
                 WIDTH * 3,
             )
             self._picture.set_paintable(texture)
+            if not self._started:
+                self._started = True
+                self._picture.remove_css_class(WAITING)
+                self._on_frame()
         return GLib.SOURCE_REMOVE
 
     def _ended(self, proc: subprocess.Popen[bytes], message: str) -> bool:
