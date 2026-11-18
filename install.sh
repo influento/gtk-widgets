@@ -97,4 +97,20 @@ if ! command -v sing-box &>/dev/null; then
   echo "  note: Proxy rules needs sing-box (pacman -S sing-box)"
 fi
 
+# v4l2loopback for the webcam widget's virtual camera (webcam-effects)
+for pair in "modprobe.conf:/etc/modprobe.d" "load.conf:/etc/modules-load.d"; do
+  conf_src="$REPO_DIR/modules/gtk-widgets-webcam.${pair%%:*}"
+  conf_dst="${pair#*:}/gtk-widgets-webcam.conf"
+  if [[ ! -f "$conf_dst" ]] || ! diff -q "$conf_src" "$conf_dst" &>/dev/null; then
+    sudo install -m 0644 -o root -g root "$conf_src" "$conf_dst"
+    echo "  module config: $conf_dst"
+  fi
+done
+if ! modinfo v4l2loopback &>/dev/null; then
+  echo "  note: webcam effects need v4l2loopback-dkms, python-numpy, python-onnxruntime-cpu, yt-dlp (pacman -S)"
+elif ! lsmod | grep -q '^v4l2loopback'; then
+  sudo modprobe v4l2loopback
+  echo "  module: v4l2loopback loaded"
+fi
+
 echo "done"

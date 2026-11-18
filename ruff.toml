@@ -34,6 +34,9 @@ ignore = [
 # Stdlib only, no GLib loop: two readers drain ffmpeg's pipes; each ends
 # its queue with None in a finally, so the reading loop never hangs on one.
 "src/gtk_widgets/widgets/capture/process.py" = ["TID251"]
+# Its own process, no GLib loop: a reader drains an animated background's
+# ffmpeg pipe and keeps its newest frame for the engine's loop.
+"src/gtk_widgets/widgets/webcam/effects.py" = ["TID251"]
 # capture grabs the screen before gi is imported (and with it libwayland):
 # GTK comes in after the grab, with gtk4-layer-shell loaded first.
 "src/gtk_widgets/widgets/capture/main.py" = ["PLC0415"]

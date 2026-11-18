@@ -12,3 +12,5 @@ pytest-asyncio
 pytest-randomly
 pytest-timeout
 ruff
+numpy
+onnxruntime

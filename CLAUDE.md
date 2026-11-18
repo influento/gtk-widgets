@@ -91,6 +91,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | `launcher`     | wofi replacement, resident (`launcher --daemon`, toggled by `launcher`): drun (desktop entries, should_show, tiers exact > prefix > word start > substring > fuzzy on the name, then generic name/keywords/executable, ties by launch counts halving every 2 weeks in `~/.cache/launcher/usage.json`, ЙЦУКЕН keys mapped to us Latin, Terminal=true via `ghostty -e`) and `--dmenu [--prompt] [--after-tab] [--action LABEL] [--delete CMD]` (stdin lines, prints the pick byte-exact, Esc = exit 1; `--action` adds a LABEL button that exits 10: the clipboard picker's Clear; `--delete` gives rows a cross, and Ctrl+d deletes the selected one: the row goes in place and the CLI runs CMD with its line on stdin, the instance sending `del <index>` before the pick). A dmenu line may carry options after a NUL, rofi-style (`options.py`: kind, thumbnail, preview files, detail, count, search words): rows with them get a 64x46 thumbnail or a kind icon (56 px rows for images, 34 px for the rest), and Right with the caret at the end of the filter opens a preview pane beside the list, the popup growing to the output less 40 px a side (Left at the caret's start closes it; Ctrl+l/Ctrl+h open/close it wherever the caret is; every show starts compact). The pane shows the image, a playing GIF (ffmpeg at the pane's pixel size, never GdkPixbuf: it would decode every frame), one of several files (Ctrl+Left/Right), a file type's icon or the row's whole text as is (64 KiB at most). `launcher-clipboard` (`clipboard.py`, stdlib) turns `cliphist list` into such rows: image data (named by cliphist, or sniffed: WebP, AVIF, HEIC, JXL) and text (cliphist's list joins its lines and cuts it at 100 characters) decoded once into `~/.cache/launcher/clipboard/<id>.<ext>` (0700, files 0600) and pruned with the history, file links (several in one entry: a recording's sheets), plain paths, missing files, binary, text; `launcher-clipboard --restore ID` (the pick) and `--offer ID` (a fresh copy, from dotfiles' `cliphist-store`) put image data and file links up in several forms at once over data-control (`selection.py`): bytes, file, path, so Telegram/Obsidian paste the picture or animated GIF and a terminal the path. The CLI is stdlib-only and talks to the instance over `$XDG_RUNTIME_DIR/gtk-widgets-launcher.sock` (importing gi alone costs ~60 ms); with no instance a toggle starts one, a dmenu runs one-shot. Only Esc closes it |
 | `network`      | nm-applet replacement over libnm: networking/Wi-Fi switches, wired, Wi-Fi list (connect, inline password, hidden, hotspot), mutually exclusive VPN and Proxy sections (a chip per VPN profile, Proxy rules: per-app SOCKS5 routing through sing-box, with a Proxy rules page; clicking the active chip turns it off; each title line shows its state, including when the other one is on), details, captive-portal/limited notice, Enterprise (PEAP/TTLS) join form, Connections page (delete, WireGuard import/export), Edit page for Wi-Fi/Ethernet/WireGuard profiles; `network-agent` = notifications + secret agent prompt; `network-status` = long-running bar status (link, VPN, connectivity) |
 | `capture`      | Region screenshots at the output's own pixels: `capture region [--dir DIR] [--copy]` grabs every output's raw framebuffer (stdlib wlr-screencopy client, before gi is imported), shows the frozen frames in one overlay per output, saves the drag cut from the raw buffer in physical pixels (no resampling at fractional scales), prints the path; before a drag the window under the pointer gets the frame (the shade stays until a drag; the frame is pulled inside at the output's edges) and a click (moved < 3 px) takes it (sway GET_TREE read with the frames: content without border/title bar, topmost first) or, over the bar/wallpaper, the whole output (region and gif alike); Z (by keycode, so also in the ru layout) toggles a magnifier while picking (loupe of 13x13 physical px, pixel position and colour; off at start); `--copy` = `text/uri-list` via wl-copy. Exit 0 saved, 1 cancelled (Esc, right click) or already open (flock), 2 error. Scale from sway IPC snapped to 1/120 (Gdk.Monitor.get_scale() is a ratio of rounded sizes). `capture gif [--dir DIR] [--copy]`: same picker, then wf-recorder (lossless RGB, 30 fps, 60 s cap) with a click-through indicator outside the region; a second `capture gif` stops it (pid file + SIGUSR1), `--cancel` discards it (SIGUSR2); the indicator goes at once; ffmpeg makes `DIR/recording-STAMP/` = `recording.gif` first (every frame, exact duplicates merged; `--copy` copies it right away), then `sheet.png` (frames showing a new state, no cap, tiled under `N/M · time · before switch` labels, for AI; `sheet-N.png` when they need several) and `frames/`; `--copy` then copies the sheets in one list (on top); a notification when done or failed |
+| `webcam`       | Camera popup for V4L2/UVC cameras (C920 PRO HD here): live preview (ffmpeg, MJPEG 640x360; from the loopback while the engine runs; "in use" when another app streams, controls still work), every control by ioctl grouped (framing: digital zoom/pan/tilt, pan/tilt off until zoomed; focus; exposure; white balance; image; anti-flicker; a value its automatic mode sets is greyed out), Logitech LED (extension unit, off/on/while streaming), presets, reset; settings in `~/.config/gtk-widgets/webcam.json`, `webcam-apply` writes them back (the camera forgets them unplugged; dotfiles runs it on replug). Background: `webcam-effects` (switch in the popup, detached, flock + pid in `$XDG_RUNTIME_DIR/webcam-effects.lock`, log beside it) reads the camera at 1280x720 MJPEG, Robust Video Matting (ONNX, CPU, downloaded once to `~/.cache/gtk-widgets/webcam/`, sha256-pinned) finds the person, and writes blur / an image or a looped GIF, video or video link (pasted in the popup, which checks it with yt-dlp and saves it as `<title>.url`, or such a file with the link on its first line: yt-dlp downloads it into ffmpeg's stdin (YouTube answers 403 to ffmpeg on the stream's URL), at most 720p30, H.264 first, starting again when it ends, with backoff while it fails; its thumbnail cached in `~/.cache/gtk-widgets/webcam/thumbnails/`) (its own frame rate, capped at the engine's 30 fps before scaling) from `~/pictures/webcam` (dotfiles installs and syncs them; the × on a thumbnail removes one, after a Remove? under the grid) / a theme colour / the picture as is to the v4l2loopback device "Webcam effects" (`/dev/video10`, config installed by install.sh); the effect is switched live through the settings file |
 
 ## Theming System
 
@@ -152,6 +153,10 @@ Defined in `themes/catppuccin-mocha.json`:
 - Python widgets use standard library only (+ PyGObject). No third-party Python packages:
   if a binding is unavoidable, vendor a pinned, audited copy under `src/gtk_widgets/lib/` (as `lib/pulsectl/`,
   ctypes over libpulse, used by `audio`) with its license and a note of local changes
+- The one exception: `webcam-effects` (`widgets/webcam/effects.py`, its own process) imports
+  numpy and onnxruntime, from Arch's python-numpy and python-onnxruntime-cpu (the user's
+  call, 2026-11-17). No other module imports them; onnxruntime's types are the hand-written
+  `typings/onnxruntime/__init__.pyi`
 - Outside data (JSON files, tool output) is parsed with `lib/parse.py`'s readers into
   dataclasses, the stand-in for a schema library, and only in modules named `parse.py`
   (`lib/parse.py`, `widgets/<name>/parse.py`): the gate lets only those take `object`
@@ -201,6 +206,8 @@ gtk-widgets/
 │   ├── proxy-helper       # Root helper: validates a Proxy rules request, builds the sing-box config, starts/stops the unit
 │   ├── 50-gtk-widgets-proxy.rules  # Polkit rule that authorises only that helper
 │   └── gtk-widgets-proxy.service   # sing-box unit (User=sing-box), installed to /etc/systemd/system/, never enabled
+├── modules/               # v4l2loopback options + load at boot for webcam-effects, installed to /etc/modprobe.d/ and /etc/modules-load.d/
+├── typings/onnxruntime/   # Hand-written types for the onnxruntime calls webcam-effects makes
 ├── src/gtk_widgets/
 │   ├── __init__.py        # Empty: launcher's CLI imports it
 │   ├── lib/
@@ -288,7 +295,7 @@ gtk-widgets/
 │       │       ├── app.py     # Overlay per output: frozen frame drawn 1:1, shade, selection frame; gif's recording indicator
 │       │       ├── image.py   # Upright frames (lossless flips/turns), row-slice crops, PNG save
 │       │       └── style.css
-│       └── network/
+│       ├── network/
 │           ├── main.py        # libnm popup: async calls, debounced sync of keyed rows; Connections page
 │           ├── editor.py      # Edit page: per-profile settings on a clone, verify(), full-secret saves, reapply on save (Reconnect now when refused)
 │           ├── ui.py          # Small GTK helpers shared by main.py and editor.py
@@ -300,6 +307,19 @@ gtk-widgets/
 │           ├── socks5.py      # Minimal SOCKS5 client: login, CONNECT trace (exit IP, country, latency), UDP ASSOCIATE round trip
 │           ├── style.css      # Also styles network-agent's prompt
 │           └── status.py      # JSON: link, active VPN, Proxy rules, connectivity; long-running (one line per change)
+│       └── webcam/
+│           ├── main.py        # Popup: preview, controls grouped, LED, presets, background switch and choices
+│           ├── v4l2.py        # V4L2 controls over ioctl, camera/loopback lookup, Logitech LED extension unit (stdlib)
+│           ├── preview.py     # ffmpeg frames -> Gtk.Picture; background thumbnails
+│           ├── gallery.py     # Background grid (images, or GIFs/videos/links): choose, remove
+│           ├── links.py       # .url backgrounds: pasted link -> file, yt-dlp stream URL, cached thumbnail (stdlib)
+│           ├── parse.py       # Settings file model + parser (stdlib)
+│           ├── settings.py    # Settings load/save (stdlib; the engine reads it too)
+│           ├── engine.py      # Start/stop/find webcam-effects, its log (stdlib)
+│           ├── effects.py     # webcam-effects: matting + backgrounds -> v4l2loopback (numpy, onnxruntime)
+│           ├── apply.py       # webcam-apply: saved settings back to the camera (stdlib)
+│           ├── status         # JSON: webcam icon, class "effects" while webcam-effects runs
+│           └── style.css
 ├── tests/
 │   └── smoke/             # probe.sh: install.sh + every installed command on a private headless Sway, report + screenshots
 └── themes/

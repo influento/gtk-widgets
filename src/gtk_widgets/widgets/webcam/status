@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Status output for webcam widget.
+# JSON: { "text": "icon", "tooltip": "...", "class": "..." }
+# class "effects" while webcam-effects runs (it holds an flock on its lock file).
+
+icon=$'\U000f05a0' # nf-md-webcam
+lock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/webcam-effects.lock"
+
+if [[ -e "$lock" ]] && ! flock -n -s "$lock" true; then
+  echo "{\"text\": \"$icon\", \"tooltip\": \"Webcam: background effects on\", \"class\": \"effects\"}"
+else
+  echo "{\"text\": \"$icon\", \"tooltip\": \"Webcam\"}"
+fi

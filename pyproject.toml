@@ -5,6 +5,8 @@ description = "GTK4 popup widgets for Sway (Wayland), themed via Catppuccin Moch
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "numpy>=2.3,<3",
+    "onnxruntime>=1.23,<2",
     "pycairo>=1.29.2,<2",
     "pygobject>=3.58.1,<4",
 ]
@@ -31,6 +33,9 @@ timer = "gtk_widgets.widgets.timer.main:main"
 timer-status = "gtk_widgets.widgets.timer.status:main"
 translate = "gtk_widgets.widgets.translate.main:main"
 usb = "gtk_widgets.widgets.usb.main:main"
+webcam = "gtk_widgets.widgets.webcam.main:main"
+webcam-apply = "gtk_widgets.widgets.webcam.apply:main"
+webcam-effects = "gtk_widgets.widgets.webcam.effects:main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]

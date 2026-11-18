@@ -13,6 +13,8 @@ from gi.repository import Gio, GLib
 
 # gtk4-layer-shell has to load before libwayland-client, which Gtk loads.
 _ = ctypes.CDLL("libgtk4-layer-shell.so.0", mode=ctypes.RTLD_GLOBAL)
+# Loaded: gtk_widgets.lib.ui would otherwise restart pytest to preload it.
+_ = os.environ.setdefault("LD_PRELOAD", "libgtk4-layer-shell.so.0")
 
 # Sway outlives a pytest that `timeout` or a kill ends before unconfigure: a
 # watchdog, started by Sway, ends Sway and removes its runtime dir then.
