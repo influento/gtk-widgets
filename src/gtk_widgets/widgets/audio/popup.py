@@ -78,12 +78,8 @@ EVENT_ROLE = "sink-input-by-media-role:event"
 METER_DECAY = 0.5  # meter fall per second, in bar lengths
 RECORD_TICK_MS = 250
 VOICE_DEBOUNCE_MS = 400  # quick flips restart the echo canceller once
-VOICE_TICK_MS = 100  # status bar pulse and stage clock
+VOICE_TICK_MS = 100  # status bar pulse
 VOICE_START_TIMEOUT_MS = 5000  # restarted unit without its source by then: failed
-# a restarted echo canceller had adapted after ~4 s of music (measured); it adapts
-# only while the speakers play, so the stage counts speaker sound, not time
-VOICE_ADAPT_MS = 4000
-SPEAKER_SOUND = 10 ** (-50 / 20)  # a speaker peak above -50 dBFS counts as sound
 # (Voice field, label, tooltip): the WebRTC switches that change the sound
 VOICE_OPTIONS = [
     ("gain_control", "Automatic gain", "Evens out how loud your voice is"),
@@ -102,11 +98,8 @@ type Info = (
     | PulseCardInfo
 )
 type MeterKey = tuple[Facility, int]
-# the default output's monitor while the echo canceller adapts; no row has this index
-SPEAKER_METER: MeterKey = ("sink", PA_INVALID)
-# busy: an apply runs; starting: the restarted unit's source is not up yet;
-# adapting: up, counting speaker sound
-type VoiceStage = Literal["idle", "busy", "starting", "adapting"]
+# busy: an apply runs; starting: the restarted unit's source is not up yet
+type VoiceStage = Literal["idle", "busy", "starting"]
 
 EVENT_FACILITIES: tuple[Facility | Literal["server"], ...] = (
     "card",
@@ -993,15 +986,11 @@ class VoiceSection(Gtk.Box):
             items.append((key, name, not missing))
         return items
 
-    def show_stage(self, text: str, fraction: float | None) -> None:
-        """fraction None: a stage of unknown length, the bar pulses."""
+    def show_stage(self, text: str) -> None:
         self._stop_pulse()
         self._status_label.set_text(text)
-        if fraction is None:
-            self._progress.pulse()
-            self._status_timer = GLib.timeout_add(VOICE_TICK_MS, self._pulse)
-        else:
-            self._progress.set_fraction(fraction)
+        self._progress.pulse()
+        self._status_timer = GLib.timeout_add(VOICE_TICK_MS, self._pulse)
         self._status.set_visible(True)
 
     def hide_status(self) -> None:
@@ -1348,9 +1337,8 @@ class AudioPopup(WidgetPopup):
         # what the running unit was last started or set with; None: unknown or off
         self._voice_applied: Voice | None = self._voice if self._voice.on else None
         self._voice_stage: VoiceStage = "idle"
-        self._voice_stage_timer = self._voice_stage_ms = 0
+        self._voice_stage_timer = 0
         self._voice_source_before = PA_INVALID  # its source's index before a restart
-        self._speaker_peak = 0.0  # since the last stage tick
 
     # --- UI ---
 
@@ -1782,17 +1770,6 @@ class AudioPopup(WidgetPopup):
         if not self._meter_sync_id:
             self._meter_sync_id = GLib.idle_add(self._sync_meters)
 
-    def _wanted_meters(self) -> dict[MeterKey, MeterSpec]:
-        targets = self._row_meters()
-        if self._meters is not None and self._voice_stage == "adapting":
-            sink = next(
-                (i for i in self._sinks.values() if i.name == self._defaults["sink"]),
-                None,
-            )
-            if sink is not None and sink.state != "suspended":
-                targets[SPEAKER_METER] = (sink.monitor_source, None, True)
-        return targets
-
     def _row_meters(self) -> dict[MeterKey, MeterSpec]:
         """Streams for the rows shown on the visible tab: {(facility, index): spec}.
 
@@ -1843,7 +1820,7 @@ class AudioPopup(WidgetPopup):
 
     def _sync_meters(self) -> bool:
         self._meter_sync_id = 0
-        targets = self._wanted_meters()
+        targets = self._row_meters()
         if targets != self._meter_targets:
             self._reset_meters(self._meter_targets.keys() - targets.keys())
             self._meter_targets = targets
@@ -1879,7 +1856,6 @@ class AudioPopup(WidgetPopup):
         dt = now - self._frame_time if self._frame_time else 0.0
         self._frame_time = now
         peaks = self._meters.take_peaks() if self._meters is not None else {}
-        self._speaker_peak = max(self._speaker_peak, peaks.get(SPEAKER_METER, 0.0))
         active = False
         for key in self._meter_targets:
             volume = self._volume_of(key)
@@ -2047,30 +2023,23 @@ class AudioPopup(WidgetPopup):
         if mode == "live":
             text = "Applying"
         elif self._voice.on:
-            text = "1/3 Restarting"
+            text = "1/2 Restarting"
         else:
             text = "Turning off"
-        self._voice_section.show_stage(text, None)
+        self._voice_section.show_stage(text)
 
     def _voice_set_stage(self, stage: VoiceStage) -> None:
         if self._voice_stage_timer:
             GLib.source_remove(self._voice_stage_timer)
             self._voice_stage_timer = 0
-        was_adapting = self._voice_stage == "adapting"
-        self._voice_stage, self._voice_stage_ms = stage, 0
-        self._speaker_peak = 0.0
+        self._voice_stage = stage
         if stage == "idle":
             self._voice_section.hide_status()
         elif stage == "starting":
-            self._voice_section.show_stage("2/3 Starting", None)
-        elif stage == "adapting":
-            self._voice_show_adapting(heard=False)
-        if stage in ("starting", "adapting"):
+            self._voice_section.show_stage("2/2 Starting")
             self._voice_stage_timer = GLib.timeout_add(
-                VOICE_TICK_MS, self._voice_stage_tick
+                VOICE_START_TIMEOUT_MS, self._voice_start_timeout
             )
-        if was_adapting or stage == "adapting":
-            self._queue_meters()  # the speaker meter runs only while adapting
 
     def _voice_check_started(self) -> None:
         """Starting ends when the unit's source is there anew."""
@@ -2078,39 +2047,15 @@ class AudioPopup(WidgetPopup):
             return
         index = self._voice_source()
         if index not in (PA_INVALID, self._voice_source_before):
-            self._voice_set_stage("adapting")
+            self._voice_set_stage("idle")
 
-    def _voice_show_adapting(self, *, heard: bool) -> None:
-        text = (
-            "3/3 Echo cancel adapting to speaker sound"
-            if heard
-            else "3/3 Echo cancel waiting for speaker sound"
+    def _voice_start_timeout(self) -> bool:
+        self._voice_stage_timer = 0
+        self._voice_set_stage("idle")
+        self._voice_section.show_error(
+            VoiceError(f"The processed mic did not appear: journalctl --user -u {UNIT}")
         )
-        self._voice_section.show_stage(text, self._voice_stage_ms / VOICE_ADAPT_MS)
-
-    def _voice_stage_tick(self) -> bool:
-        if self._voice_stage == "starting":
-            self._voice_stage_ms += VOICE_TICK_MS
-            if self._voice_stage_ms < VOICE_START_TIMEOUT_MS:
-                return GLib.SOURCE_CONTINUE
-            self._voice_stage_timer = 0
-            self._voice_set_stage("idle")
-            self._voice_section.show_error(
-                VoiceError(
-                    f"The processed mic did not appear: journalctl --user -u {UNIT}"
-                )
-            )
-            return GLib.SOURCE_REMOVE
-        heard = self._speaker_peak >= SPEAKER_SOUND
-        self._speaker_peak = 0.0
-        if heard:
-            self._voice_stage_ms += VOICE_TICK_MS
-        if self._voice_stage_ms >= VOICE_ADAPT_MS:
-            self._voice_stage_timer = 0
-            self._voice_set_stage("idle")
-            return GLib.SOURCE_REMOVE
-        self._voice_show_adapting(heard=heard)
-        return GLib.SOURCE_CONTINUE
+        return GLib.SOURCE_REMOVE
 
     # --- writes (command connection, main thread) ---
 
