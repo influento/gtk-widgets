@@ -6,8 +6,9 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,18 @@ from gtk_widgets.widgets.webcam.gallery import REMOVE_GLYPH, Gallery
 
 LINK = "https://example.com/video"
 WAIT_S = 10  # each wait below takes ~1-3 s when the code is right
+
+
+@pytest.fixture(autouse=True)
+def threads_end_with_their_test() -> Iterator[None]:
+    """Wait for the threads a test started (thumbnail loaders, players):
+    one still starting ffmpeg while the next test changes PATH fails with
+    "Bad address", and the error lands on that next test."""
+    before = set(threading.enumerate())
+    yield
+    deadline = time.monotonic() + WAIT_S
+    for thread in set(threading.enumerate()) - before:
+        thread.join(max(0.0, deadline - time.monotonic()))
 
 
 def _wait_for(done: Callable[[], bool]) -> bool:
