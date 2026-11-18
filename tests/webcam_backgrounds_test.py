@@ -15,7 +15,7 @@ import pytest
 from gtk_widgets.lib.ui.widget_base import Gtk
 from gtk_widgets.widgets.webcam import links
 from gtk_widgets.widgets.webcam.effects import Animation
-from gtk_widgets.widgets.webcam.gallery import Gallery
+from gtk_widgets.widgets.webcam.gallery import REMOVE_GLYPH, Gallery
 
 LINK = "https://example.com/video"
 WAIT_S = 10  # each wait below takes ~1-3 s when the code is right
@@ -202,5 +202,36 @@ def _toggles(widget: Gtk.Widget) -> list[Gtk.ToggleButton]:
             found.append(child)
         else:
             found += _toggles(child)
+        child = child.get_next_sibling()
+    return found
+
+
+def test_the_cross_removes_a_background_at_once(tmp_path: Path) -> None:
+    for name in ("a.gif", "b.gif"):
+        _ = (tmp_path / name).write_bytes(b"")
+    chosen: list[str | None] = [str(tmp_path / "a.gif")]
+    gallery = Gallery(
+        tmp_path,
+        suffixes={".gif"},
+        kind="GIFs",
+        chosen=lambda: chosen[0],
+        choose=lambda path: chosen.__setitem__(0, path),
+        show_error=lambda text: print(text, file=sys.stderr),
+    )
+    _crosses(gallery.box)[0].emit("clicked")
+    assert not (tmp_path / "a.gif").exists()
+    assert chosen[0] is None
+    assert [b.get_tooltip_text() for b in _toggles(gallery.box)] == ["b.gif"]
+
+
+def _crosses(widget: Gtk.Widget) -> list[Gtk.Button]:
+    """The tiles' remove buttons, in order."""
+    found: list[Gtk.Button] = []
+    child = widget.get_first_child()
+    while child is not None:
+        if type(child) is Gtk.Button and child.get_label() == REMOVE_GLYPH:
+            found.append(child)
+        else:
+            found += _crosses(child)
         child = child.get_next_sibling()
     return found

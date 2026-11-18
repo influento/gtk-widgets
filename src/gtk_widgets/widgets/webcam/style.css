@@ -140,10 +140,6 @@ overlay.thumb-tile button.thumb-remove:hover {
   color: @@RED@@;
 }
 
-button.danger {
-  color: @@RED@@;
-}
-
 button.swatch {
   min-width: 24px;
   min-height: 24px;

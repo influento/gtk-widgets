@@ -1,6 +1,7 @@
 """A grid of background files (images, or GIFs, videos and links) from the
-backgrounds folder: one chosen at a time, each removable after a "Remove?"
-under the grid. The folder is the dotfiles' one, so a removal syncs too."""
+backgrounds folder: one chosen at a time, each removed by its x (no
+confirm: the user's call). The folder is the dotfiles' one, so a removal
+syncs too."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -37,28 +38,13 @@ class Gallery:
         self._choose = choose
         self._show_error = show_error
         self._buttons: list[Gtk.ToggleButton] = []
-        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        self._area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.box.append(self._area)
-        self._confirm = Gtk.Box(spacing=6, visible=False)
-        self._confirm_label = Gtk.Label(xalign=0, hexpand=True, wrap=True)
-        self._confirm_label.add_css_class("note")
-        self._remove = Gtk.Button(label="Remove")
-        self._remove.add_css_class("danger")
-        cancel = Gtk.Button(label="Cancel")
-        cancel.connect("clicked", self._on_cancel)
-        for widget in (self._confirm_label, self._remove, cancel):
-            self._confirm.append(widget)
-        self._remove.connect("clicked", self._on_remove)
-        self._pending: Path | None = None  # the file "Remove?" asks about
-        self.box.append(self._confirm)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.refresh()
 
     def refresh(self) -> None:
         """Read the folder again: after a file is added or removed."""
-        self._confirm.set_visible(False)
-        while (child := self._area.get_first_child()) is not None:
-            self._area.remove(child)
+        while (child := self.box.get_first_child()) is not None:
+            self.box.remove(child)
         self._buttons = []
         files = (
             sorted(
@@ -75,7 +61,7 @@ class Gallery:
                 copy_text=str(self._folder),
             )
             hint.add_css_class("note")
-            self._area.append(hint)
+            self.box.append(hint)
             return
         grid = Gtk.FlowBox(
             selection_mode=Gtk.SelectionMode.NONE,
@@ -84,7 +70,7 @@ class Gallery:
         )
         for path in files:
             grid.append(self._tile(path))
-        self._area.append(grid)
+        self.box.append(grid)
 
     def _tile(self, path: Path) -> Gtk.Overlay:
         thumb = Gtk.Picture(content_fit=Gtk.ContentFit.COVER)
@@ -106,7 +92,7 @@ class Gallery:
             valign=Gtk.Align.START,
         )
         remove.add_css_class("thumb-remove")
-        remove.connect("clicked", self._ask_remove, path)
+        remove.connect("clicked", self._on_remove, path)
         tile = Gtk.Overlay(child=button)
         tile.add_css_class("thumb-tile")
         tile.add_overlay(remove)
@@ -116,19 +102,7 @@ class Gallery:
         if button.get_active():
             self._choose(path)
 
-    def _ask_remove(self, _button: Gtk.Button, path: Path) -> None:
-        self._pending = path
-        self._confirm_label.set_text(f"Remove “{path.stem}”?")
-        self._confirm.set_visible(True)
-
-    def _on_cancel(self, _button: Gtk.Button) -> None:
-        self._pending = None
-        self._confirm.set_visible(False)
-
-    def _on_remove(self, _button: Gtk.Button) -> None:
-        path, self._pending = self._pending, None
-        if path is None:
-            return
+    def _on_remove(self, _button: Gtk.Button, path: Path) -> None:
         if links.is_link(path):
             links.forget(path)
         try:
