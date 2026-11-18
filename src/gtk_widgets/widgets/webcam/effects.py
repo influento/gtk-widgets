@@ -262,6 +262,7 @@ class Animation:
         self._closed = threading.Event()
         self._lock = threading.Lock()  # guards _children against close()
         self._children: list[subprocess.Popen[bytes]] = []
+        self._as_chrome: tuple[str, ...] = ()  # links.IMPERSONATE after a 403
         self._thread = threading.Thread(target=self._play, daemon=True)
         self._thread.start()
 
@@ -292,9 +293,12 @@ class Animation:
                     # A file's ffmpeg errors go to the log. A link's would be
                     # the log's last line, which the popup shows as why the
                     # engine stopped (yt-dlp's warnings; ffmpeg's "-" on an
-                    # empty pipe): _play_link says what failed
-                    stderr=None
-                    if argv[0] == "ffmpeg" and stdin is None
+                    # empty pipe): _play_link reads yt-dlp's and says what
+                    # failed
+                    stderr=subprocess.PIPE
+                    if argv[0] == "yt-dlp"
+                    else None
+                    if stdin is None
                     else subprocess.DEVNULL,
                 )
             except OSError as e:  # the tool is not installed
@@ -330,13 +334,24 @@ class Animation:
                 return False
             case link:
                 pass
-        download = self._spawn(links.download_argv(link, "-"))
+        download = self._spawn(links.download_argv(link, "-", *self._as_chrome))
         if download is None or download.stdout is None:
             return False
         played = self._read(["-i", "-"], stdin=download.stdout)
         download.stdout.close()
         self._reap()
+        said = _said(download)
         if not played and not self._closed.is_set():
+            if not self._as_chrome and links.refused(said):
+                self._as_chrome = links.IMPERSONATE
+                return self._play_link()
+            if links.cannot_impersonate(said):
+                print(
+                    f"background link: {link}: {links.NEEDS_CURL_CFFI}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return False
             # An MP4 with its index at the end (no faststart) gives no frame
             # from a pipe, however short: play a downloaded copy
             played = self._play_copy(link)
@@ -356,7 +371,10 @@ class Animation:
         try:
             download = self._spawn(
                 links.download_argv(
-                    link, str(folder / DOWNLOAD_NAME), *links.COPY_LIMITS
+                    link,
+                    str(folder / DOWNLOAD_NAME),
+                    *links.COPY_LIMITS,
+                    *self._as_chrome,
                 )
             )
             if download is None or download.stdout is None:
@@ -365,6 +383,7 @@ class Animation:
             download.stdout.close()
             done = download.wait() == 0
             self._reap()
+            _ = _said(download)
             files = [p for p in folder.iterdir() if p.suffix not in PARTIAL_SUFFIXES]
             if not done or len(files) != 1:
                 return False
@@ -414,6 +433,14 @@ class Animation:
             children, self._children = self._children, []
         for child in children:
             _stop(child)
+
+
+def _said(proc: subprocess.Popen[bytes]) -> str:
+    """An ended child's errors (yt-dlp's are short: --quiet --no-warnings)."""
+    if proc.stderr is None:
+        return ""
+    with proc.stderr as err:
+        return err.read().decode(errors="replace")
 
 
 def _stop(proc: subprocess.Popen[bytes]) -> None:

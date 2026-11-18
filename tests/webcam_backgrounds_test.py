@@ -172,6 +172,95 @@ def test_yt_dlp_never_reads_the_users_config(
     assert all("--ignore-config" in run.split() for run in runs), runs
 
 
+REFUSED = "ERROR: [Site] x: Unable to download webpage: HTTP Error 403: Forbidden"
+NO_CURL_CFFI = (
+    'ERROR: Impersonate target "chrome" is not available. Use'
+    " --list-impersonate-targets to see available targets. You may be missing"
+    " dependencies required to support this target."
+)
+
+
+def _picky_site(as_chrome: str) -> str:
+    """A yt-dlp whose site answers 403 unless it runs with --impersonate;
+    `as_chrome` is the script run then."""
+    return f"""for arg in "$@"; do
+  if [[ $arg == --impersonate ]]; then {as_chrome}; exit; fi
+done
+echo '{REFUSED}' >&2
+exit 1"""
+
+
+@pytest.fixture
+def yt_dlp_as_chrome(
+    tmp_path: Path, clip: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A yt-dlp that serves the clip (stdout) or its title and no
+    thumbnail (--print) only as Chrome."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    serve = f"""if [[ " $* " == *" --print "* ]]; then printf 'A Title\\nNA\\n'
+  else cat '{clip}'; fi"""
+    _script(bin_dir / "yt-dlp", _picky_site(serve))
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+
+@pytest.fixture
+def yt_dlp_without_curl_cffi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A yt-dlp whose site answers 403 and that cannot be Chrome."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fail = f"echo '{NO_CURL_CFFI}' >&2; exit 1"
+    _script(bin_dir / "yt-dlp", _picky_site(fail))
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+
+@pytest.mark.usefixtures("yt_dlp_as_chrome")
+def test_link_refused_by_its_site_plays_as_chrome(tmp_path: Path) -> None:
+    link = tmp_path / "clip.url"
+    _ = link.write_text(f"{LINK}\n")
+    player = Animation(str(link))
+    try:
+        assert _wait_for(lambda: player.latest() is not None)
+    finally:
+        player.close()
+
+
+@pytest.mark.usefixtures("yt_dlp_as_chrome")
+def test_adding_a_link_refused_by_its_site_checks_it_as_chrome(
+    tmp_path: Path,
+) -> None:
+    added = links.add_link(LINK, tmp_path / "backgrounds")
+    assert isinstance(added, Path), added
+    assert added.name == "A Title.url"
+    assert added.read_text() == f"{LINK}\n"
+
+
+@pytest.mark.usefixtures("yt_dlp_without_curl_cffi")
+def test_adding_a_refused_link_without_curl_cffi_says_so(tmp_path: Path) -> None:
+    added = links.add_link(LINK, tmp_path / "backgrounds")
+    assert isinstance(added, links.LinkError)
+    assert "python-curl_cffi" in str(added)
+
+
+@pytest.mark.usefixtures("yt_dlp_without_curl_cffi")
+def test_refused_link_without_curl_cffi_says_so_in_the_log(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    link = tmp_path / "clip.url"
+    _ = link.write_text(f"{LINK}\n")
+    player = Animation(str(link))
+    try:
+        said: list[str] = []
+        assert _wait_for(
+            lambda: (
+                said.append(capfd.readouterr().err)
+                or "python-curl_cffi" in "".join(said)
+            )
+        ), said
+    finally:
+        player.close()
+
+
 def _runs(log: Path) -> int:
     return len(log.read_text().split()) if log.exists() else 0
 

@@ -28,6 +28,14 @@ STREAM_SORT = "res:720,fps:30,hdr:sdr,vcodec:h264"
 COPY_LIMITS = ("--max-filesize", "500M", "--match-filter", "!is_live")
 # The user's yt-dlp config (output path, SponsorBlock, merging) is not ours
 YT_DLP = ["yt-dlp", "--ignore-config", "--quiet", "--no-warnings", "--no-playlist"]
+# Some sites answer 403 to yt-dlp unless its requests look like Chrome's,
+# which needs the optional python-curl_cffi: tried only after a 403
+IMPERSONATE = ("--impersonate", "chrome")
+REFUSED = "HTTP Error 403"
+NO_IMPERSONATE = 'Impersonate target "chrome" is not available'
+NEEDS_CURL_CFFI = (
+    "the site refuses yt-dlp unless it looks like Chrome, which needs python-curl_cffi"
+)
 RESOLVE_TIMEOUT_S = 60
 THUMBNAILS_DIR = Path.home() / ".cache/gtk-widgets/webcam/thumbnails"
 THUMBNAIL_WIDTH = 384  # the popup shows it at 96 logical px
@@ -64,6 +72,16 @@ def download_argv(link: str, output: str, *extra: str) -> list[str]:
         *extra,
         link,
     ]
+
+
+def refused(said: str) -> bool:
+    """Whether yt-dlp's errors say the site refused it."""
+    return REFUSED in said
+
+
+def cannot_impersonate(said: str) -> bool:
+    """Whether yt-dlp's errors say IMPERSONATE is missing its library."""
+    return NO_IMPERSONATE in said
 
 
 def url_line(output: bytes) -> str | ParseError:
@@ -124,10 +142,27 @@ def _free_name(folder: Path, title: str) -> Path:
 
 
 def _yt_dlp(args: list[str]) -> bytes | LinkError:
-    """yt-dlp's output (empty when it fails); LinkError when it cannot run
-    or times out."""
+    """yt-dlp's output (empty when it fails), as Chrome after a 403;
+    LinkError when it cannot run, times out, or cannot be Chrome."""
+    match _run_yt_dlp(args):
+        case LinkError() as e:
+            return e
+        case done if refused(done.stderr.decode(errors="replace")):
+            pass
+        case done:
+            return done.stdout
+    match _run_yt_dlp([*IMPERSONATE, *args]):
+        case LinkError() as e:
+            return e
+        case done if cannot_impersonate(done.stderr.decode(errors="replace")):
+            return LinkError(NEEDS_CURL_CFFI)
+        case done:
+            return done.stdout
+
+
+def _run_yt_dlp(args: list[str]) -> subprocess.CompletedProcess[bytes] | LinkError:
     try:
-        done = subprocess.run(
+        return subprocess.run(
             [*YT_DLP, "--skip-download", *args],
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -138,7 +173,6 @@ def _yt_dlp(args: list[str]) -> bytes | LinkError:
         return LinkError("yt-dlp took too long (no network?)")
     except OSError as e:
         return LinkError(f"yt-dlp: {e.strerror} (is yt-dlp installed?)")
-    return done.stdout
 
 
 def forget(path: Path) -> None:
