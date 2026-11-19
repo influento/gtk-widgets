@@ -32,3 +32,22 @@
   f-settings-popup-display-settings-plus-cpu-power-lev-261116-1924 for its EPP
   error line (popup 428 px to 882 px); the others seen in the code only
   (2026-11-17).
+- **audio: voice processing tunes itself to the room.** A guided self-test
+  runs cases on the user's setup, e.g. room noise, typing, speech, speech over
+  sound from the speakers, and measures each stage (raw mic, after the echo
+  canceller, after the noise filter). From that it sets the most adaptive
+  settings. Where cases trade off (e.g. typing silenced vs soft speech kept, or
+  a quiet echo vs a voice ducked while the speakers play), it shows the options
+  and the user picks one. UI/UX still open. Why: on 2026-11-19, a video playing
+  from the speakers made the user barely heard. The echo canceller cut about
+  half of the speech over the video (raw mic: voice −42 dBFS, video −48), and
+  DeepFilterNet cut a further ~8 dB. The user turned processing off for a call.
+  Asked for by the user (2026-11-19). Limits seen so far: the user must speak
+  live in a guided take of 1–2 minutes, because speech played from the speakers
+  is echo. The noise filters (LADSPA) can be tried offline on one take at many
+  settings. PipeWire's WebRTC echo canceller has no strength setting, so for
+  that stage the test can only advise (speaker volume, mic distance and
+  direction, headphones). Results go stale when the setup changes. Level scores
+  miss how the voice sounds, so the user picks by ear. Start with a spike:
+  does offline filtering match the live filter, which scores match the user's
+  ear, and how short can the guided take be.
