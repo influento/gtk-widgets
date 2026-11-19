@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from gtk_widgets.lib.parse import (
     ParseError,
+    as_bool,
     as_float,
     as_int,
     as_str,
@@ -49,6 +50,8 @@ class Settings:
     image: str | None = None  # background image path
     animation: str | None = None  # background GIF or video path
     colour: str = DEFAULT_COLOUR  # background colour, hex without #
+    mirror_preview: bool = False  # the popup's preview flipped left to right
+    mirror_output: bool = False  # webcam-effects flips what apps get
 
 
 def _values(data: object, path: str) -> dict[str, int] | ParseError:
@@ -105,6 +108,8 @@ def parse_settings(data: object) -> Settings | ParseError:
         as_str_or_none(data.get("image", d.image), ".image"),
         as_str_or_none(data.get("animation", d.animation), ".animation"),
         as_str(data.get("colour", d.colour), ".colour"),
+        as_bool(data.get("mirror_preview", d.mirror_preview), ".mirror_preview"),
+        as_bool(data.get("mirror_output", d.mirror_output), ".mirror_output"),
     ):
         case (
             dict() as controls,
@@ -115,6 +120,8 @@ def parse_settings(data: object) -> Settings | ParseError:
             (str() | None) as image,
             (str() | None) as animation,
             str() as colour,
+            bool() as mirror_preview,
+            bool() as mirror_output,
         ):
             return Settings(
                 controls,
@@ -125,6 +132,8 @@ def parse_settings(data: object) -> Settings | ParseError:
                 image,
                 animation,
                 colour,
+                mirror_preview,
+                mirror_output,
             )
         case fields:
             return next(f for f in fields if isinstance(f, ParseError))

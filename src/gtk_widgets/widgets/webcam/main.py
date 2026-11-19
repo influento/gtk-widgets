@@ -26,6 +26,7 @@ ANIMATED_SUFFIXES = {".gif", ".mp4", ".webm", ".mkv", ".mov", links.LINK_SUFFIX}
 CONTROLS_HEIGHT = 560
 SET_DELAY_MS = 40  # a slider drag writes at most this often
 SAVE_DELAY_MS = 400
+MIRRORED = "mirrored"  # css class: the preview flipped left to right
 RETRY_MS = 2000  # preview restart after ffmpeg stops
 ENGINE_POLL_MS = 300
 ENGINE_START_POLLS = 40  # 12 s: the first start downloads the model
@@ -109,6 +110,14 @@ def _labelled(text: str, widget: Gtk.Widget) -> Gtk.Box:
     return row
 
 
+def _switch_row(
+    text: str, on_set: Callable[[Gtk.Switch, int], bool], *, active: bool
+) -> Gtk.Box:
+    switch = Gtk.Switch(valign=Gtk.Align.CENTER, active=active)
+    switch.connect("state-set", on_set)
+    return _labelled(text, switch)
+
+
 def _is_switch(control: v4l2.Control) -> bool:
     return control.kind is v4l2.Kind.BOOLEAN or (
         control.kind is v4l2.Kind.INTEGER
@@ -129,6 +138,7 @@ class WebcamPopup(WidgetPopup):
         self._retry_source = 0
         self._closing = False
         self._preview: Preview | None = None
+        self._preview_from_engine = False  # it shows the loopback, not the camera
         # The engine this popup started: polled so it is reaped when it ends
         self._engine_proc: subprocess.Popen[bytes] | None = None
         self._watch_source = 0
@@ -206,6 +216,13 @@ class WebcamPopup(WidgetPopup):
         self._preview_note.set_halign(Gtk.Align.CENTER)
         overlay.add_overlay(self._preview_note)
         box.append(overlay)
+        box.append(
+            _switch_row(
+                "Mirror preview",
+                self._on_mirror_preview,
+                active=self._settings.mirror_preview,
+            )
+        )
         self._preview = Preview(
             self._picture,
             on_frame=lambda: self._preview_note.set_text(""),
@@ -223,11 +240,35 @@ class WebcamPopup(WidgetPopup):
                 self._preview_note.set_text("Effects on, no loopback device")
                 return GLib.SOURCE_REMOVE
             self._preview.start(loop, camera=False)
+            self._preview_from_engine = True
         else:
             self._preview.start(self._device, camera=True)
+            self._preview_from_engine = False
+        self._show_mirror()
         if self._picture.get_paintable() is None:
             self._preview_note.set_text("Starting the camera\u2026")
         return GLib.SOURCE_REMOVE
+
+    def _show_mirror(self) -> None:
+        """The preview flipped by its own switch alone: the loopback's
+        picture is already flipped while Mirror for apps is on."""
+        flipped = self._preview_from_engine and self._settings.mirror_output
+        if self._settings.mirror_preview != flipped:
+            self._picture.add_css_class(MIRRORED)
+        else:
+            self._picture.remove_css_class(MIRRORED)
+
+    def _on_mirror_preview(self, _switch: Gtk.Switch, state: int) -> bool:
+        self._settings.mirror_preview = bool(state)  # a gboolean
+        self._show_mirror()
+        self._save_now()
+        return False
+
+    def _on_mirror_output(self, _switch: Gtk.Switch, state: int) -> bool:
+        self._settings.mirror_output = bool(state)
+        self._show_mirror()
+        self._save_now()
+        return False
 
     def _on_preview_end(self, message: str) -> None:
         busy = "busy" in message.lower()
@@ -252,6 +293,13 @@ class WebcamPopup(WidgetPopup):
         self._engine_note.add_css_class("note")
         box.append(self._engine_note)
         self._show_engine_note()
+        box.append(
+            _switch_row(
+                "Mirror for apps",
+                self._on_mirror_output,
+                active=self._settings.mirror_output,
+            )
+        )
 
         modes = Gtk.Box(spacing=0, homogeneous=True)
         modes.add_css_class("linked")

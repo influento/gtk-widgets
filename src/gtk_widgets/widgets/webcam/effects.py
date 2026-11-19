@@ -666,6 +666,7 @@ def run(camera: Path, loopback: Path, stop: list[bool]) -> None:
     composite = Compositor()
     watched = WatchedSettings()
     reader, writer = _reader(camera), _writer(loopback)
+    flipped: Frame = np.empty((HEIGHT, WIDTH, 3), np.uint8)
 
     def on_signal(_sig: int, _frame: FrameType | None) -> None:
         # The read below is retried after a signal (PEP 475) and a camera
@@ -681,15 +682,24 @@ def run(camera: Path, loopback: Path, stop: list[bool]) -> None:
             msg = "ffmpeg pipes missing"
             raise EngineError(msg)
         print(f"{camera} -> {loopback}", file=sys.stderr, flush=True)
-        was_on = False
+        was_on, was_mirrored = False, False
         while not stop[0] and len(raw := src.read(FRAME_BYTES)) == FRAME_BYTES:
             watched.poll()
+            wanted = watched.current
             frame: Frame = np.frombuffer(raw, np.uint8).reshape(HEIGHT, WIDTH, 3)
-            out = composite(
-                frame, watched.current, backgrounds, matte, fresh=not was_on
-            )
-            was_on = out is not None
-            sink.write(raw if out is None else out)
+            if wanted.mirror_output:
+                np.copyto(flipped, frame[:, ::-1])
+                frame = flipped
+            # The matte's state follows the person: a flip moves them
+            fresh = not was_on or wanted.mirror_output != was_mirrored
+            out = composite(frame, wanted, backgrounds, matte, fresh=fresh)
+            was_on, was_mirrored = out is not None, wanted.mirror_output
+            if out is not None:
+                sink.write(out)
+            elif wanted.mirror_output:
+                sink.write(memoryview(flipped).cast("B"))
+            else:
+                sink.write(raw)
         if not stop[0]:
             raise EngineError(f"{camera}: the camera stopped (in use by another app?)")
     finally:
