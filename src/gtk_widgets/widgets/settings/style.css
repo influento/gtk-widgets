@@ -84,3 +84,22 @@ scale marks mark label {
   background: @@SAPPHIRE@@;
   color: @@BASE@@;
 }
+
+.tile {
+  font-size: 11px;
+  padding: 8px 4px;
+  border: none;
+  border-radius: 4px;
+  background: @@SURFACE0@@;
+  color: @@TEXT@@;
+  box-shadow: none;
+}
+
+.tile:hover {
+  background: @@SURFACE1@@;
+}
+
+.tile-icon {
+  font-size: 20px;
+  color: @@SAPPHIRE@@;
+}

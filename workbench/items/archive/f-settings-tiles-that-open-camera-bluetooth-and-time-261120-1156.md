@@ -1,5 +1,7 @@
 # f-settings-tiles-that-open-camera-bluetooth-and-time-261120-1156 — Settings: tiles that open Camera, Bluetooth and Timer
 
+No review, tester run or test book: the user, 2026-11-20, chose to skip workbench for this item ("Yes, skip workbench") and to squash it onto main by hand.
+
 ## Why
 
 The settings popup has only the display and CPU rows. The user uses the
@@ -34,3 +36,32 @@ removes their bar icons. That change is outside this repo.
   those icons from there but its separate dotfiles related part".
 - 2026-11-20, on the check: "Agree" (steps 1-3). Before the change all three
   fail: settings has no tiles.
+- 2026-11-20, on the process: "Yes, skip workbench"; landing: "Squash onto main".
+
+### Agent's run on a private headless Sway (2026-11-20)
+
+Throwaway HOME with install.sh's launchers, a fake `bluetoothctl` (adapter
+on, no devices) and a stand-in `webcam` launcher (the real one would open the
+user's camera). `widget-toggle settings`, a virtual-pointer click on each tile,
+then `widget-toggle <name>`. Settings showed the three tiles below the CPU row.
+The first run found the click handler blocking: settings inherits
+`WIDGET_TOGGLE_DETACHED=1` from its own widget-toggle, so the nested one ran in
+the foreground; the child now gets an environment without it. Output after
+the fix:
+
+```
+== webcam tile: settings pid 165815
+settings: closed
+webcam: open (pid 165893, bash /tmp/tmp.PylIqwOgJc/home/.local/bin/webcam )
+webcam: closed by widget-toggle webcam
+== bluetooth tile: settings pid 166052
+settings: closed
+bluetooth: open (pid 166236, python3 /tmp/tmp.PylIqwOgJc/home/.local/bin/bluetooth )
+bluetooth: closed by widget-toggle bluetooth
+== timer tile: settings pid 166450
+settings: closed
+timer: open (pid 166638, python3 /tmp/tmp.PylIqwOgJc/home/.local/bin/timer )
+timer: closed by widget-toggle timer
+```
+
+`workbench/checks`: 65 passed.

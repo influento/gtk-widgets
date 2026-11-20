@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Settings popup — display (scale, brightness, night light temperature) and
-CPU power level."""
+"""Settings popup — display (scale, brightness, night light temperature),
+CPU power level, and tiles that open other widgets."""
 
 import json
+import os
 import subprocess
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, override
 
 from gi.repository import GLib
@@ -25,6 +27,13 @@ FLUSH_S = 5  # longest wait on close for the last brightness write (a rescan is 
 DEFAULT_SCALE = 1.0
 DEFAULT_TEMPERATURE = 4500
 ERROR_WIDTH_CHARS = 54  # about the CPU row's width at the error's font size
+WIDGET_TOGGLE = Path.home() / ".local/bin/widget-toggle"
+# (glyph, label, widget-toggle name) of the widgets settings opens
+TILES = [
+    ("\U000f05a0", "Camera", "webcam"),  # nf-md-webcam
+    ("\U000f00af", "Bluetooth", "bluetooth"),  # nf-md-bluetooth
+    ("\uf017", "Timer", "timer"),  # nf-fa-clock_o
+]
 
 type SliderKey = Literal["scale", "brightness", "temperature"]
 
@@ -226,7 +235,33 @@ class SettingsPopup(WidgetPopup):
 
         if epp.available():
             self._build_epp(container)
+        self._build_tiles(container)
         return container
+
+    def _build_tiles(self, container: Gtk.Box) -> None:
+        container.append(Gtk.Separator())
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        row.set_homogeneous(True)
+        for glyph, text, widget in TILES:
+            tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            icon = Gtk.Label(label=glyph)
+            icon.add_css_class("tile-icon")
+            tile.append(icon)
+            tile.append(Gtk.Label(label=text))
+            button = Gtk.Button(child=tile)
+            button.add_css_class("tile")
+            button.connect("clicked", self._on_tile_clicked, widget)
+            row.append(button)
+        container.append(row)
+
+    def _on_tile_clicked(self, _button: Gtk.Button, widget: str) -> None:
+        """Open the widget and close settings: it opens in settings' place."""
+        # Settings inherits WIDGET_TOGGLE_DETACHED from its own widget-toggle:
+        # without it the child detaches itself and returns at once.
+        # subprocess's close_fds keeps settings' toggle lock (fd 9) out of it.
+        env = {k: v for k, v in os.environ.items() if k != "WIDGET_TOGGLE_DETACHED"}
+        subprocess.run([WIDGET_TOGGLE, widget], env=env, check=False)
+        self.quit()
 
     def _build_epp(self, container: Gtk.Box) -> None:
         container.append(Gtk.Separator())

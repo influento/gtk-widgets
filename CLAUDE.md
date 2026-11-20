@@ -81,7 +81,7 @@ theme file is resolved in this order: `GTK_WIDGETS_THEME` env var, then the
 | Widget         | Description                                                       |
 | -------------- | ----------------------------------------------------------------- |
 | `calendar`     | GTK4 calendar                                                     |
-| `settings`     | Quick settings: display (scale, brightness, night light temp; `display-brightness` CLI for keybinds) and CPU power level (EPP: the four levels intel_pstate and amd-pstate-epp take, set through `epp-helper` via polkit; the pick goes to `~/.local/state/dotfiles/epp`, and dotfiles runs `settings-epp restore` at sway startup) |
+| `settings`     | Quick settings: display (scale, brightness, night light temp; `display-brightness` CLI for keybinds) and CPU power level (EPP: the four levels intel_pstate and amd-pstate-epp take, set through `epp-helper` via polkit; the pick goes to `~/.local/state/dotfiles/epp`, and dotfiles runs `settings-epp restore` at sway startup); tiles Camera, Bluetooth, Timer below them: a click runs `widget-toggle` for that widget and closes settings (the widgets keep their own code and toggle) |
 | `claude-usage` | Claude usage: 5h session, weekly all-models, weekly per-model, next charge date |
 | `bluetooth`    | Bluetooth device manager: scan, pair, connect/disconnect          |
 | `power`        | Power menu: lock, sleep, reboot, shut down                        |
