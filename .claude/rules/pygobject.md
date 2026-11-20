@@ -14,4 +14,5 @@ paths: ["**/*.py"]
 API: the C docs at https://docs.gtk.org/gtk4/ and
 https://wmww.github.io/gtk4-layer-shell/ (Python drops the `gtk_` prefix:
 `gtk_window_present` is `Gtk.Window.present`); the Python types in
-`.venv/lib/python3*/site-packages/gi-stubs/repository/`.
+`.venv/lib/python3*/site-packages/gi-stubs/repository/`. `Gtk.pyi` and `Gdk.pyi`
+only re-export: GTK 4's types are in `_Gtk4.pyi` and `_Gdk4.pyi`.
