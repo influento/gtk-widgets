@@ -3,7 +3,9 @@
 # py-gate: lint, format, types, the gate's own rules, dependencies, import
 # cycles, tests. Modes: none (the whole project), --local (what the Stop hook
 # runs: format on the branch's changed files), --fix (ruff's fixes and the
-# formatter, nothing else). Every tool runs even when another fails.
+# formatter, nothing else), --legacy (the files that fail lint, format, types
+# or the gate's own rules, for install's py-gate-legacy.txt). Every tool runs
+# even when another fails.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 # uv ignores an activated environment with a warning, and an absolute
@@ -12,6 +14,8 @@ unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT
 FAIL=0
 MODE="${1:-}"
 UV=(uv run --locked --exact --quiet)
+# shellcheck source-path=SCRIPTDIR/../../../shared source=test-lock.sh
+. py-gate/scripts/test-lock.sh
 
 default_branch() {
   git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null && return
@@ -28,6 +32,10 @@ RUFF_X=(); [ ${#EXCLUDE[@]} -eq 0 ] || RUFF_X=(--extend-exclude "$(IFS=,; echo "
 # Python: it then flags 3.14's lazy annotations (TC004) and misses UP040.
 TARGET=$(python3 py-gate/conf.py target-version)
 [ -z "$TARGET" ] || RUFF_X+=(--target-version "$TARGET")
+# The files py-gate-legacy.txt lists failed the gate when it came into the
+# project: no tool but pytest checks them until their line is deleted.
+mapfile -t LEGACY < <(python3 py-gate/conf.py legacy)
+[ ${#LEGACY[@]} -eq 0 ] || RUFF_X+=(--extend-exclude "$(IFS=,; echo "${LEGACY[*]}")")
 
 if [ "$MODE" = "--fix" ]; then
   "${UV[@]}" ruff check --config ruff.toml --ignore-noqa --fix --quiet --force-exclude "${RUFF_X[@]}" .; c=$?
@@ -47,7 +55,7 @@ if [ "$MODE" = "--local" ]; then
   for f in "${CHANGED[@]}"; do [[ "$f" =~ \.pyi?$ && -e "$f" ]] && FILES+=("$f"); done
   if [ ${#FILES[@]} -eq 0 ]; then
     printf '%s\n' "${CHANGED[@]}" \
-      | grep -qE '\.pyi?$|^(pyproject\.toml|uv\.lock|\.python-version|ruff\.toml|pyrightconfig\.json|pytest\.toml|py-gate/.*|\.claude/workshop\.conf)$' \
+      | grep -qE '\.pyi?$|^(pyproject\.toml|uv\.lock|\.python-version|ruff\.toml|pyrightconfig\.json|pytest\.toml|py-gate/.*|py-gate-legacy\.txt|\.claude/workshop\.conf)$' \
       || { echo "no Python or config changes"; exit 0; }
     echo "== no changed Python files; project-wide checks only =="
   fi
@@ -56,6 +64,21 @@ fi
 # The first uv run syncs the worktree's own .venv from its lock; one that
 # fails stops the gate, since no tool after it would run.
 quiet uv sync --locked --exact --quiet || { echo "uv sync --locked failed: uv.lock and pyproject.toml disagree. Run uv lock."; exit 1; }
+
+mapfile -t PYRIGHT_PATHS < <(python3 py-gate/conf.py pyright-paths)
+PYRIGHT=(basedpyright -p pyrightconfig.json --baselinefile py-gate/no-baseline.json)
+
+if [ "$MODE" = "--legacy" ]; then
+  {
+    "${UV[@]}" ruff check --config ruff.toml --ignore-noqa --output-format concise --quiet --force-exclude "${RUFF_X[@]}" .
+    "${UV[@]}" ruff format --config ruff.toml --check --output-format concise --quiet --force-exclude "${RUFF_X[@]}" .
+    "${UV[@]}" python py-gate/check.py
+  } 2>&1 | python3 py-gate/scripts/legacy.py paths > "${TMPDIR:-/tmp}/py-gate-legacy.$$"
+  "${UV[@]}" "${PYRIGHT[@]}" --outputjson "${PYRIGHT_PATHS[@]}" | python3 py-gate/scripts/legacy.py paths >> "${TMPDIR:-/tmp}/py-gate-legacy.$$"
+  "${UV[@]}" python py-gate/scripts/legacy.py order < "${TMPDIR:-/tmp}/py-gate-legacy.$$"
+  rm -f "${TMPDIR:-/tmp}/py-gate-legacy.$$"
+  exit 0
+fi
 
 # The project's packages: the import names under src/.
 mapfile -t PKGS < <(find src -mindepth 2 -maxdepth 2 -name __init__.py -printf '%h\n' 2>/dev/null | xargs -r -n1 basename | sort)
@@ -113,7 +136,9 @@ tests() {
   for g in "${EXCLUDE[@]}"; do args+=(--ignore-glob "$g"); done
   # Workbench asks for each test's run time when it runs the project's checks.
   [ -z "${WORKSHOP_TEST_REPORTS:-}" ] || args+=(--junit-xml="$WORKSHOP_TEST_REPORTS/py-gate.xml" -o junit_family=xunit1)
-  "${UV[@]}" pytest "${args[@]}"; rc=$?
+  # pytest runs one test at a time: test_workers has nothing to bound.
+  test_locked py-gate "$MODE" "${UV[@]}" pytest "${args[@]}"; rc=$?
+  [ "$rc" -ne "$TEST_LOCK_TIMED_OUT" ] || return 1
   # 5: no test collected, as vitest's --passWithNoTests. Unless tests/ holds
   # test files: then a conftest or a marker hid them, and vitest's equal
   # sits in its guarded config, where pytest's is project code.
@@ -129,10 +154,21 @@ run "${UV[@]}" ruff check --config ruff.toml --ignore-noqa --output-format conci
 run fmt
 # basedpyright skips every error in its baseline file, which
 # `basedpyright --writebaseline` writes; the gate names one that never exists.
-mapfile -t PYRIGHT_PATHS < <(python3 py-gate/conf.py pyright-paths)
-run quiet "${UV[@]}" basedpyright -p pyrightconfig.json --baselinefile py-gate/no-baseline.json "${PYRIGHT_PATHS[@]}"
+# It has no flag to leave a file out, so with a legacy list its JSON report
+# loses the listed files' findings.
+types() {
+  [ ${#LEGACY[@]} -gt 0 ] || { quiet "${UV[@]}" "${PYRIGHT[@]}" "${PYRIGHT_PATHS[@]}"; return; }
+  local out rc=0
+  out=$("${UV[@]}" "${PYRIGHT[@]}" --outputjson "${PYRIGHT_PATHS[@]}") || rc=$?
+  [ "$rc" -le 1 ] || { printf '%s\n' "$out"; return "$rc"; }
+  printf '%s\n' "$out" | python3 py-gate/scripts/legacy.py pyright
+}
+run types
 run "${UV[@]}" python py-gate/check.py
 run quiet deps
 run quiet cycles
 run tests
+if [ -z "$MODE" ] && [ ${#LEGACY[@]} -gt 0 ]; then
+  echo "py-gate-legacy.txt: ${#LEGACY[@]} files the gate does not check yet. To bring one in, delete its line, then fix what the gate reports in it. The first line is the one to take next: ${LEGACY[0]}"
+fi
 exit $FAIL

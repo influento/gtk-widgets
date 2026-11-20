@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Bash, copied into a project by guard. A shell command
-# that can write a path of an Edit(...) rule in permissions.deny or .ask, or
-# cds into a guarded directory, gets the answer the edit tools get: deny or
-# ask. Settings rules alone let a redirect such as `> tsconfig.json` through
-# in auto mode (../../AGENTS.md, "Guarded files"). The hook judges each
+# PreToolUse hook for Bash and the edit tools, copied into a project by
+# guard. A change to a path of .claude/guarded waits for the user: the hook
+# refuses it and tells the agent to ask in plain words, until the user
+# approves (approved below). A change to a path of an Edit(...) rule in
+# permissions.deny is refused. A shell command changes a path when it can
+# write it or cds into a guarded directory: settings rules alone let a
+# redirect such as `> tsconfig.json` through in auto mode (../../AGENTS.md,
+# "Guarded files"). The hook judges each
 # pipeline of the command alone: one that names the path passes when the
 # part that first names it and every part after it are known reads (cat,
 # grep, git diff, ...) and no redirect goes into the path, since a pipe
@@ -17,16 +20,24 @@ set -euo pipefail
 exec python3 -c "$(cat <<'PY'
 import json, os, re, shlex, sys
 
-cmd = json.load(sys.stdin).get("tool_input", {}).get("command", "")
+data = json.load(sys.stdin)
+tool = data.get("tool_name", "Bash")
+cmd = data.get("tool_input", {}).get("command", "")
+root = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR", "."))
 try:
-    with open(os.path.join(os.environ.get("CLAUDE_PROJECT_DIR", "."), ".claude/settings.json")) as fh:
+    with open(os.path.join(root, ".claude/settings.json")) as fh:
         perms = json.load(fh).get("permissions", {})
 except (OSError, ValueError):
-    sys.exit(0)
+    perms = {}
+try:
+    with open(os.path.join(root, ".claude/guarded")) as fh:
+        listed = [line.strip() for line in fh if line.strip()]
+except OSError:
+    listed = []
 
-READ = {"cat", "head", "tail", "less", "wc", "ls", "grep", "diff", "cmp", "stat", "file",
-        "jq", "realpath", "readlink", "basename", "dirname", "echo", "printf", "test",
-        "[", "true", ":", "cd", "pwd", "cut", "tr", "nl", "column", "od",
+READ = {"cat", "head", "tail", "less", "wc", "ls", "grep", "rg", "diff", "cmp", "stat", "file",
+        "tree", "jq", "realpath", "readlink", "basename", "dirname", "echo", "printf", "test",
+        "[", "true", ":", "cd", "pwd", "cut", "tr", "nl", "uniq", "column", "od", "xxd",
         "md5sum", "sha256sum", "read", "mapfile", "readarray", "for", "select"}
 GIT_READ = {"diff", "log", "show", "status", "blame", "grep", "ls-files", "ls-tree", "rev-parse",
             "cat-file", "merge-base", "describe", "shortlog", "check-ignore", "add", "commit"}
@@ -74,12 +85,6 @@ FUNC_DEF = re.compile(r"(?:^|[;&|\n{(]|\b(?:then|do|else))[ \t]*(?:function((?:[
                       r"|((?:[^\s(){};&|=$]+[ \t]+)*[^\s(){};&|=$]+)[ \t]*\([ \t]*\))")
 # The names the hook trusts before a script.
 TRUSTED = {"bash", "sh", "python", "python3", "uv", "timeout"}
-# The variables that only change how a read shows its output.
-DISPLAY = re.compile(r"LC_\w+|LANG|LANGUAGE|TZ|NO_COLOR|TERM|COLUMNS")
-# The variables an export may set without changing what a program runs.
-SAFE_ENV = re.compile(DISPLAY.pattern + r"|GIT_(?:AUTHOR|COMMITTER)_(?:NAME|EMAIL|DATE)")
-# set's arguments that only change how errors end the command.
-SET_SAFE = re.compile(r"[-+][euxv]*o?|pipefail|errexit|nounset|xtrace|verbose")
 # An assignment: its name, and its subscript if it sets an element.
 ASSIGN = re.compile(r"^(\w+)(\[[^\]]*\])?\+?=")
 # The variables of bash and zsh that change which program a name runs, or
@@ -88,7 +93,7 @@ LOOKUP = r"(?:PATH|path|commands|functions|aliases|galiases|saliases|options|fpa
          r"|MODULE_PATH|dis_\w+|BASH_\w+|ENV|PYTHON\w*)"
 # Shell text that sets one: a loop's variable, or an expansion that assigns
 # (${PATH:=}, zsh's ${(P)name::=}).
-SHELL_TEXT = re.compile(r"\b(?:for|select)[ \t]+" + LOOKUP + r"\b|\$\{[^}\s'\"]*=")
+SHELL_TEXT = re.compile(r"\b(?:for|select)[ \t]+" + LOOKUP + r"\b|\$\{[^}]*=")
 HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'(\w+)'|\"(\w+)\"|\\?(\w+))")
 
 def split(words):
@@ -114,15 +119,6 @@ def reads(words):
         return True
     if name == "sort":
         return not any(a.startswith(("-o", "--output")) for a in args)
-    if name in ("uniq", "xxd"):
-        # Their second file is the output. An option's value counts as a
-        # file too: a false ask, never a missed write.
-        return len([a for a in args if not a.startswith("-")]) < 2
-    if name == "tree":
-        return not any(a.startswith("-o") for a in args)
-    if name == "rg":
-        # --pre runs a program on each file.
-        return not any(a.startswith("--pre") for a in args)
     if name == "find":
         return not FIND_WRITE.intersection(args)
     if name == "sed":
@@ -131,14 +127,8 @@ def reads(words):
             and bool(script) and re.fullmatch(r"[\d,$]+p", script[0]) is not None
     if name == "git":
         while args and args[0].startswith("-"):
-            # A config set before the subcommand can make git run any
-            # program (core.fsmonitor, diff.external, a filter, include.path).
-            if args[0].startswith(("-c", "--config-env")):
-                return False
-            args = args[2:] if args[0] == "-C" else args[1:]
-        # git grep -O runs a program on each file it finds.
-        return bool(args) and args[0] in GIT_READ and not any(a.startswith("--output") for a in args) \
-            and not (args[0] == "grep" and any(a.startswith(("-O", "--open-files-in-pager")) for a in args))
+            args = args[2:] if args[0] in ("-C", "-c") else args[1:]
+        return bool(args) and args[0] in GIT_READ and not any(a.startswith("--output") for a in args)
     return False
 
 def script_run(words):
@@ -160,30 +150,23 @@ def script_run(words):
 
 def changes_shell(part):
     # A part that changes the shell itself, and so which program a name runs
-    # or what a program reads first: a variable set alone that a program or
-    # the shell can see (one the environment holds, one of LOOKUP, an
-    # element of an array); a builtin that sets variables, aliases, the
-    # command hash or options, or runs text in the shell. Not set's error
-    # options, nor an export of SAFE_ENV. Any other program runs in a process
-    # of its own and cannot change the shell. parse finds the rest in the
-    # shell's text: a loop or an expansion that sets a variable
-    # (SHELL_TEXT), and function definitions, whose () the parts lose.
+    # or what an interpreter reads first: a variable set alone that a
+    # program or the shell can see (one the environment holds, one of
+    # LOOKUP, an element of an array), or any variable set for the
+    # interpreter; a
+    # builtin that sets variables, aliases, the command hash or options, or
+    # runs text in the shell. Any other program runs in a process of its own
+    # and cannot change the shell. parse finds the rest in the shell's text:
+    # a loop or an expansion that sets a variable (SHELL_TEXT), and function
+    # definitions, whose () the parts lose.
     pre, command = split(part[0])
+    words = pre + command[:1]
+    sets = [m for w in words if (m := ASSIGN.match(w))]
     if command and not ASSIGN.match(command[0]):
-        head, args = command[0], command[1:]
-        if head == "set":
-            return not all(SET_SAFE.fullmatch(a) for a in args)
-        if head == "export":
-            return not all((m := ASSIGN.match(a)) and not m.group(2) and SAFE_ENV.fullmatch(m.group(1)) for a in args)
-        return head in SHELL_STATE or (head in ("printf", "print") and "-v" in command)
-    sets = [m for w in pre + command[:1] if (m := ASSIGN.match(w))]
+        if sets and script_run(command) is not None:
+            return True
+        return command[0] in SHELL_STATE or (command[0] in ("printf", "print") and "-v" in command)
     return any(m.group(2) or m.group(1) in os.environ or re.fullmatch(LOOKUP, m.group(1)) for m in sets)
-
-def sets_for_script(part):
-    # A variable set for an interpreter that runs a script: PYTHONPATH,
-    # BASH_ENV and the like run code first.
-    pre, command = split(part[0])
-    return any(ASSIGN.match(w) for w in pre) and script_run(command) is not None
 
 def unread(words, scripts):
     # The words of a command that can name a path it writes: all but the
@@ -393,8 +376,7 @@ def writes(path, parsed):
     parts = [part for pipe in pipelines for part in pipe]
     # A guarded script that an interpreter runs is read, not written, unless
     # a part of the command changes the shell. Its arguments still count.
-    shell_changed = bool(defined & TRUSTED) or shell_text or any(changes_shell(part) for part in parts)
-    scripts = not shell_changed and not any(sets_for_script(part) for part in parts)
+    scripts = not (defined & TRUSTED) and not shell_text and not any(changes_shell(part) for part in parts)
     # A word names the path where the path stands whole in it.
     whole = r"(?<![\w.-])" + re.escape(path) + ("" if path.endswith("/") else r"(?![\w.-])")
     pat = re.compile(whole)
@@ -427,13 +409,8 @@ def writes(path, parsed):
         return bool(hits) and all(any(a <= h < b for a, b in spans) for h in hits)
 
     def reading(part):
-        # A function of the command's name runs its body instead. A part
-        # of the command that changes the shell, or a variable set for the
-        # read beyond the display ones, can make it run a program (git's
-        # GIT_EXTERNAL_DIFF, rg's RIPGREP_CONFIG_PATH, less's LESSOPEN).
-        pre, command = split(part[0])
-        if shell_changed or command and any((m := ASSIGN.match(w)) and not DISPLAY.fullmatch(m.group(1)) for w in pre):
-            return False
+        # A function of the command's name runs its body instead.
+        command = split(part[0])[1]
         return not (command[:1] and command[0] in defined) and (reads(command) or inline_reads(command))
 
     # A cd into a guarded directory, or a variable bound to text that names
@@ -456,16 +433,105 @@ def writes(path, parsed):
                                              for part in pipe[first:])
     return any(pipe_writes(pipe) for pipe in pipelines)
 
-parsed = parse(cmd)
-for decision in ("deny", "ask"):
-    for rule in perms.get(decision, []):
-        if not (rule.startswith("Edit(/") and rule.endswith(")")):
-            continue
-        path = rule[6:-1].removesuffix("**")
-        if path and writes(path, parsed):
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision,
-                "permissionDecisionReason": path + " is guarded: only the user decides a change to it. "
-                "To only read it, use cat, jq or git show, or run the tool without naming the file."}}))
-            sys.exit(0)
+def rule_paths(decision):
+    return [r[6:-1].removesuffix("**") for r in perms.get(decision, []) if r.startswith("Edit(/") and r.endswith(")")]
+
+# The user's approval: a whole reply that is a plain yes, and nothing more.
+YES = re.compile(r"\W*(?:yes|y|yep|yeah|sure|approve|approved|ok|okay|go|go on|go ahead|do it|lgtm)"
+                 r"(?:\W+(?:go ahead|go on|do it|please))?\W*", re.I)
+# The agent's request, in words the refusal fixes, at the start of a line
+# (not quoted inside a summary): the file it names.
+ASKED = re.compile(r"(?m)^\W*Approve a change to [`'\"]?([^\s`'\"?]+)")
+
+def text_of(row):
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and all(isinstance(b, dict) and b.get("type") == "text" for b in content):
+        return "\n".join(b.get("text", "") for b in content)
+    return None
+
+def asked(text):
+    # The paths a text asks to change, relative to the project.
+    out = set()
+    for name in ASKED.findall(text or ""):
+        name = name.rstrip(".,;:")
+        out.add(os.path.relpath(name, root) if os.path.isabs(name) else name.removeprefix("./"))
+    return out
+
+def approvals():
+    # The paths the user approved a change to in this turn: an
+    # AskUserQuestion that asks for it, answered Approve or a plain yes, or
+    # a prompt the user typed (not another session's message, nor one a
+    # program sent with claude -p) that is a plain yes to an agent message
+    # that asks for it. A question or a message asks for a change only in
+    # the refusal's words.
+    transcript, turn = data.get("transcript_path"), data.get("prompt_id")
+    if not transcript or not turn:
+        return set()
+    try:
+        with open(transcript) as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+    except (OSError, ValueError):
+        return set()
+    said, ok = "", set()
+    for row in rows:
+        result = row.get("toolUseResult")
+        answers = result.get("answers") if isinstance(result, dict) else None
+        if row.get("promptId") == turn and isinstance(answers, dict):
+            for q, a in answers.items():
+                if a == "Approve" or YES.fullmatch(str(a)):
+                    ok |= asked(q)
+        if row.get("type") == "assistant":
+            text = "\n".join(b.get("text", "") for b in (row.get("message") or {}).get("content") or []
+                             if isinstance(b, dict) and b.get("type") == "text")
+            said = text or said
+        elif row.get("type") == "user" and row.get("promptId") == turn and (row.get("origin") or {}).get("kind") == "human" \
+                and text_of(row) is not None and YES.fullmatch(text_of(row).strip()):
+            ok |= asked(said)
+    return ok
+
+def refuse(path, locked, name):
+    reason = (path + " is locked: no agent changes it. " if locked else
+              path + " is guarded: it judges the work, so the user approves each change to it. Do not try "
+              "another way. If the change is needed, ask the user first: start with \"Approve a change to " +
+              name + "?\", then say in one or two plain sentences what changes in it and why the work needs "
+              "it, and leave the command out. With AskUserQuestion, put all that in the question and give the "
+              "options Approve and Deny; without it, ask in your reply and end your turn. Once the user "
+              "approves, make the change. ") + \
+        "To only read it, use cat, jq or git show, or run the tool without naming the file."
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": reason}}))
+    sys.exit(0)
+
+locked = rule_paths("deny")
+# An older guard listed its paths as ask rules.
+guarded = listed + [path for path in rule_paths("ask") if path not in listed]
+rel = ""
+if tool == "Bash":
+    parsed = parse(cmd)
+    hit = lambda path: writes(path, parsed)
+else:
+    target = data.get("tool_input", {}).get("file_path") or data.get("tool_input", {}).get("notebook_path") or ""
+    rel = os.path.relpath(os.path.abspath(os.path.join(root, target)), root) if target else ""
+    hit = lambda path: bool(rel) and (rel.startswith(path) if path.endswith("/") else rel == path)
+def approved(path):
+    # An approval names what changes: the file an edit tool changes; for a
+    # shell write, the guarded path, or each file in a guarded folder that
+    # the command names.
+    ok = approvals()
+    if tool != "Bash":
+        return rel in ok
+    if path in ok or not path.endswith("/"):
+        return path in ok
+    named = {m.rstrip(".,;:") for m in re.findall(r"(?<![\w./-])" + re.escape(path) + r"[^\s'\"`;|&<>()]*", cmd)}
+    return bool(named) and named <= ok
+
+for path in locked:
+    if path and hit(path):
+        refuse(path, True, path)
+for path in guarded:
+    if path and hit(path) and not approved(path):
+        refuse(path, False, rel if tool != "Bash" else path)
 PY
 )"

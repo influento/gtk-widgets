@@ -10,13 +10,14 @@ import fnmatch
 import importlib.util
 import io
 import re
+import subprocess
 import sys
 import tokenize
 import tomllib
 from pathlib import Path
 from typing import Any
 
-from conf import exclude, off
+from conf import LEGACY, exclude, legacy, off
 
 COMMENTS = [
     (
@@ -489,6 +490,47 @@ def ruff_config() -> list[str]:
     return out
 
 
+def _git(*args: str) -> str | None:
+    try:
+        done = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def legacy_list() -> list[str]:
+    """py-gate-legacy.txt only gets shorter: each line was on the list that py-gate's first install wrote, the
+    first version git has, no commit since deleted it, and it names a file that exists. A list that turns up after
+    the gate was committed fails."""
+    try:
+        rows = Path(LEGACY).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    first = (_git("log", "--diff-filter=A", "--format=%H", "--", LEGACY) or "").split()
+    original = _git("show", f"{first[-1]}:./{LEGACY}") if first else None
+    out: list[str] = []
+    if original is None:
+        if _git("cat-file", "-e", "HEAD:./py-gate/check.py") is not None:
+            out.append(f"{LEGACY}:1: legacy-list: only py-gate's first install writes this list, and py-gate was "
+                       "in the project before it. Delete the file, and fix what the gate then reports")
+        allowed = None
+    else:
+        # A line a commit deleted never comes back, also when a later commit adds it again.
+        log = _git("log", "--format=", "-p", "--unified=0", "--no-renames", "--", LEGACY) or ""
+        gone = {r[1:].strip() for r in log.splitlines() if r.startswith("-") and not r.startswith("--- ")}
+        allowed = {r.strip() for r in original.splitlines()} - gone
+    for n, row in enumerate(rows, 1):
+        path = row.strip()
+        if not path or path.startswith("#"):
+            continue
+        if allowed is not None and path not in allowed:
+            out.append(f"{LEGACY}:{n}: legacy-list: `{path}` was not on the list py-gate's install wrote, and the "
+                       "list only gets shorter. Delete the line, and fix what the gate then reports in the file")
+        elif not Path(path).is_file():
+            out.append(f"{LEGACY}:{n}: legacy-list: `{path}` does not exist. Delete the line")
+    return out
+
+
 def main() -> int:
     globs = exclude(Path())
     problems: list[str] = []
@@ -496,12 +538,13 @@ def main() -> int:
     # pytest loads a conftest.py in the rootdir, beside pytest.toml, as it does those in tests/.
     root_conftest = [Path("conftest.py")] if Path("conftest.py").is_file() else []
     tests = parse(files("tests", globs) + root_conftest, problems, globs)
-    problems += only_tests(src, tests) + scripts(read_project()) + ruff_config()
+    problems += only_tests(src, tests) + scripts(read_project()) + ruff_config() + legacy_list()
     rules_off = off(Path())
+    unchecked = set(legacy(Path()))
 
     def kept(line: str) -> bool:
         m = LINE.match(line)
-        return not m or not any(fnmatch.fnmatch(m[1], g) for g in rules_off.get(m[2], []))
+        return not m or (m[1] not in unchecked and not any(fnmatch.fnmatch(m[1], g) for g in rules_off.get(m[2], [])))
 
     problems = [p for p in problems if kept(p)]
     for line in sorted(set(problems)):

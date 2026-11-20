@@ -17,6 +17,10 @@ ignore = [
   "PLR0911", "TC001", "TC002", "TC003", "C901", "RUF029", "PLW0717", "ASYNC109",
   "PLR0913", "S603",
 ]
+# The pathlib rules stay on, but ruff never applies their fix: as a safe fix it
+# rewrites open(fd) to Path(fd).open() when it cannot see that fd is an int
+# (from os.pipe()), and Path(int) raises (probed, ruff 0.17.5).
+unfixable = ["PTH"]
 
 [lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004", "S105", "S106", "S107", "S311", "PLR0917", "INP001"]

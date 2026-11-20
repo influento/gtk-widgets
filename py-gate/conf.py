@@ -5,6 +5,7 @@ usage: python3 py-gate/conf.py exclude        the exclude globs, one per line
        python3 py-gate/conf.py test-files     pytest's test files under tests/ that no glob excludes
        python3 py-gate/conf.py pyright-paths  pyrightconfig.json's include paths that exist, when one does not
        python3 py-gate/conf.py target-version ruff's target (py314) from requires-python's lowest 3.x; none prints nothing
+       python3 py-gate/conf.py legacy         the files py-gate-legacy.txt lists, one per line
 """
 
 import fnmatch
@@ -35,6 +36,18 @@ def globs(value: str) -> list[str]:
 
 def exclude(root: Path) -> list[str]:
     return globs(workshop_conf(root).get("exclude", ""))
+
+
+LEGACY = "py-gate-legacy.txt"
+
+
+def legacy(root: Path) -> list[str]:
+    """The files that failed the gate when py-gate came into the project, which it does not check yet."""
+    try:
+        text = (root / LEGACY).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
 
 
 def off(root: Path) -> dict[str, list[str]]:
@@ -73,6 +86,9 @@ if __name__ == "__main__":
             print(fnmatch.translate(g))
     elif sys.argv[1:] == ["pyright-paths"]:
         for p in pyright_paths(Path()):
+            print(p)
+    elif sys.argv[1:] == ["legacy"]:
+        for p in legacy(Path()):
             print(p)
     elif sys.argv[1:] == ["target-version"]:
         v = target_version(Path())

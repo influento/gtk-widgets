@@ -42,7 +42,7 @@ if [ "$LINES" -gt "$MAX_LINES" ]; then
 fi
 if [ "$SAME" -eq "$CAP" ]; then
   printf 'The gate failed the same way %s times. Do not try again. Ask the user what to do, through the question prompt of your environment. Quote this line to the user:\n%s\nThe next stop is allowed.\n' \
-    "$CAP" "$(printf '%s\n' "$OUT" | grep -m1 -E "$FINDING" | cut -c1-120)" >&2
+    "$CAP" "$(printf '%s\n' "$OUT" | grep -m1 -iE "$FINDING" | cut -c1-120)" >&2
 fi
 printf '%s\n' "$OUT" >&2
 exit 2
