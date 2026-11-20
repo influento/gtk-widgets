@@ -1,7 +1,6 @@
 """Webcam popup: live preview, every camera control, presets, LED, and the
 background effects engine's switch and choices."""
 
-import signal
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -178,7 +177,6 @@ class WebcamPopup(WidgetPopup):
 
         if self._load_error:
             self._show_error(f"settings not read: {self._load_error}")
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._on_sigterm)
         self._start_preview()
         return container
 
@@ -754,10 +752,6 @@ class WebcamPopup(WidgetPopup):
         return GLib.SOURCE_REMOVE
 
     # --- close ---
-
-    def _on_sigterm(self) -> bool:
-        self.quit()
-        return GLib.SOURCE_REMOVE
 
     @override
     def do_shutdown(self) -> None:
