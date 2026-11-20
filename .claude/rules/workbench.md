@@ -286,17 +286,16 @@ The test book is one message, numbered. It holds:
   output of `wb-tester`'s run of its command;
 - each entry that the branch adds to `workbench/BACKLOG.md`.
 
-Leave out each command step: `wb-tester` ran it. After the message, ask
-the user through the question prompt to do the book and then answer: each
-line passed, a line failed, or the user wants you to go through a line
-together. To go through a line, run what shows it, say what to look for,
-and wait for the user. Write in the proof, under each line, what the user
+After the message, ask the user through the question prompt to do the
+book and then answer: each line passed, a line failed, or the user wants
+you to go through a line together. To go through a line, run what shows
+it, say what to look for, and wait for the user. Write in the proof, under each line, what the user
 said in the user's words, and the date. If the book has no line, ask the
 user if the item merges.
 
 If you showed the user a step before the change, write in the proof what
-the user said then, and the date. Before the review, paste in the proof, as
-it was printed:
+the user said then, and the date. Before each `workbench ready`, paste in
+the proof, as it was printed:
 
 - for a command step that checks what the project does now: its output
   before the change;
