@@ -19,18 +19,6 @@
           }
         ]
       }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Edit|MultiEdit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workshop-guard",
-            "onFailure": "block"
-          }
-        ]
-      }
     ]
   },
   "permissions": {
@@ -43,32 +31,28 @@
     ],
     "deny": [
       "Bash(uv add *)",
-      "Bash(uv remove *)",
-      "Bash(uv pip *)",
-      "Bash(uv tool *)",
-      "Bash(uv -* add *)",
-      "Bash(uv -* remove *)",
-      "Bash(uv -* pip *)",
-      "Bash(uv -* tool *)",
-      "Bash(uv * --with*)",
-      "Bash(pip *)",
-      "Bash(pip3 *)",
-      "Bash(python -m pip *)",
-      "Bash(python3 -m pip *)",
-      "Bash(pipx *)",
-      "Bash(uvx *)",
       "Edit(/.claude/rules/workbench.md)",
       "Edit(/.claude/agents/wb-reviewer.md)",
       "Edit(/.claude/agents/wb-demo.md)",
       "Edit(/.claude/agents/wb-judge.md)",
       "Edit(/.claude/agents/wb-worker.md)",
       "Edit(/.claude/hooks/workbench-review)",
-      "Edit(/.claude/agents/wb-tester.md)"
+      "Edit(/.claude/agents/wb-tester.md)",
+      "Bash(pip install *)"
     ],
     "ask": [
       "Bash(stack add *)",
       "Bash(stack rm *)",
-      "Bash(stack update *)"
+      "Bash(stack update *)",
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/settings.local.json)",
+      "Edit(/.claude/workshop.conf)",
+      "Edit(/ruff.toml)",
+      "Edit(/pyrightconfig.json)",
+      "Edit(/pytest.toml)",
+      "Edit(/py-gate/**)",
+      "Edit(/pyproject.toml)",
+      "Edit(/uv.lock)"
     ]
   },
   "autoMemoryEnabled": false
