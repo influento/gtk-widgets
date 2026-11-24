@@ -22,8 +22,14 @@ ignore = [
 # (from os.pipe()), and Path(int) raises (probed, ruff 0.17.5).
 unfixable = ["PTH"]
 
+# Each pattern twice: a path here resolves from the folder ruff takes as root.
+# The gate passes --config, and the root is the project. Plain ruff and an
+# editor find ruff.toml themselves, and the root of this extended file is then
+# py-gate/ (probed, ruff 0.17.6). Under --config, the ../ pattern names a
+# folder outside the project, which ruff never checks.
 [lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S107", "S311", "PLR0917", "INP001"]
+"../tests/**" = ["S101", "S105", "S106", "S107", "S311", "PLR0917", "INP001"]
 
 [lint.flake8-tidy-imports.banned-api]
 "typing.cast".msg = "cast hides a type error. Narrow with isinstance, or parse outside data with the project's schema library"

@@ -166,7 +166,5 @@ run "${UV[@]}" python py-gate/check.py
 run quiet deps
 run quiet cycles
 run tests
-if [ -z "$MODE" ] && [ ${#LEGACY[@]} -gt 0 ]; then
-  echo "py-gate-legacy.txt: ${#LEGACY[@]} files the gate does not check yet. To bring one in, delete its line, then fix what the gate reports in it. The first line is the one to take next: ${LEGACY[0]}"
-fi
+[ -n "$MODE" ] || legacy_reminder py-gate "${LEGACY[@]}"
 exit $FAIL
