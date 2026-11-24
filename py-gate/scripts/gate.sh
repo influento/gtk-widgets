@@ -8,6 +8,9 @@
 # even when another fails.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
+# HEAD as this run sees it: a passing run records it, and on the default branch
+# the next --local diffs from it (lib.sh, local_base).
+SEEN=$(git rev-parse -q --verify HEAD 2>/dev/null)
 # uv ignores an activated environment with a warning, and an absolute
 # UV_PROJECT_ENVIRONMENT would share one between worktrees.
 unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT
@@ -33,7 +36,7 @@ TARGET=$(python3 py-gate/conf.py target-version)
 # basedpyright and check.py drop their findings, and only pytest, deptry and
 # import-linter report what is in them.
 mapfile -t LEGACY < <(python3 py-gate/conf.py legacy)
-[ ${#LEGACY[@]} -eq 0 ] || RUFF_X+=(--extend-exclude "$(IFS=,; echo "${LEGACY[*]}")")
+[ ${#LEGACY[@]} -eq 0 ] || RUFF_X+=(--config "$(python3 py-gate/conf.py ruff-legacy)")
 
 # A dependency enters through stack add, or by the user's hand: py-gate/deps.txt
 # lists the approved ones, so one an agent got in another way fails here.
@@ -62,7 +65,7 @@ FILES=(.)
 if [ "$MODE" = "--local" ]; then
   XPATH=()
   for g in "${EXCLUDE[@]}"; do XPATH+=(":(exclude,glob)$g"); done
-  RANGE=$(merge_base)
+  RANGE=$(local_base py-gate)
   # A deleted file is a change too: what imported it breaks. Only files that
   # exist get the format check.
   mapfile -t CHANGED < <(changed_files "$RANGE" "${XPATH[@]}")
@@ -71,7 +74,7 @@ if [ "$MODE" = "--local" ]; then
   if [ ${#FILES[@]} -eq 0 ]; then
     printf '%s\n' "${CHANGED[@]}" \
       | grep -qE '\.pyi?$|^(pyproject\.toml|uv\.lock|\.python-version|ruff\.toml|pyrightconfig\.json|pytest\.toml|py-gate/.*|py-gate-legacy\.txt|\.claude/workshop\.conf)$' \
-      || { echo "no Python or config changes"; exit 0; }
+      || { echo "no Python or config changes"; record_green py-gate "$SEEN"; exit 0; }
     echo "== no changed Python files; project-wide checks only =="
   fi
 fi
@@ -167,4 +170,5 @@ run quiet deps
 run quiet cycles
 run tests
 [ -n "$MODE" ] || legacy_reminder py-gate "${LEGACY[@]}"
+[ "$FAIL" -ne 0 ] || record_green py-gate "$SEEN"
 exit $FAIL

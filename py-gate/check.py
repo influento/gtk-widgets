@@ -503,7 +503,8 @@ def legacy_list() -> list[str]:
     done = subprocess.run([sys.executable, "-I", str(script), "py-gate"], capture_output=True, check=False)
     if done.returncode not in {0, 1}:
         raise SystemExit(f"{script}: exit {done.returncode}\n{done.stderr.decode(errors='replace')}")
-    return done.stdout.decode("utf-8", "replace").splitlines()
+    # One line per problem, split on \n only: a listed path can hold \v or U+2028, which splitlines() also splits on.
+    return [row for row in done.stdout.decode("utf-8", "surrogateescape").split("\n") if row]
 
 
 def main() -> int:
@@ -525,6 +526,8 @@ def main() -> int:
         return m[1] not in unchecked and not any(fnmatch.fnmatch(m[1], g) for g in rules_off.get(m[2], []))
 
     problems = [p for p in problems if kept(p)]
+    # A path that is not UTF-8 holds surrogates (os.fsdecode): print the path's own bytes, as conf.py legacy does.
+    sys.stdout.reconfigure(errors="surrogateescape")
     for line in sorted(set(problems)):
         print(line)
     return 1 if problems else 0

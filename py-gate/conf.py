@@ -6,6 +6,7 @@ usage: python3 py-gate/conf.py exclude        the exclude globs, one per line
        python3 py-gate/conf.py pyright-paths  pyrightconfig.json's include paths that exist, when one does not
        python3 py-gate/conf.py target-version ruff's target (py314) from requires-python's lowest 3.x; none prints nothing
        python3 py-gate/conf.py legacy         the files py-gate-legacy.txt lists, one per line
+       python3 py-gate/conf.py ruff-legacy    the same as one ruff setting, for its --config
        python3 py-gate/conf.py requirements [<group>]
                                               the names pyproject.toml requires, normalized; with a group, that
                                               dependency group's only
@@ -21,12 +22,14 @@ from pathlib import Path
 
 
 def workshop_conf(root: Path) -> dict[str, str]:
+    """A byte that is not UTF-8 is kept (surrogateescape), as legacy() keeps it: a glob names the path's own
+    bytes, and a stray byte in a comment breaks nothing."""
     conf: dict[str, str] = {}
     try:
-        text = (root / ".claude" / "workshop.conf").read_text(encoding="utf-8")
+        data = (root / ".claude" / "workshop.conf").read_bytes()
     except OSError:
         return conf
-    for raw in text.split("\n"):
+    for raw in data.decode("utf-8", "surrogateescape").split("\n"):
         line = raw.strip()
         key, eq, value = line.partition("=")
         if line and not line.startswith("#") and eq and key.strip():
@@ -46,12 +49,24 @@ LEGACY = "py-gate-legacy.txt"
 
 
 def legacy(root: Path) -> list[str]:
-    """The files that failed the gate when py-gate came into the project, which it does not check yet."""
+    """The files that failed the gate when py-gate came into the project, which it does not check yet.
+    Read as scripts/legacy-list.py reads the list: split on \\n only, and a byte that is not UTF-8 kept
+    (surrogateescape), so each line that check passes names the one file it names there."""
     try:
-        text = (root / LEGACY).read_text(encoding="utf-8")
+        data = (root / LEGACY).read_bytes()
     except OSError:
         return []
-    return [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    rows = (row.strip() for row in data.decode("utf-8", "surrogateescape").split("\n"))
+    return [row for row in rows if row and not row.startswith("#")]
+
+
+def ruff_legacy(root: Path) -> str:
+    """The listed files as ruff's `extend-exclude`, each a glob that matches that file alone: its glob
+    characters escaped (`[ab].py` would match `a.py` and not itself), from the root (`m.py` would match
+    `sub/m.py` too), in a TOML array (ruff's --extend-exclude splits its value at each comma). A byte that
+    is not UTF-8 is `?`: ruff matches a lossy copy of the path."""
+    escaped = (re.sub(r"[\\*?[\]{}]", r"\\\g<0>", p) for p in legacy(root))
+    return "extend-exclude = " + json.dumps(["./" + re.sub("[\udc80-\udcff]", "?", p) for p in escaped])
 
 
 def off(root: Path) -> dict[str, list[str]]:
@@ -112,6 +127,7 @@ def target_version(root: Path) -> str:
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(errors="surrogateescape")
     if sys.argv[1:] == ["exclude"]:
         for g in exclude(Path()):
             print(g)
@@ -124,6 +140,8 @@ if __name__ == "__main__":
     elif sys.argv[1:] == ["legacy"]:
         for p in legacy(Path()):
             print(p)
+    elif sys.argv[1:] == ["ruff-legacy"]:
+        print(ruff_legacy(Path()))
     elif sys.argv[1:2] == ["requirements"] and len(sys.argv) <= 3:
         for n in requirements(Path(), *sys.argv[2:]):
             print(n)
