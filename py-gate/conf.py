@@ -6,6 +6,10 @@ usage: python3 py-gate/conf.py exclude        the exclude globs, one per line
        python3 py-gate/conf.py pyright-paths  pyrightconfig.json's include paths that exist, when one does not
        python3 py-gate/conf.py target-version ruff's target (py314) from requires-python's lowest 3.x; none prints nothing
        python3 py-gate/conf.py legacy         the files py-gate-legacy.txt lists, one per line
+       python3 py-gate/conf.py requirements [<group>]
+                                              the names pyproject.toml requires, normalized; with a group, that
+                                              dependency group's only
+       python3 py-gate/conf.py unapproved     the names pyproject.toml requires that py-gate/deps.txt lacks
 """
 
 import fnmatch
@@ -67,6 +71,36 @@ def pyright_paths(root: Path) -> list[str]:
     return present if present != paths else []
 
 
+def requirement_name(spec: str) -> str:
+    """A requirement's name, normalized as PEP 503 compares names: `Left_Pad>=1` and `left-pad` are one."""
+    m = re.match(r"[A-Za-z0-9._-]*", spec.strip())
+    return re.sub(r"[-_.]+", "-", m[0] if m else "").lower()
+
+
+def requirements(root: Path, group: str | None = None) -> list[str]:
+    """The names pyproject.toml requires: [project] dependencies and optional-dependencies, and every
+    [dependency-groups] group; with a group, that group's only. A missing or broken pyproject.toml raises."""
+    j = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    groups = j.get("dependency-groups", {})
+    if group is not None:
+        specs = groups.get(group, [])
+    else:
+        project = j.get("project", {})
+        specs = [*project.get("dependencies", []), *(d for g in project.get("optional-dependencies", {}).values() for d in g),
+                 *(d for g in groups.values() for d in g)]
+    # A {include-group = ...} entry names a group, not a requirement.
+    return list(dict.fromkeys(requirement_name(d) for d in specs if isinstance(d, str)))
+
+
+DEPS = "py-gate/deps.txt"
+
+
+def approved(root: Path) -> list[str]:
+    """The names in py-gate/deps.txt, the dependencies the user approved, as written."""
+    text = (root / DEPS).read_text(encoding="utf-8")
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")]
+
+
 def target_version(root: Path) -> str:
     """ruff's --target-version: with --config, ruff no longer reads requires-python (probed, ruff 0.17.4)."""
     try:
@@ -90,6 +124,13 @@ if __name__ == "__main__":
     elif sys.argv[1:] == ["legacy"]:
         for p in legacy(Path()):
             print(p)
+    elif sys.argv[1:2] == ["requirements"] and len(sys.argv) <= 3:
+        for n in requirements(Path(), *sys.argv[2:]):
+            print(n)
+    elif sys.argv[1:] == ["unapproved"]:
+        ok = {requirement_name(n) for n in approved(Path())}
+        for n in sorted(set(requirements(Path())) - ok):
+            print(n)
     elif sys.argv[1:] == ["target-version"]:
         v = target_version(Path())
         if v:

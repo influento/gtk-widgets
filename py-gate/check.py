@@ -23,17 +23,20 @@ COMMENTS = [
     (
         re.compile(r"#\s*type:\s*ignore"),
         "no-ignore-comment",
-        "the gate ignores type: ignore. Fix the type, or narrow it with isinstance",
+        "the gate refuses this comment: fix what basedpyright reports. If the rule is wrong for this "
+        "project, ask the user to turn it off in pyrightconfig.json",
     ),
     (
         re.compile(r"#\s*(pyright|basedpyright|ty|pyrefly|mypy)\s*:"),
         "no-ignore-comment",
-        "a type checker comment turns its checks off. Fix the type instead",
+        "the gate refuses this comment: fix what the type checker reports. If the rule is wrong for "
+        "this project, ask the user to turn it off in pyrightconfig.json",
     ),
     (
         re.compile(r"#\s*noqa\b|#\s*ruff\s*:"),
         "no-ignore-comment",
-        "the gate runs ruff with --ignore-noqa, so this comment changes nothing. Fix the code and delete it",
+        "the gate refuses this comment: fix what ruff reports. If the rule is wrong for this project, "
+        "ask the user to turn it off with ignore or extend-per-file-ignores in ruff.toml",
     ),
     (
         re.compile(r"#\s*fmt\s*:\s*(off|on|skip)\b"),
@@ -58,7 +61,7 @@ SKIPPED_IF = (
 )
 EXCLUDED = (
     "no-excluded: this imports `{}` from {}, which `exclude` in .claude/workshop.conf leaves out: "
-    "what it holds can go at any time. Copy what the code needs out of it"
+    "what it holds can go at any time. Copy what the code needs out of it into a checked path"
 )
 OBJECT_PARAM = (
     "no-object-signature: an `object` parameter takes input that is not parsed yet. Parse it where it "
@@ -386,7 +389,7 @@ def only_tests(src: dict[Path, ast.Module], tests: dict[Path, ast.Module]) -> li
                 out.append(
                     f"{path}:{node.lineno}: only-tests-use: only tests use `{name}`. If code outside the "
                     "package calls it, import it in the package's __init__.py; if not, delete it and test "
-                    "through the code that uses it"
+                    "through the code that uses it. Never add a use to keep one"
                 )
             else:
                 out.append(
@@ -490,45 +493,17 @@ def ruff_config() -> list[str]:
     return out
 
 
-def _git(*args: str) -> str | None:
-    try:
-        done = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
-    except OSError:
-        return None
-    return done.stdout if done.returncode == 0 else None
-
-
 def legacy_list() -> list[str]:
-    """py-gate-legacy.txt only gets shorter: each line was on the list that py-gate's first install wrote, the
-    first version git has, no commit since deleted it, and it names a file that exists. A list that turns up after
-    the gate was committed fails."""
-    try:
-        rows = Path(LEGACY).read_text(encoding="utf-8").splitlines()
-    except OSError:
+    """py-gate-legacy.txt only gets shorter: the lines of scripts/legacy-list.py, a copy of the workshop's
+    ecosystems/shared/legacy-list.py, which ts-gate and go-gate run too. Without the list there is nothing to
+    check."""
+    if not Path(LEGACY).is_file():
         return []
-    first = (_git("log", "--diff-filter=A", "--format=%H", "--", LEGACY) or "").split()
-    original = _git("show", f"{first[-1]}:./{LEGACY}") if first else None
-    out: list[str] = []
-    if original is None:
-        if _git("cat-file", "-e", "HEAD:./py-gate/check.py") is not None:
-            out.append(f"{LEGACY}:1: legacy-list: only py-gate's first install writes this list, and py-gate was "
-                       "in the project before it. Delete the file, and fix what the gate then reports")
-        allowed = None
-    else:
-        # A line a commit deleted never comes back, also when a later commit adds it again.
-        log = _git("log", "--format=", "-p", "--unified=0", "--no-renames", "--", LEGACY) or ""
-        gone = {r[1:].strip() for r in log.splitlines() if r.startswith("-") and not r.startswith("--- ")}
-        allowed = {r.strip() for r in original.splitlines()} - gone
-    for n, row in enumerate(rows, 1):
-        path = row.strip()
-        if not path or path.startswith("#"):
-            continue
-        if allowed is not None and path not in allowed:
-            out.append(f"{LEGACY}:{n}: legacy-list: `{path}` was not on the list py-gate's install wrote, and the "
-                       "list only gets shorter. Delete the line, and fix what the gate then reports in the file")
-        elif not Path(path).is_file():
-            out.append(f"{LEGACY}:{n}: legacy-list: `{path}` does not exist. Delete the line")
-    return out
+    script = Path(__file__).parent / "scripts" / "legacy-list.py"
+    done = subprocess.run([sys.executable, "-I", str(script), "py-gate"], capture_output=True, check=False)
+    if done.returncode not in {0, 1}:
+        raise SystemExit(f"{script}: exit {done.returncode}\n{done.stderr.decode(errors='replace')}")
+    return done.stdout.decode("utf-8", "replace").splitlines()
 
 
 def main() -> int:
@@ -542,9 +517,12 @@ def main() -> int:
     rules_off = off(Path())
     unchecked = set(legacy(Path()))
 
+    # legacy-list guards the list itself: neither an off key nor a line of the list hides it, as in go-gate.
     def kept(line: str) -> bool:
         m = LINE.match(line)
-        return not m or (m[1] not in unchecked and not any(fnmatch.fnmatch(m[1], g) for g in rules_off.get(m[2], [])))
+        if not m or m[2] == "legacy-list":
+            return True
+        return m[1] not in unchecked and not any(fnmatch.fnmatch(m[1], g) for g in rules_off.get(m[2], []))
 
     problems = [p for p in problems if kept(p)]
     for line in sorted(set(problems)):

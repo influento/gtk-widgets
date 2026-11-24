@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2329  # fmt, approved, deps, cycles and tests are called through run
+# shellcheck disable=SC2329  # fmt, deps, cycles and tests are called through run
 # py-gate: lint, format, types, the gate's own rules, dependencies, import
 # cycles, tests. Modes: none (the whole project), --local (what the Stop hook
 # runs: format on the branch's changed files), --fix (ruff's fixes and the
@@ -14,14 +14,10 @@ unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT
 FAIL=0
 MODE="${1:-}"
 UV=(uv run --locked --exact --quiet)
+# shellcheck source-path=SCRIPTDIR/../../../shared source=lib.sh
+. py-gate/scripts/lib.sh
 # shellcheck source-path=SCRIPTDIR/../../../shared source=test-lock.sh
 . py-gate/scripts/test-lock.sh
-
-default_branch() {
-  git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null && return
-  local b; for b in main master; do git show-ref -q --verify "refs/heads/$b" && { echo "$b"; return; }; done
-  echo HEAD
-}
 run() { "$@" || FAIL=1; }
 # A tool that prints a banner or a summary when it passes: its output only when it fails.
 quiet() { local out; out=$("$@" 2>&1) && return; printf '%s\n' "$out"; return 1; }
@@ -33,9 +29,28 @@ RUFF_X=(); [ ${#EXCLUDE[@]} -eq 0 ] || RUFF_X=(--extend-exclude "$(IFS=,; echo "
 TARGET=$(python3 py-gate/conf.py target-version)
 [ -z "$TARGET" ] || RUFF_X+=(--target-version "$TARGET")
 # The files py-gate-legacy.txt lists failed the gate when it came into the
-# project: no tool but pytest checks them until their line is deleted.
+# project. Until their line is deleted, ruff and the format check skip them,
+# basedpyright and check.py drop their findings, and only pytest, deptry and
+# import-linter report what is in them.
 mapfile -t LEGACY < <(python3 py-gate/conf.py legacy)
 [ ${#LEGACY[@]} -eq 0 ] || RUFF_X+=(--extend-exclude "$(IFS=,; echo "${LEGACY[*]}")")
+
+# A dependency enters through stack add, or by the user's hand: py-gate/deps.txt
+# lists the approved ones, so one an agent got in another way fails here.
+approved() {
+  [ -f py-gate/deps.txt ] || return 0
+  local bad
+  bad=$(python3 py-gate/conf.py unapproved) || return 1
+  [ -n "$bad" ] || return 0
+  echo "pyproject.toml has dependencies that the user did not approve: ${bad//$'\n'/, }." \
+    "If you added one, remove it (\`uv remove <name>\`). If you did not, ask the user to approve or remove it." \
+    "After the user approves it, add its name on a new line in py-gate/deps.txt."
+  return 1
+}
+# Before the first uv call: uv sync, and uv run, which syncs, would build and
+# install an unapproved package, running its build scripts, so a failure here
+# stops the gate.
+approved || exit 1
 
 if [ "$MODE" = "--fix" ]; then
   "${UV[@]}" ruff check --config ruff.toml --ignore-noqa --fix --quiet --force-exclude "${RUFF_X[@]}" .; c=$?
@@ -47,10 +62,10 @@ FILES=(.)
 if [ "$MODE" = "--local" ]; then
   XPATH=()
   for g in "${EXCLUDE[@]}"; do XPATH+=(":(exclude,glob)$g"); done
-  RANGE=$(git merge-base HEAD "$(default_branch)" 2>/dev/null || echo HEAD)
+  RANGE=$(merge_base)
   # A deleted file is a change too: what imported it breaks. Only files that
   # exist get the format check.
-  mapfile -t CHANGED < <({ git diff --relative --name-only --diff-filter=ACMRD "$RANGE" -- . "${XPATH[@]}"; git ls-files --others --exclude-standard -- . "${XPATH[@]}"; } | sort -u)
+  mapfile -t CHANGED < <(changed_files "$RANGE" "${XPATH[@]}")
   FILES=()
   for f in "${CHANGED[@]}"; do [[ "$f" =~ \.pyi?$ && -e "$f" ]] && FILES+=("$f"); done
   if [ ${#FILES[@]} -eq 0 ]; then
@@ -66,17 +81,23 @@ fi
 quiet uv sync --locked --exact --quiet || { echo "uv sync --locked failed: uv.lock and pyproject.toml disagree. Run uv lock."; exit 1; }
 
 mapfile -t PYRIGHT_PATHS < <(python3 py-gate/conf.py pyright-paths)
-PYRIGHT=(basedpyright -p pyrightconfig.json --baselinefile py-gate/no-baseline.json)
+# basedpyright skips every error in its baseline file, which
+# `basedpyright --writebaseline --baselinefile <path>` writes: the gate names a
+# path in a folder made for this run, so no baseline exists there. Without the
+# flag it would read .basedpyright/baseline.json.
+NO_BASELINE=$(mktemp -d)
+trap 'rm -rf "$NO_BASELINE"' EXIT
+PYRIGHT=(basedpyright -p pyrightconfig.json --baselinefile "$NO_BASELINE/baseline.json")
 
 if [ "$MODE" = "--legacy" ]; then
   {
-    "${UV[@]}" ruff check --config ruff.toml --ignore-noqa --output-format concise --quiet --force-exclude "${RUFF_X[@]}" .
-    "${UV[@]}" ruff format --config ruff.toml --check --output-format concise --quiet --force-exclude "${RUFF_X[@]}" .
-    "${UV[@]}" python py-gate/check.py
-  } 2>&1 | python3 py-gate/scripts/legacy.py paths > "${TMPDIR:-/tmp}/py-gate-legacy.$$"
-  "${UV[@]}" "${PYRIGHT[@]}" --outputjson "${PYRIGHT_PATHS[@]}" | python3 py-gate/scripts/legacy.py paths >> "${TMPDIR:-/tmp}/py-gate-legacy.$$"
-  "${UV[@]}" python py-gate/scripts/legacy.py order < "${TMPDIR:-/tmp}/py-gate-legacy.$$"
-  rm -f "${TMPDIR:-/tmp}/py-gate-legacy.$$"
+    {
+      "${UV[@]}" ruff check --config ruff.toml --ignore-noqa --output-format concise --quiet --force-exclude "${RUFF_X[@]}" .
+      "${UV[@]}" ruff format --config ruff.toml --check --output-format concise --quiet --force-exclude "${RUFF_X[@]}" .
+      "${UV[@]}" python py-gate/check.py
+    } 2>&1 | python3 py-gate/scripts/legacy.py paths
+    "${UV[@]}" "${PYRIGHT[@]}" --outputjson "${PYRIGHT_PATHS[@]}" | python3 py-gate/scripts/legacy.py paths
+  } | "${UV[@]}" python py-gate/scripts/legacy.py order
   exit 0
 fi
 
@@ -88,26 +109,6 @@ fmt() {
   "${UV[@]}" ruff format --config ruff.toml --check --output-format concise --quiet --force-exclude "${RUFF_X[@]}" "${FILES[@]}" && return
   echo "Run bash py-gate/scripts/gate.sh --fix to format these files."
   return 1
-}
-# A dependency enters through stack add, or by the user's hand: py-gate/deps.txt
-# lists the approved ones, so one an agent got in another way fails here.
-approved() {
-  [ -f py-gate/deps.txt ] || return 0
-  python3 - <<'PY'
-import re, sys, tomllib
-from pathlib import Path
-norm = lambda s: re.sub(r"[-_.]+", "-", re.split(r"[<>=!~;\[ @]", s.strip(), maxsplit=1)[0]).lower()
-ok = {norm(l) for l in Path("py-gate/deps.txt").read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")}
-j = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-pr = j.get("project", {})
-reqs = [*pr.get("dependencies", []), *(d for g in pr.get("optional-dependencies", {}).values() for d in g),
-        *(d for g in j.get("dependency-groups", {}).values() for d in g if isinstance(d, str))]
-bad = sorted({norm(d) for d in reqs} - ok)
-if bad:
-    sys.exit(f"pyproject.toml has dependencies that the user did not approve: {', '.join(bad)}. "
-             "Ask the user to remove each dependency with `uv remove <name>`, or to approve it. "
-             "After the user approves a dependency, add its name on a new line in py-gate/deps.txt.")
-PY
 }
 deps() {
   local args=(. --no-ansi --extend-exclude "py-gate/.*") p r
@@ -149,12 +150,9 @@ tests() {
   return "$rc"
 }
 
-run approved
 run "${UV[@]}" ruff check --config ruff.toml --ignore-noqa --output-format concise --quiet --force-exclude "${RUFF_X[@]}" .
 run fmt
-# basedpyright skips every error in its baseline file, which
-# `basedpyright --writebaseline` writes; the gate names one that never exists.
-# It has no flag to leave a file out, so with a legacy list its JSON report
+# basedpyright has no flag to leave a file out, so with a legacy list its JSON report
 # loses the listed files' findings.
 types() {
   [ ${#LEGACY[@]} -gt 0 ] || { quiet "${UV[@]}" "${PYRIGHT[@]}" "${PYRIGHT_PATHS[@]}"; return; }

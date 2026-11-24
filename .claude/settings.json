@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash py-gate/scripts/stop-hook.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/py-gate/scripts/stop-hook.sh",
             "timeout": 600
           }
         ]

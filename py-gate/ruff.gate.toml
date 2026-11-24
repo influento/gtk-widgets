@@ -23,11 +23,10 @@ ignore = [
 unfixable = ["PTH"]
 
 [lint.per-file-ignores]
-"tests/**" = ["S101", "PLR2004", "S105", "S106", "S107", "S311", "PLR0917", "INP001"]
+"tests/**" = ["S101", "S105", "S106", "S107", "S311", "PLR0917", "INP001"]
 
 [lint.flake8-tidy-imports.banned-api]
 "typing.cast".msg = "cast hides a type error. Narrow with isinstance, or parse outside data with the project's schema library"
 "typing_extensions.cast".msg = "cast hides a type error. Narrow with isinstance, or parse outside data with the project's schema library"
 "typing.no_type_check".msg = "no_type_check turns the type checker off for the function. Fix the types"
 "unittest.mock.patch".msg = "patching a module hides how the code gets its dependency. Pass the dependency in, or test through the public entry point"
-"unittest.mock.patch.object".msg = "patching a module hides how the code gets its dependency. Pass the dependency in, or test through the public entry point"
