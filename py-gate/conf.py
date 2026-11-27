@@ -7,9 +7,6 @@ usage: python3 py-gate/conf.py exclude        the exclude globs, one per line
        python3 py-gate/conf.py target-version ruff's target (py314) from requires-python's lowest 3.x; none prints nothing
        python3 py-gate/conf.py legacy         the files py-gate-legacy.txt lists, one per line
        python3 py-gate/conf.py ruff-legacy    the same as one ruff setting, for its --config
-       python3 py-gate/conf.py requirements [<group>]
-                                              the names pyproject.toml requires, normalized; with a group, that
-                                              dependency group's only
        python3 py-gate/conf.py unapproved     the names pyproject.toml requires that py-gate/deps.txt lacks
 """
 
@@ -142,9 +139,6 @@ if __name__ == "__main__":
             print(p)
     elif sys.argv[1:] == ["ruff-legacy"]:
         print(ruff_legacy(Path()))
-    elif sys.argv[1:2] == ["requirements"] and len(sys.argv) <= 3:
-        for n in requirements(Path(), *sys.argv[2:]):
-            print(n)
     elif sys.argv[1:] == ["unapproved"]:
         ok = {requirement_name(n) for n in approved(Path())}
         for n in sorted(set(requirements(Path())) - ok):
